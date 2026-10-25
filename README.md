@@ -1,6 +1,6 @@
 # CTR Track Editor
 
-**A track editor for Crash Team Racing Nitro-Fueled (PS4, v1.21 — CUSA13795), played on the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator and CTR Nitro Fueled PC Port [CTR-NitroFueled-PC](ttps://github.com/GetLostIn/CTR-NitroFueled-PC).**
+**A track editor for Crash Team Racing Nitro-Fueled (PS4, v1.21 — CUSA13795), played on the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator and CTR Nitro Fueled PC Port [CTR-NitroFueled-PC](ttps://github.com/GetLostIn/CTR-NitroFueled-PC) .**
 
 Import your own map (OBJ / COLLADA), turn it into a playable race in a few clicks, and install it in place of an existing track — with AI opponents, item crates, boosters, respawns, a minimap, menu images and even teleporters.
 
