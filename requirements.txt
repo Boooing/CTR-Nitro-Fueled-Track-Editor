@@ -1,0 +1,10 @@
+# Editeur (serveur local + page web)
+numpy>=1.24
+pillow>=10.0
+
+# Application Windows (.exe) : fenetre de l'editeur et construction
+pywebview>=5.0
+pyinstaller>=6.0
+
+# Seulement pour regenerer schema/ctr_meta.json depuis l'eboot.bin du jeu (extract_meta.py)
+# capstone>=5.0
