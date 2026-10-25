@@ -1,6 +1,6 @@
 # CTR Track Editor
 
-**A track editor for Crash Team Racing Nitro-Fueled (PS4, v1.21 — CUSA13795), played on the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator.**
+**A track editor for Crash Team Racing Nitro-Fueled (PS4, v1.21 — CUSA13795), played on the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator and CTR Nitro Fueled PC Port [CTR-NitroFueled-PC](ttps://github.com/GetLostIn/CTR-NitroFueled-PC).**
 
 Import your own map (OBJ / COLLADA), turn it into a playable race in a few clicks, and install it in place of an existing track — with AI opponents, item crates, boosters, respawns, a minimap, menu images and even teleporters.
 
@@ -45,14 +45,14 @@ Import your own map (OBJ / COLLADA), turn it into a playable race in a few click
 ---
 
 ## Requirements
-- Your **own legally dumped copy** of CTR Nitro-Fueled for PS4 (CUSA13795, update 1.21) running on shadPS4. No game file is included in this repository.
+- Your **own legally dumped copy** of CTR Nitro-Fueled for PS4 (CUSA13795, update 1.21) running on shadPS4 or CTR-NitroFueled-PC. No game file is included in this repository.
 - Windows 10/11. For the source version: Python 3.11+.
 
 ## Quick start (Windows app)
 1. Run `CTR Track Editor.exe`.
 2. On first launch, choose the game's **`archives`** folder from 1.21 Update (it contains `update.pak` and the track archives such as `t111_crash_cove.pak`). The choice is remembered.
 3. Follow the 6-step guide on the left: *Remove the old track → Import your map → Create the route → Place objects → Check → Install*.
-4. Close shadPS4 before installing, then start a race on the track you replaced.
+4. Close shadPS4 or CTR-NitroFueled-PC before installing, then start a race on the track you replaced.
 
 Your saves are stored in `out/editor` next to the executable.
 
@@ -101,7 +101,7 @@ Third-party: [three.js](https://threejs.org) (MIT, `ctr_tools/editor/vendor/thre
 
 ## 🇫🇷 Version française
 
-**Éditeur de pistes pour Crash Team Racing Nitro-Fueled (PS4 v1.21, CUSA13795) sur l'émulateur shadPS4.**
+**Éditeur de pistes pour Crash Team Racing Nitro-Fueled (PS4 v1.21, CUSA13795) sur l'émulateur shadPS4 et sur le portage PC [CTR-NitroFueled-PC](https://github.com/GetLostIn/CTR-NitroFueled-PC) .**
 
 Importe ta propre map (OBJ / COLLADA), transforme-la en course jouable en quelques clics et installe-la à la place d'une piste du jeu : IA, caisses, boosters, réapparitions, mini-carte, images de menu et même téléporteurs.
 
