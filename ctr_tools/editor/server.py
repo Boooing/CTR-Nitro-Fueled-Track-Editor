@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -41,6 +42,8 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+if HERE not in sys.path:                               # modules de l'editeur (mappack) : absent avec « python -I »
+    sys.path.insert(0, HERE)
 import pak_tool  # noqa: E402
 import ai_gen  # noqa: E402
 import numpy as np  # noqa: E402
@@ -52,9 +55,13 @@ import progress  # noqa: E402
 import minimap  # noqa: E402
 import preview  # noqa: E402
 import route_gen  # noqa: E402
+import flyby  # noqa: E402
+import mappack  # noqa: E402
+mappack.bind(sys.modules[__name__])                    # ce module, meme lance en script (__main__)
 import start_finish  # noqa: E402
 import teleport  # noqa: E402
 import texture_build  # noqa: E402
+import walls  # noqa: E402
 from collision import decode_compressed_mesh, transform  # noqa: E402
 from collision_edit import CollisionFile  # noqa: E402
 from collision_region import GroundEditor, apply, mat_inv_rigid_scale, mat_mul, object_matrix  # noqa: E402
@@ -90,8 +97,31 @@ def collision_file(track):
     return f'models/maps/Octane/{track}/StaticCollision_{track}.hkx'
 
 
+_dir_names = {}                # dossier -> (date, {nom minuscule: nom}) : casse des fichiers deja ecrits
+
+
+def ci_path(folder, name):
+    """folder/name sans tenir compte de la casse, comme sous Windows : sous Linux, le fichier existant qui a ce nom
+    a la casse pres (les noms logiques arrivent en minuscules du manifeste ou avec la casse de l'archive)."""
+    p = os.path.join(folder, name)
+
+    # Windows deja insensible ; nom exact present : rien a chercher
+    if os.name == 'nt' or os.path.exists(p):
+        return p
+    try:
+        stamp = os.stat(folder).st_mtime_ns
+    except OSError:
+        return p
+    hit = _dir_names.get(folder)
+
+    # liste relue seulement si le dossier a change (ajout / retrait)
+    if not hit or hit[0] != stamp:
+        hit = _dir_names[folder] = (stamp, {n.lower(): n for n in os.listdir(folder)})
+    return os.path.join(folder, hit[1].get(name.lower(), name))
+
+
 def saved_path(logical):
-    return os.path.join(OUT_DIR, os.path.basename(logical))
+    return ci_path(OUT_DIR, os.path.basename(logical))
 
 
 def list_tracks():
@@ -164,13 +194,13 @@ def load_track(track):
     except KeyError:
         starting = []
     try:
-        crates = powerup.read_crates(base_file(track, powerup.powerup_file(track))[0])
+        crates = read_track_crates(track)
     except KeyError:
         crates = []
     return {'track': track, 'source': src, 'saved': src.startswith(OUT_DIR), 'splines': splines,
             'transitions': transitions, 'forks': rs['fork_checkers'], 'player_starts': rs['player_starts'],
             'starting_splines': starting, 'start_grid': grid, 'player_start': player_start, 'crates': crates,
-            'teleporters': teleporters_of(track, ed), 'original_start': original_start(track),
+            'teleporters': teleporters_of(track, ed), 'flyby': flyby_info(track), 'original_start': original_start(track),
             'collision': load_collision(track)}
 
 
@@ -221,14 +251,26 @@ def apply_teleporters(track, ed, want, rs_data):
         respawns = [str(r).split('::')[-1] for s in rs['position_paths'] for r in (s.get('respawn_points') or [])]
         cands = [n for n in respawns if n in roots]
         template = next((n for n in cands if f'{n}_camera' not in roots), cands[0] if cands else None)
-        if template is None:
-            raise ValueError('aucun point de réapparition dans le _Design (modèle de l\'arrivée du téléporteur)')
-        owned = dz.owned_by(DESIGN_ENTITY_TYPES)
-        names = {o: n for n, o in dz.root_objects()}
-        pairs = []
-        for t in missing:
-            pairs += dz.clone_owned(roots[template], teleport.dest_name(t), owned[roots[template]], names)[1]
-        dz.add_roots(pairs)
+        if template is None:                               # pas de point de reapparition : un repere sans composant
+            template = _plain_marker(dz)
+        if template is not None:
+            owned = dz.owned_by(DESIGN_ENTITY_TYPES)
+            names = {o: n for n, o in dz.root_objects()}
+            pairs = []
+            for t in missing:
+                pairs += dz.clone_owned(roots[template], teleport.dest_name(t), owned[roots[template]], names)[1]
+            dz.add_roots(pairs)
+        else:
+            # _Design sans aucun repere (Roo's Tubes : creatures animees et grille seulement) : repere importe du
+            # _Design de Crash Cove (copie d'entite d'un autre fichier, comme les boosters)
+            T = 'T111_Crash_Cove'
+            donor = IgzFile(pak_tool.read_latest(ARCHIVES, start_finish.design_file(T), track_pak(T))[0])
+            dn = _plain_marker(donor)
+            if dn is None:
+                raise ValueError('aucun repère à copier pour l\'arrivée du téléporteur')
+            src_ent = dict(donor.root_objects())[dn]
+            for t in missing:
+                dz.import_entity(donor, src_ent, teleport.dest_name(t), old_name=dn)
         roots = {n: o for n, o in dz.root_objects() if n}
     for t, w in want.items():
         _set_pose(dz, roots[teleport.dest_name(t)], [float(c) for c in w['pos']], float(w.get('yaw') or 0.0))
@@ -240,6 +282,19 @@ def apply_teleporters(track, ed, want, rs_data):
         teleport.set_teleporter(ed.igz, ents[t], t, teleport.dest_name(t), f'{track}_Design', src)
         report.append(f'{t} : téléporteur vers ({", ".join(str(round(c)) for c in w["pos"])})')
     return report
+
+
+def _plain_marker(z):
+    """Nom d'une entite repere du fichier : avec transformation et sans composant (point de reapparition
+    CPlayerStartEntity de Crash Cove, Destination_01 CEntity de Spyro Circuit), ou None."""
+    for n, o in sorted((n, o) for n, o in z.root_objects() if n):
+        if z.objects.get(o) not in ('CEntity', 'CPlayerStartEntity') or z.deref(o + 0x30) is None or n.endswith('_camera'):
+            continue
+        data = z.deref(o + 0x40)
+        table = z.deref(data + 0x10) if data is not None else None
+        if table is not None and not z.hash_items(table):
+            return n
+    return None
 
 
 def teleport_install_files(track):
@@ -259,6 +314,99 @@ def teleport_install_files(track):
                 raise KeyError(f'fichier du téléporteur introuvable dans les archives : {lg}')
             copies[_archive_case(src, lg)] = src
     return list(teleport.FILES), copies
+
+
+# -- survol d'introduction (cinematique avant la course, voir flyby.py) ----------------------------
+_flyby_cache = {}
+
+
+def flyby_path(track):
+    return os.path.join(OUT_DIR, f'{track}_flyby.json')
+
+
+def flyby_shots(track):
+    """[{'key' (chemin logique de la camera), 'pak', 'label', 'frames', 'duration', 'final', 'original'}] des plans
+    des archives de survol de la piste (le dernier plan de chaque survol est le plan final, sur la grille)."""
+    if track not in _flyby_cache:
+        shots = []
+        for pak in flyby.flyby_paks(os.listdir(ARCHIVES), track):
+            arc, idx, _ = pak_tool.cached_archive(os.path.join(ARCHIVES, pak))
+            cams = sorted((e.logical_name for e in arc.entries if flyby.is_camera(e.logical_name)), key=str.lower)
+            short = 'short' in pak.lower()
+            for k, lg in enumerate(cams):
+                cam = flyby.read_camera(pak_tool.read_latest(ARCHIVES, lg, pak)[0])
+                shots.append({'key': lg, 'pak': pak, 'frames': len(cam['times']),
+                              'duration': round(cam['times'][-1] + 1 / 30, 2), 'final': k == len(cams) - 1,
+                              'label': ('Survol court' if short else 'Survol') + (f' · plan {k + 1}' if len(cams) > 1 else ''),
+                              'original': flyby.model_of(cam)})
+        _flyby_cache[track] = shots
+    return _flyby_cache[track]
+
+
+def load_flyby(track):
+    try:
+        return json.load(open(flyby_path(track), encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+
+
+def flyby_info(track):
+    """Plans pour l'editeur : modele courant (enregistre, sinon celui d'origine) et s'il est modifie."""
+    saved = load_flyby(track)
+    return [dict(s, model=saved.get(s['key'], s['original']), custom=s['key'] in saved) for s in flyby_shots(track)]
+
+
+def apply_flyby(track, models):
+    """Enregistre les plans modifies : models = {cle: {'start', 'end'}} (absents : plan d'origine). Cameras
+    reecrites depuis l'original (memes cles, meme minutage)."""
+    shots = {s['key']: s for s in flyby_shots(track)}
+    models = {k: m for k, m in (models or {}).items() if k in shots}
+    for key, s in shots.items():
+        p = saved_path(key)
+        if key in models:
+            data = pak_tool.read_latest(ARCHIVES, key, s['pak'])[0]
+            open(p, 'wb').write(flyby.write_camera(data, models[key]))
+        elif os.path.exists(p):
+            os.remove(p)
+    if models:
+        json.dump(models, open(flyby_path(track), 'w', encoding='utf-8'), indent=1)
+    elif os.path.exists(flyby_path(track)):
+        os.remove(flyby_path(track))
+    return [f'survol : {len(models)} plan(s) modifié(s)' if models else 'survol : plans d\'origine']
+
+
+def flyby_auto(req):
+    """Plans proposes d'apres le parcours enregistre : req = {track, mode: 'auto' | 'fixed'} -> {cle: modele}."""
+    track = req['track']
+    shots = flyby_shots(track)
+    if not shots:
+        raise ValueError('aucune archive de survol pour cette piste')
+    path, tr = race_path_points(track)
+    fin = next((t for t in tr['transitions'] if t['increment_lap']), None)
+    if fin is None or len(path) < 2:
+        raise ValueError('pas de parcours enregistré (ligne d\'arrivée reliée aux splines de position)')
+    grid = tr.get('start_grid') or []
+    gc = np.mean([g['pos'] for g in grid], axis=0) if grid else None
+    g = ground_for(track)
+    ground = lambda x, y, z: g.top(x, y, z)
+    spec = [(s['key'], s['frames'], s['final']) for s in shots]
+    finish = (fin['position'], fin.get('yaw') or 0.0)
+    models = flyby.fixed_models(spec, finish, gc, ground) if req.get('mode') == 'fixed' \
+        else flyby.auto_models(path, spec, finish, gc, ground)
+    return {'models': models}
+
+
+def flyby_install_files(track):
+    """{archive: {camera: octets}} des plans enregistres (archives de survol de la piste, et mises a jour qui les
+    contiendraient)."""
+    out = defaultdict(dict)
+    for s in flyby_shots(track):
+        p = saved_path(s['key'])
+        if s['key'] in load_flyby(track) and os.path.exists(p):
+            data = open(p, 'rb').read()
+            for arc in pak_tool.archives_with(ARCHIVES, s['key'], s['pak']):
+                out[arc][s['key']] = data
+    return out
 
 
 _grid_file_cache = {}
@@ -336,29 +484,49 @@ def route_layout(req):
     -> boucle, points des splines de position, transitions, reapparitions et entites a ecarter."""
     track = req['track']
     src = req.get('source') or {}
+    dropped = []
     if src.get('objects'):                               # ids -> noms (les ids changent a chaque reecriture du decor)
         named = []
         for ref in src['objects']:
             df = DecorFile(base_file(track, ref['file'])[0])
             if int(ref['id']) not in df.names:
                 raise ValueError(f"objet {ref['id']} introuvable (enregistre le decor d'abord)")
-            named.append({'file': ref['file'], 'name': df.names[int(ref['id'])]})
+            one = {'file': ref['file'], 'name': df.names[int(ref['id'])]}
+            # decor de fond (montagnes, ciel, sol lointain : plusieurs km) pris dans la selection, souvent par un clic
+            # sur la map qui touche ce grand maillage : ecarte au lieu de faire echouer toute la route
+            T = road_tris(track, {'objects': [one]})
+            ext = float((T[:, :, :2].max((0, 1)) - T[:, :, :2].min((0, 1))).max()) if len(T) else 0.0
+            if ext > route_gen.MAX_EXTENT:
+                dropped.append(f"{one['name']} ({ext / 39.37:.0f} m)")
+            else:
+                named.append(one)
+        if not named and dropped:
+            raise ValueError(f"la sélection ne contient que du décor géant ({', '.join(dropped)}) : coche ou "
+                             f"sélectionne l'objet de la ROUTE (nom contenant « Road »)")
         src = {'objects': named}
     progress.step('lecture de la route', 0.02)
     tris = road_tris(track, src)
-    if not len(tris):
-        raise ValueError('aucun triangle de route')
     bad = None
     try:
+        if not len(tris):                                 # surfaces sous un ancien trace loin de la map importee
+            raise ValueError('aucun triangle de route sous le tracé actuel')
         route_gen.check_extent(tris)                      # avant de lire le sol (long sur une map geante)
     except ValueError as e:
-        if 'geante' in str(e):
+        if not len(tris) and not _road_candidates(track, src):
             raise
-        bad = e                                           # objet minuscule selectionne : route importee essayee
+        # route minuscule (ligne de depart choisie) ou geante (surfaces du sol d'une map importee qui couvrent aussi
+        # le decor de fond) : route importee / memorisee essayee a la place (plus bas) ; geante sans autre choix :
+        # erreur tout de suite, avant de lire le sol (tres long sur une map geante)
+        if 'geante' in str(e) and not _road_candidates(track, src):
+            raise
+        bad = e
     progress.step('lecture du sol', 0.05)
     ground = ground_for(track)
-    kz = world_killz(track)
-    if float(np.median(tris[:, :, 2])) < kz:
+    # plancher enregistre = celui de « Chutes et reapparitions » d'un parcours precedent (refait apres celui-ci) :
+    # seul celui du jeu (ou plus bas) borne la route ; une map deplacee plus bas que l'ancien parcours restait refusee
+    kz_saved = world_killz(track)
+    kz = min(kz_saved, world_killz(track, original=True))
+    if len(tris) and float(np.median(tris[:, :, 2])) < kz:
         raise ValueError(f'la route est a z = {float(np.median(tris[:, :, 2])):.0f}, sous le plancher de chute du monde '
                          f'({kz:.0f}) : les karts y seraient « tombes ». Remonte la map (mode Decor), ou refais « Chutes '
                          f'et reapparitions » apres avoir cree le parcours.')
@@ -374,7 +542,7 @@ def route_layout(req):
         if bad:
             raise bad
         with progress.span(0.15, 0.9):
-            loop = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=max_gap)
+            loop = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=max_gap, min_z=kz)
     except ValueError as e:
         # selection qui n'est pas la route (ex. « START_LINE2 », le decor de la ligne de depart, ou les surfaces du
         # sol d'une map importee) : essai avec la route importee (materiau « road »)
@@ -385,7 +553,7 @@ def route_layout(req):
                 route_gen.check_extent(ctris)
                 with progress.span(0.15, 0.9, f"essai avec {cand['objects'][0]['name']}"):
                     found = (cand, ctris, route_gen.road_loop(ctris, start[:2], heading, ground=ground, start_z=z0,
-                                                                          max_gap=max_gap))
+                                                                          max_gap=max_gap, min_z=kz))
                 break
             except ValueError:
                 continue
@@ -395,14 +563,55 @@ def route_layout(req):
         what = ', '.join(o['name'] for o in src.get('objects', [])) or 'les surfaces du sol'
         src, tris, loop = found
         note = f"{what} ne forme pas un circuit ferme : route utilisee a la place : {src['objects'][0]['name']}"
+    # boucle qui ne couvre qu'une petite partie de la route (route coupee par des trous : petite boucle d'une place
+    # ou d'un rond-point, 333 m sur une route de 1,6 km) : second essai en franchissant des trous plus grands
+    ext = lambda P: float((np.asarray(P)[..., :2].reshape(-1, 2).max(0) - np.asarray(P)[..., :2].reshape(-1, 2).min(0)).max())
+    if ext(loop['points']) < 0.5 * ext(tris) and max_gap < 80 * 39.37:
+        try:
+            with progress.span(0.9, 0.97, 'boucle trop petite : essai en franchissant des trous jusqu\'à 80 m'):
+                wide = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=80 * 39.37, min_z=kz)
+            if wide['length'] > 1.5 * loop['length']:
+                note = (note + ' ; ' if note else '') + (f"la route choisie est coupée par des trous de plus de "
+                                                         f"{max_gap / 39.37:.0f} m : franchis jusqu'à 80 m ({loop['length'] / 39.37:.0f}"
+                                                         f" m → {wide['length'] / 39.37:.0f} m). Vérifie les sauts (Visite virtuelle)")
+                loop = wide
+        except ValueError:
+            pass
+    if ext(loop['points']) < 0.5 * ext(tris):
+        note = (note + ' ; ' if note else '') + (f"ATTENTION : le tour trouvé ({loop['length'] / 39.37:.0f} m) ne couvre qu'une "
+                                                 f"petite partie de la route choisie ({ext(tris) / 39.37:.0f} m d'un bout à l'autre) : "
+                                                 f"coche aussi les morceaux qui bouchent ses trous (pont, autre matériau) ou augmente "
+                                                 f"« Franchir les trous »")
+    if dropped:
+        note = (note + ' ; ' if note else '') + f"décor de fond écarté de la sélection : {', '.join(dropped)}"
+    low = min(p[2] for p in loop['points'])
+    if low - 1000 < kz_saved:
+        note = (note + ' ; ' if note else '') + (f'plancher de chute enregistré (z = {kz_saved:.0f}) trop près ou au-dessus '
+                                                 f'du parcours (plus bas : {low:.0f}) : refais « Chutes et réapparitions » '
+                                                 f'(ou « Vérifier » → corriger)')
     progress.step('sections et réapparitions', 0.9)
-    lay = route_gen.layout(loop, max(1, int(req.get('sections', 4))))
+    if loop.get('obstacles'):
+        note = (note + ' ; ' if note else '') + (f"tracé écarté d'objets solides posés sur la route "
+                                                 f"({loop['obstacles']} point(s) déplacé(s))")
+    obs = ai_gen.Obstacles(ground)
+    lay = route_gen.layout(loop, max(1, int(req.get('sections', 4))), avoid=obs.crosses)
     respawns = {}
     for k, names in enumerate(req.get('respawns') or []):
         if k < len(lay['section_paths']) and names:
             poses = route_gen.spread_on_path(lay['section_paths'][k], len(names))
             respawns.update(zip(names, _respawns_on_ground(poses, lay['section_paths'][k], ground)))
-    # a ecarter : zones de reapparition / succes du _Design, embranchements du RaceSystem (lies a l'ancien trace)
+    design_moves, race_moves = old_route_moves(track)
+    if src.get('objects'):                               # route memorisee : sert aussi aux splines IA
+        os.makedirs(OUT_DIR, exist_ok=True)
+        json.dump(src, open(road_source_path(track), 'w'), indent=1)
+    return {'loop': loop['points'], 'length': round(loop['length']), 'sections': lay['sections'], 'note': note,
+            'transitions': lay['transitions'], 'respawns': respawns, 'design_moves': design_moves,
+            'race_moves': race_moves, 'jumps': loop.get('jumps', 0)}
+
+
+def old_route_moves(track):
+    """Entites liees a l'ancien trace, a ecarter sous la carte : zones de reapparition / succes du _Design
+    ({nom: {pos, yaw}}), embranchements du RaceSystem ({nom: pos})."""
     dz = base_file(track, start_finish.design_file(track))[0]
     zd = IgzFile(dz)
     trig = [n for n, o in zd.root_objects() if zd.objects.get(o) in ('CEntity', 'CGameEntity', 'igEntity')]
@@ -410,12 +619,7 @@ def route_layout(req):
                     for n, p in start_finish.read_entity_poses(dz, trig).items()}
     rs = RaceSystem(base_file(track, race_file(track))[0], file_ns=f'{track}_RaceSystem').decode()
     race_moves = {f['name']: f['position'][:2] + [FAR_BELOW] for f in rs['fork_checkers']}
-    if src.get('objects'):                               # route memorisee : sert aussi aux splines IA
-        os.makedirs(OUT_DIR, exist_ok=True)
-        json.dump(src, open(road_source_path(track), 'w'), indent=1)
-    return {'loop': loop['points'], 'length': round(loop['length']), 'sections': lay['sections'], 'note': note,
-            'transitions': lay['transitions'], 'respawns': respawns, 'design_moves': design_moves,
-            'race_moves': race_moves, 'jumps': loop.get('jumps', 0)}
+    return design_moves, race_moves
 
 
 AIR = 150.0        # po : sol a plus de ~4 m sous le trace = au-dessus d'un trou (saut) : pas de reapparition la
@@ -481,11 +685,13 @@ def road_tris(track, src):
         rs0 = RaceSystem(base_file(track, race_file(track))[0], file_ns=f'{track}_RaceSystem').decode()
         cnt = collections.Counter()
         for pos in rs0['position_paths']:
-            for p in ai_gen.catmull_rom(pos['control_points'], 300):
+            for p in ai_gen.catmull_rom(pos['control_points'], 100):
                 q = ground.at(p[0], p[1], p[2])
                 if q:
                     cnt[q[1]] += 1
-        surfaces = [s for s, n in cnt.items() if n >= 5]
+        # meme un court passage compte (pont, bande de bois, booster en travers) : sinon la route est coupee la et
+        # la boucle trouvee est un petit tour (Mystery Caves : 685 m au lieu de 3 672 m)
+        surfaces = [s for s, n in cnt.items() if n >= 2]
     return ground.t[np.isin(ground.v, surfaces)]
 
 
@@ -526,7 +732,8 @@ def imported_road_objects(track):
         for o in DecorFile(open(p, 'rb').read()).objects():
             lk = links.get(art, {}).get(str(o['id']))
             info = reg.get(lk['custom']) if isinstance(lk, dict) and 'custom' in lk else None
-            if info and re.search(r'road', info.get('obj_material') or '', re.I) and lk.get('surface') != 'none':
+            if info and re.search(r'road', info.get('obj_material') or '', re.I) and lk.get('surface') != 'none' \
+                    and not info.get('invisible'):
                 out.append({'file': art, 'name': o['name']})
     return out
 
@@ -545,7 +752,9 @@ def route_objects(track):
             if not (isinstance(lk, dict) and 'custom' in lk):
                 continue
             info = reg.get(lk['custom']) or {}
-            road = bool(re.search(r'road', (info.get('obj_material') or '') + ' ' + (o['name'] or ''), re.I))
+            if info.get('invisible'):                       # mur invisible : jamais un morceau de route
+                continue
+            road =bool(re.search(r'road', (info.get('obj_material') or '') + ' ' + (o['name'] or ''), re.I))
             try:
                 T = object_world_array(track, o)
                 ext = (T.reshape(-1, 3).max(0) - T.reshape(-1, 3).min(0))[:2].max() / 39.37 if len(T) else 0.0
@@ -610,22 +819,259 @@ def _crate_height_at(track):
     return lambda x, y, z: (lambda q: q[0] if q else None)(g.at(x, y, z + 100, window=250.0))
 
 
+_crate_file_cache = {}
+
+
+def crate_file(track):
+    """Fichier des caisses : le _Power_Up (table des noms presente), sinon le _Design quand il porte les caisses
+    (Coco Park, Turbo Track, Blizzard Bluff : _Power_Up vide, un seul objet sans noms). None : aucun des deux."""
+    if track not in _crate_file_cache:
+        read = lambda p: pak_tool.read_latest(ARCHIVES, p, track_pak(track))[0]
+        found = None
+        try:
+            if IgzFile(read(powerup.powerup_file(track))).names_offset is not None:
+                found = powerup.powerup_file(track)
+        except KeyError:
+            pass
+        if found is None:
+            try:
+                if any(c['kind'] in powerup.KINDS for c in powerup.read_crates(read(start_finish.design_file(track)), True)):
+                    found = start_finish.design_file(track)
+            except KeyError:
+                pass
+        _crate_file_cache[track] = found
+    return _crate_file_cache[track]
+
+
+def crates_in_design(track):
+    """Caisses dans le _Design : seules les caisses y sont reecrites, depuis le fichier enregistre (grille,
+    reapparitions, arrivees de teleporteur et le reste du fichier gardes)."""
+    return crate_file(track) == start_finish.design_file(track)
+
+
+def read_track_crates(track):
+    """Caisses du fichier en cours (enregistre, sinon d'origine) ; [] si la piste n'en a pas."""
+    logical = crate_file(track)
+    if logical is None:
+        return []
+    return powerup.read_crates(base_file(track, logical)[0], crates_in_design(track))
+
+
 def crates_tilt_outdated(track, data):
     """Caisses enregistrees dont l'inclinaison ne suit pas (ou plus) la pente : une sauvegarde sans changement de
     caisse les corrige aussi."""
-    orig = pak_tool.read_latest(ARCHIVES, powerup.powerup_file(track), track_pak(track))[0]
-    return powerup.tilt_outdated(data, _crate_height_at(track), orig)
+    orig = pak_tool.read_latest(ARCHIVES, crate_file(track), track_pak(track))[0]
+    return powerup.tilt_outdated(data, _crate_height_at(track), orig, crates_only=crates_in_design(track))
+
+
+def crates_supported(track):
+    """Caisses modifiables : dans le _Power_Up, ou dans le _Design (Coco Park, Turbo Track, Blizzard Bluff)."""
+    return crate_file(track) is not None
 
 
 def write_crates_file(track, want):
-    """Fichier _Power_Up reconstruit depuis l'original (caisses, boosters, TNT / Nitro / fruits), caisses inclinees
-    comme la pente du sol. -> (IgzFile, rapport)."""
+    """Fichier des caisses reconstruit (caisses, boosters, TNT / Nitro / fruits), caisses inclinees comme la pente du
+    sol : _Power_Up depuis l'original ; _Design depuis le fichier enregistre, seules ses caisses changent.
+    -> (IgzFile, rapport)."""
+    if not crates_supported(track):
+        raise ValueError(f'{track} : fichier des caisses introuvable (ni _Power_Up ni _Design)')
     read = lambda p, pak: pak_tool.read_latest(ARCHIVES, p, pak)[0]
     donor = powerup.boost_donor(read) if any(c['kind'] == 'boost' for c in want) else None
     extras = {k: powerup.extra_donor(k, read) for k in {c['kind'] for c in want} if k in powerup.EXTRAS}
-    z, msg, _ = powerup.write_crates(read(powerup.powerup_file(track), track_pak(track)), want, donor, extras,
-                                     _crate_height_at(track))
+    logical = crate_file(track)
+    orig = read(logical, track_pak(track))
+    if crates_in_design(track):
+        keep = {(c['name'], tuple(c['pos'])) for c in powerup.read_crates(orig, True)}
+        z, msg, _ = powerup.write_crates(base_file(track, logical)[0], want, donor, extras, _crate_height_at(track),
+                                         crates_only=True, keep_tilt=keep)
+    else:
+        z, msg, _ = powerup.write_crates(orig, want, donor, extras, _crate_height_at(track))
     return z, msg
+
+
+# -- sections (transitions) ajoutees / retirees ---------------------------------------------------
+# Section = spline de position entre deux transitions. Ajout : une transition (copie d'une transition ordinaire du
+# jeu) coupe une section en deux, la seconde moitie est une nouvelle spline de position (copie de la premiere) ; IA de
+# la section inchangees (transition « de passage » : IA precedentes = suivantes, comme Coco Park
+# Spline_Transition_002). Retrait : les deux sections autour de la transition fusionnent (la page refait leurs IA).
+# Les points de reapparition et les embranchements des sections touchees vont a la plus proche.
+def transition_template(ed, wanted):
+    """Transition a copier : `wanted` si ordinaire (pas teleporteur), sinon une autre transition ordinaire."""
+    ts = ed.transitions()
+    ents = {n: ed.by_name[n] for n in ts}
+    tps = set(teleport.read_teleporters(ed.igz, ents))
+    if wanted in ts and wanted not in tps:
+        return wanted
+    plain = [n for n in ts if n not in tps]
+    if not plain and wanted not in ts:
+        raise ValueError('aucune transition a copier')
+    return (plain or [wanted])[0]
+
+
+def _section_points(ed, pts_by_name, name):
+    return np.asarray(pts_by_name.get(name) or ed.points(ed.by_name[name]), np.float64)
+
+
+def _dist_to_path(P, p):
+    """Distance (vue de dessus) d'un point a une polyligne, et rang du segment le plus proche."""
+    if len(P) < 2:
+        return float(np.linalg.norm(P[0, :2] - p[:2])) if len(P) else 1e18, 0
+    a, b = P[:-1, :2], P[1:, :2]
+    ab = b - a
+    t = np.clip(np.einsum('ij,ij->i', p[:2] - a, ab) / np.maximum(np.einsum('ij,ij->i', ab, ab), 1e-9), 0, 1)
+    d = np.linalg.norm(a + ab * t[:, None] - p[:2], axis=1)
+    k = int(np.argmin(d))
+    return float(d[k]), k + float(t[k])
+
+
+def _section_links_before(ed, req):
+    """Sections touchees par un ajout / retrait et leurs points de reapparition (lus avant les suppressions)."""
+    new = {ns['name']: ns['template'] for ns in req.get('new_position_splines') or []}
+    merges = req.get('section_merges') or {}
+    affected = set(new) | set(new.values()) | set(merges) | set(merges.values())
+    if not affected:
+        return None
+    off = _field(ed.igz, 'CRaceTrackSplineComponentData', '_respawnPoints')
+    respawns, owner = [], {}
+    for n in sorted(affected - set(new)):
+        if n in ed.by_name:
+            comp = ed.component(ed.by_name[n], 'CRaceTrackSplineComponentData')
+            for h in ed.igz.handle_list(ed.igz.deref(comp + off)):
+                if h and h not in respawns:
+                    respawns.append(h)
+                    owner[h] = n
+    return {'affected': affected, 'respawns': respawns, 'owner': owner, 'merges': merges}
+
+
+def _section_links_after(ed, track, pts_by_name, links, design_poses):
+    alive = [n for n in sorted(links['affected']) if n in ed.by_name]
+    if not alive:
+        return []
+    paths = {n: _section_points(ed, pts_by_name, n) for n in alive}
+    nearest = lambda p: min(((n,) + _dist_to_path(paths[n], np.asarray(p, np.float64)) for n in alive), key=lambda x: x[1])
+    out = []
+    # points de reapparition : a la section la plus proche, dans l'ordre du trace
+    if links['respawns']:
+        poses = start_finish.read_entity_poses(base_file(track, start_finish.design_file(track))[0],
+                                               [h[0] for h in links['respawns']])
+        poses.update({n: p for n, p in design_poses.items() if n in poses})   # replaces dans la meme sauvegarde
+        per = {n: [] for n in alive}
+        for k, h in enumerate(links['respawns']):
+            if h[0] in poses:
+                n, _, s = nearest(poses[h[0]]['pos'])
+            else:
+                # point hors du _Design (Sewer Speedway : RespawnPoint du _RaceSystem) : garde sa section, ou celle
+                # dans laquelle elle a ete fusionnee
+                n, seen = links['owner'].get(h), set()
+                while n not in per and n in links['merges'] and n not in seen:
+                    seen.add(n)
+                    n = links['merges'][n]
+                n, s = (n, 1e9 + k) if n in per else (alive[0], 1e9 + k)
+            per[n].append((s, h))
+        off = _field(ed.igz, 'CRaceTrackSplineComponentData', '_respawnPoints')
+        for n in alive:
+            comp = ed.component(ed.by_name[n], 'CRaceTrackSplineComponentData')
+            lst = ed.igz.deref(comp + off)
+            if lst is not None:
+                ed.igz.set_handle_list(lst, [h for _, h in sorted(per[n], key=lambda x: x[0])])
+        out.append('points de réapparition répartis : ' + ', '.join(f'{n} {len(per[n])}' for n in alive))
+    # embranchements poses sur une section touchee : rattaches a la plus proche
+    moved = 0
+    for fname, comp in ed.forks().items():
+        off = _field(ed.igz, 'CRaceTrackForkCheckerComponentData', '_positionPath')
+        h = ed.igz.named_handle(ed.igz.u32(comp + off))
+        if not h or h[0] not in links['affected']:
+            continue
+        n = nearest(ed.igz.vec3(ed.by_name[fname] + 0x20))[0]
+        if n != h[0]:
+            struct.pack_into('<Q', *ed.igz._loc(comp + off), 0x80000000 | ed.igz.ext_index(n, h[1]))
+            ed.igz._mark('RHND', comp + off)
+            moved += 1
+    if moved:
+        out.append(f'{moved} embranchement(s) rattaché(s) à leur nouvelle section')
+    return out
+
+
+def next_entity_name(template, taken):
+    """Nom libre derive du modele : dernier nombre incremente (meme largeur), sinon suffixe _2, _3..."""
+    m = re.match(r'^(.*?)(\d+)(\D*)$', template)
+    if m:
+        pre, digits, post = m.groups()
+        k = int(digits)
+        while True:
+            k += 1
+            name = f'{pre}{k:0{len(digits)}d}{post}'
+            if name not in taken:
+                return name
+    k = 1
+    while f'{template}_{k + 1}' in taken:
+        k += 1
+    return f'{template}_{k + 1}'
+
+
+def plan_sections(tr, n):
+    """Tour principal de tr (load_track) ramene a n sections, sur place : transitions ajoutees (section la plus
+    longue coupee en deux) ou retirees (fusion, en partant de la fin du tour). -> champs de requete save_track
+    {new_position_splines, new_transitions, deleted_transitions, deleted, section_merges}, ou None si impossible
+    (transitions a plusieurs splines de position). Les points des sections et les poses des transitions sont a
+    recalculer ensuite (route_gen.layout)."""
+    pos = {s['name']: s for s in tr['splines'] if s['kind'] == 'position_paths'}
+    ts = {t['name']: t for t in tr['transitions']}
+    taken = {s['name'] for s in tr['splines']} | set(ts)
+    out = {'new_position_splines': [], 'new_transitions': [], 'deleted_transitions': [], 'deleted': [], 'section_merges': {}}
+    chain = race_chain(tr)
+    if not chain:
+        return None
+    single = lambda t: len(t.get('previous_position') or []) == 1 and len(t.get('next_position') or []) == 1
+    while len(chain) > n:
+        k = next((k for k in range(len(chain) - 1, 0, -1) if single(chain[k][0])
+                  and chain[k][0]['previous_position'][0] != chain[k][0]['next_position'][0]), None)
+        if k is None:
+            return None
+        t, nxt = chain[k]
+        prev = chain[k - 1][1]
+        prev['control_points'] = prev['control_points'] + nxt['control_points']
+        for x in ts.values():
+            for key in ('previous_position', 'next_position'):
+                if nxt['name'] in (x.get(key) or []) and x is not t:
+                    x[key] = [prev['name'] if v == nxt['name'] else v for v in x[key]]
+        out['section_merges'][nxt['name']] = prev['name']
+        if nxt['name'] in [d['name'] for d in out['new_position_splines']]:
+            out['new_position_splines'] = [d for d in out['new_position_splines'] if d['name'] != nxt['name']]
+        else:
+            out['deleted'].append(nxt['name'])
+        if t['name'] in [d['name'] for d in out['new_transitions']]:
+            out['new_transitions'] = [d for d in out['new_transitions'] if d['name'] != t['name']]
+        else:
+            out['deleted_transitions'].append(t['name'])
+        tr['splines'] = [s for s in tr['splines'] if s['name'] != nxt['name']]
+        tr['transitions'] = [x for x in tr['transitions'] if x is not t]
+        del ts[t['name']], pos[nxt['name']]
+        chain = race_chain(tr)
+    while len(chain) < n:
+        k = max(range(len(chain)), key=lambda i: len(chain[i][1]['control_points']))
+        t0, s = chain[k]
+        pts = s['control_points']
+        m = max(1, len(pts) // 2)
+        s2 = dict(s, name=next_entity_name(s['name'], taken), control_points=pts[m - 1:] if len(pts) > 2 else pts)
+        taken.add(s2['name'])
+        s['control_points'] = pts[:m + 1] if len(pts) > 2 else pts
+        tmpl = next((x['name'] for x in tr['transitions'] if not x.get('increment_lap') and not x.get('teleporter')), t0['name'])
+        nt = dict(ts[tmpl], name=next_entity_name(tmpl, taken), increment_lap=False, teleporter=False,
+                  previous_position=[s['name']], next_position=[s2['name']],
+                  previous_ai=list(t0.get('next_ai') or []), next_ai=list(t0.get('next_ai') or []))
+        taken.add(nt['name'])
+        for x in tr['transitions']:
+            if s['name'] in (x.get('previous_position') or []):
+                x['previous_position'] = [s2['name'] if v == s['name'] else v for v in x['previous_position']]
+        tr['splines'].append(s2)
+        tr['transitions'].append(nt)
+        ts[nt['name']], pos[s2['name']] = nt, s2
+        out['new_position_splines'].append({'name': s2['name'], 'template': s['name']})
+        out['new_transitions'].append({'name': nt['name'], 'template': tmpl})
+        out['section_merges'][s2['name']] = s['name']
+        chain = race_chain(tr)
+    return out
 
 
 def save_track(req):
@@ -649,11 +1095,29 @@ def save_track(req):
         ttr.add_spline_stats(name, template=template, segments=len(pts) - 1)
         report.append(f'{name} : creee (modele {template}, {len(pts)} points)')
 
+    # sections ajoutees / retirees : splines de position et transitions copiees d'entites du jeu (avant les listes)
+    deleted_t = set(req.get('deleted_transitions') or [])
+    for ns in req.get('new_position_splines') or []:
+        if ns['name'] not in deleted:
+            ed.add_ai_spline(ns['name'], template=ns['template'], points=pts_by_name[ns['name']], wire=False)
+            report.append(f"{ns['name']} : section creee (modele {ns['template']})")
+    for nt in req.get('new_transitions') or []:
+        if nt['name'] in deleted_t:
+            continue
+        ent = ed.add_entity_copy(nt['name'], transition_template(ed, nt['template']))
+        if teleport.read_teleporters(ed.igz, {nt['name']: ent}):          # copie d'un teleporteur : ordinaire
+            teleport.clear_teleporter(ed.igz, ent)
+            teleport.set_trigger_events(ed.igz, ent, False)
+        report.append(f"{nt['name']} : transition creee")
+    section_links = _section_links_before(ed, req)
+
     # splines remplacees par des splines generees : les remplacantes prennent leur place dans les embranchements
     for old, news in req.get('replaced', {}).items():
         news = [n for n in news if n in ed.by_name]
         for fcomp in ed.forks().values():
             lst = ed.igz.deref(fcomp + 0x18)                       # _aiPaths
+            if lst is None:                                        # embranchement sans liste (Sewer Speedway)
+                continue
             cur = ed.igz.handle_list(lst)
             if any(h and h[0] == old for h in cur):
                 ns = cur[0][1] if cur and cur[0] else ed.ns
@@ -695,17 +1159,38 @@ def save_track(req):
     # teleporteurs (avant le _Design ci-dessous : il relit la version enregistree, arrivees comprises)
     if req.get('teleporters') is not None:
         report += apply_teleporters(track, ed, req['teleporters'], rs_data)
+    if req.get('flyby') is not None:                     # survol d'introduction : plans modifies (ou {} : origine)
+        report += apply_flyby(track, req['flyby'])
     # teleporteurs deja enregistres sans les evenements de zone (version precedente de l'editeur) : repares
     tp_ents = {n: o for n, o in ed.by_name.items() if ed.igz.objects.get(o) in DESIGN_ENTITY_TYPES}
     for tname in teleport.read_teleporters(ed.igz, tp_ents):
         if teleport.set_trigger_events(ed.igz, tp_ents[tname], True):
             report.append(f'{tname} : zone du téléporteur réparée (entrée des karts transmise au script)')
 
+    for name in sorted(deleted_t):
+        if name in ed.by_name:
+            ed.remove_entity(name)
+            report.append(f'{name} : transition supprimee')
+    if section_links:
+        report += _section_links_after(ed, track, pts_by_name, section_links, req.get('design_poses') or {})
+
     # entites du RaceSystem deplacees (embranchements ecartes par « Creer le parcours »)
     for name, pos in (req.get('race_entity_positions') or {}).items():
         if name in ed.by_name:
             struct.pack_into('<3f', *ed.igz._loc(ed.by_name[name] + 0x20), *[float(c) for c in pos])
             report.append(f'{name} deplace')
+
+    # reapparitions rangees dans le _RaceSystem (Sewer Speedway, Slide Coliseum, Turbo Track...) : ecrites ici, le
+    # reste va au _Design ci-dessous (« Creer le parcours » les envoie toutes dans design_poses)
+    design_poses = dict(req.get('design_poses') or {})
+    if design_poses:
+        dnames = {n for n, _ in IgzFile(base_file(track, start_finish.design_file(track))[0]).root_objects()}
+        in_rs = {n: p for n, p in design_poses.items() if n not in dnames and n in ed.by_name}
+        for name, p in in_rs.items():
+            start_finish.set_entity_pose(ed.igz, ed.by_name[name], p)
+            del design_poses[name]
+        if in_rs:
+            report.append(f'_RaceSystem : {len(in_rs)} entite(s) placee(s) (reapparitions)')
 
     # grille dans le _RaceSystem (8 pistes) : ecrite dans le fichier en cours d'edition
     in_race = grid_file(track) == race_file(track)
@@ -717,7 +1202,7 @@ def save_track(req):
             report.append(f'grille de depart : {len(want)} places (_RaceSystem)')
     # grille de depart et autres entites du _Design (reapparitions, zones), repere PlayerStartAll (fichier principal)
     logical = start_finish.design_file(track)
-    if (req.get('start_grid') and not in_race) or req.get('design_poses'):
+    if (req.get('start_grid') and not in_race) or design_poses:
         data = base_file(track, logical)[0]
         out = data
         if req.get('start_grid') and not in_race:
@@ -726,9 +1211,9 @@ def save_track(req):
             if any(abs(a - b) > 1e-3 for n, s in want.items() for a, b in zip(s['pos'] + [s['yaw']], cur[n]['pos'] + [cur[n]['yaw']])):
                 out = start_finish.write_grid(out, want)
                 report.append(f'grille de depart : {len(want)} places')
-        if req.get('design_poses'):
-            out = start_finish.write_entity_poses(out, req['design_poses'])
-            report.append(f"_Design : {len(req['design_poses'])} entite(s) placee(s) (reapparitions, zones)")
+        if design_poses:
+            out = start_finish.write_entity_poses(out, design_poses)
+            report.append(f"_Design : {len(design_poses)} entite(s) placee(s) (reapparitions, zones)")
         if out is not data:
             open(saved_path(logical), 'wb').write(out)
     if req.get('player_start'):
@@ -741,9 +1226,9 @@ def save_track(req):
 
     # caisses d'objets : fichier reconstruit depuis l'original (positions, ajouts, suppressions)
     progress.step('caisses et boosters', 0.4)
-    if req.get('crates') is not None:
-        logical = powerup.powerup_file(track)
-        cur = powerup.read_crates(base_file(track, logical)[0])
+    if req.get('crates') is not None and crates_supported(track):
+        logical = crate_file(track)
+        cur = read_track_crates(track)
         want = []
         for c in req['crates']:
             w = {'name': c.get('name'), 'kind': c['kind'], 'pos': [round(float(v), 2) for v in c['pos']]}
@@ -867,6 +1352,9 @@ def load_decor(track):
                 o['custom_material'] = labels.get(info.get('material'), 'roche du gabarit')
                 o['surface'] = lk.get('surface', 'auto') if isinstance(lk, dict) else 'auto'
                 o['alpha'] = alpha.get(info.get('material'))
+                if info.get('invisible'):                # mur invisible : 'auto' | 'manual' | 'obj'
+                    o['invisible'] = info.get('wall', 'obj')
+                    o['alpha'] = None
             elif isinstance(lk, dict) and lk.get('library'):  # objet de la bibliotheque : piste d'origine, surface
                 o['library'] = library.nice(lk['library'])
                 o['surface'] = lk.get('surface', 'auto')
@@ -884,7 +1372,7 @@ def model_binary(track, file_name):
     logical = model_logical_path(file_name)
     if logical not in _model_cache:
         try:
-            pos, idx = model_mesh(model_bytes(track, logical))
+            pos, idx = model_or_wall_mesh(track, logical)
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             pos, idx = [], []
@@ -1457,6 +1945,11 @@ def model_preview_binary(track, file_name):
     """u32 nb sommets, nb indices, nb groupes ; float32 positions[3n], uv[2n] ; uint32 indices[m] ;
     groupes (u32 debut, nb, 1 + indice de texture ou 0) ; u32 longueur + JSON [{ns, decal}] des textures."""
     logical = model_logical_path(file_name)
+    if logical not in _preview_cache and wall_mesh(track, logical):           # mur invisible : sa collision, sans texture
+        pos, tris = wall_mesh(track, logical)
+        P, I = np.asarray(pos, '<f4').reshape(-1, 3), np.asarray(tris, '<u4').reshape(-1)
+        _preview_cache[logical] = (struct.pack('<III', len(P), len(I), 0) + P.tobytes() + np.zeros((len(P), 2), '<f4').tobytes()
+                                   + I.tobytes() + struct.pack('<I', 2) + b'[]')
     if logical not in _preview_cache:
         try:
             pv = preview.model_preview(model_bytes(track, logical), lambda lg: preview_read(track, lg))
@@ -1549,8 +2042,10 @@ def boosts_from_decor(track):
         return None
     vis = sorted((o for o in DecorFile(open(p, 'rb').read()).objects()
                   if (o['model'] or '').lower().endswith('\\boostpad.igb')), key=lambda o: o['name'])
-    logical = powerup.powerup_file(track)
-    cur = powerup.read_crates(base_file(track, logical)[0])
+    logical = crate_file(track)
+    if logical is None:
+        return None
+    cur = read_track_crates(track)
     old = [c for c in cur if c['kind'] == 'boost']
     if not vis and not old:
         return None
@@ -1602,7 +2097,9 @@ def _tracked_files(track):
     names += [lighting_file(track)] if lighting_file(track) not in names else []
     names += minimap_logicals(track)
     names += list(menu_logicals(track).values())               # nom et images de menu (saved_path : nom de base)
+    names += [s['key'] for s in flyby_shots(track)]            # cameras du survol d'introduction
     out = [(os.path.basename(n), saved_path(n)) for n in names]
+    out += [(os.path.basename(flyby_path(track)), flyby_path(track))]
     out += [(os.path.basename(links_path(track)), links_path(track)),
             (f'{track}_custom_models.json', os.path.join(OUT_DIR, f'{track}_custom_models.json')),
             (f'{track}_custom_textures.json', custom_textures_path(track)),
@@ -1611,7 +2108,9 @@ def _tracked_files(track):
             (f'{track}_light.json', light_path(track)),
             (f'{track}_menu.json', menu_settings_path(track)),
             (f'{track}_ambiance.json', ambiance_path(track))]
-    out += [('models/' + os.path.basename(k), custom_model_path(k)) for k in custom_models(track)]
+    reg = custom_models(track)
+    out += [('models/' + os.path.basename(k), custom_model_path(k)) for k in reg]
+    out += [('models/' + os.path.basename(wall_mesh_path(k)), wall_mesh_path(k)) for k, v in reg.items() if v.get('invisible')]
     return out
 
 
@@ -1693,7 +2192,7 @@ CUSTOM_DIR = 'Levels/Octane/Custom'
 
 
 def custom_model_path(logical):
-    return os.path.join(OUT_DIR, 'models', os.path.basename(logical))
+    return ci_path(os.path.join(OUT_DIR, 'models'), os.path.basename(logical))
 
 
 def custom_models(track):
@@ -1705,6 +2204,314 @@ def custom_models(track):
 def save_custom_models(track, reg):
     os.makedirs(OUT_DIR, exist_ok=True)
     json.dump(reg, open(os.path.join(OUT_DIR, f'{track}_custom_models.json'), 'w'), indent=1)
+
+
+# -- murs invisibles : collision seule ---------------------------------------------------------
+# Un mur invisible est un modele importe comme les autres (objet de decor deplacable, copiable, supprimable), dont le
+# .igz installe n'est qu'un triangle d'un millimetre (rien a l'ecran) ; sa forme est dans <modele>.wall.json et
+# c'est elle qui donne la collision (object_world_array) et l'affichage dans l'editeur. Registre : 'invisible': True.
+WALL_SURFACE = 4               # « Sol (défaut) » : surface des murs de Crash Cove, Coco Park, Turbo Track
+
+
+def wall_mesh_path(logical):
+    return custom_model_path(logical)[:-4] + '.wall.json'
+
+
+def wall_mesh(track, logical):
+    """(sommets [[x, y, z]], triangles [[a, b, c]]) en repere local d'un modele mur invisible, sinon None."""
+    if not (custom_models(track).get(logical) or {}).get('invisible'):
+        return None
+    d = json.load(open(wall_mesh_path(logical)))
+    return d['pos'], d['tris']
+
+
+def model_or_wall_mesh(track, logical):
+    """(positions a plat, indices) comme decor.model_mesh : celles du mur si le modele est un mur invisible."""
+    w = wall_mesh(track, logical)
+    if w is None:
+        return model_mesh(model_bytes(track, logical))
+    return [c for p in w[0] for c in p], [i for t in w[1] for i in t]
+
+
+def _forget_model(logical):
+    for cache in (_visual_cache, _model_cache, _preview_cache):
+        cache.pop(logical, None)
+
+
+def write_wall_model(track, reg, name, pos, tris, **info):
+    """Modele mur invisible `name` (sommets locaux, triangles) : .igz point + .wall.json + registre (reg, a
+    enregistrer par l'appelant). -> chemin logique."""
+    logical = f'models/{CUSTOM_DIR}/{name}.igz'
+    os.makedirs(os.path.join(OUT_DIR, 'models'), exist_ok=True)
+    dot = [(0.0, 0.0, -20.0), (0.04, 0.0, -20.0), (0.0, 0.04, -20.0)]   # 1 mm, sous le sol : jamais visible
+    p, n, u, t = complete_mesh(dot, None, None, [(0, 1, 2)])
+    open(custom_model_path(logical), 'wb').write(
+        build_model(read_game_file(track, TEMPLATE), p, n, u, t, [(0, 1, 2)], f'{CUSTOM_DIR}/{name}', None))
+    json.dump({'pos': [[round(float(c), 3) for c in q] for q in pos], 'tris': [[int(i) for i in x] for x in tris]},
+              open(wall_mesh_path(logical), 'w'))
+    _forget_model(logical)
+    reg[logical] = {'name': name, 'vertices': len(pos), 'triangles': len(tris), 'material': 'gabarit',
+                    'invisible': True, **info}
+    return logical
+
+
+def free_model_name(track, want, taken=None):
+    """Nom de modele importe libre (registre, fichiers deja sur le disque)."""
+    taken = taken if taken is not None else {os.path.basename(k).lower() for k in custom_models(track)}
+    name, n = want, 1
+    while f'{name}.igz'.lower() in taken or os.path.exists(custom_model_path(f'{name}.igz')):
+        n += 1
+        name = f'{want}_{n}'
+    taken.add(f'{name}.igz'.lower())
+    return name
+
+
+def place_custom_objects(track, art, items):
+    """Objets de decor des modeles importes : items = [(nom, chemin logique, position monde, euler, echelle,
+    surface)] copies de l'objet modele du fichier ; liens memorises. -> ids des objets (fichier reecrit)."""
+    df = DecorFile(base_file(track, art)[0])
+    tmpl = template_object(track, art)
+    if tmpl is None:
+        raise ValueError(f'{os.path.basename(art)} : aucun objet modèle à copier dans ce fichier')
+    used, specs = set(df.names.values()), []
+    for name, _, pos, euler, scale, _ in items:
+        obj_name, k = name, 1
+        while obj_name in used:
+            k += 1
+            obj_name = f'{name}_{k}'
+        used.add(obj_name)
+        specs.append((tmpl, obj_name, [float(v) for v in pos], [float(v) for v in euler], [float(v) for v in scale]))
+    created = df.duplicate_many(specs)
+    links = load_links(track)
+    for new_id, (_, logical, _, _, _, surface) in zip(created, items):
+        df.set_model(new_id, 'models:\\' + CUSTOM_DIR.replace('/', '\\') + f'\\{os.path.basename(logical)[:-4]}.igb')
+        links.setdefault(art, {})[str(new_id)] = {'custom': logical, 'surface': surface}
+    save_links(track, links)
+    idmap = write_art(track, art, df)
+    return [idmap[i] for i in created]
+
+
+def _wall_objects(track, kind=None):
+    """[(fichier _Art, objet, lien)] des murs invisibles du decor enregistre (d'un type : 'auto', 'manual', 'obj')."""
+    reg = custom_models(track)
+    return [(art, o, lk) for art, o, lk in _imported_objects(track)
+            if (reg.get(lk['custom']) or {}).get('invisible')
+            and (kind is None or (reg.get(lk['custom']) or {}).get('wall', 'obj') == kind)]
+
+
+def remove_wall_objects(track, kind):
+    """Retire les murs invisibles d'un type (objets + modeles). -> nombre d'objets retires."""
+    found = _wall_objects(track, kind)
+    by_art = defaultdict(list)
+    for art, o, _ in found:
+        by_art[art].append(o['id'])
+    for art, ids in by_art.items():
+        df = DecorFile(base_file(track, art)[0])
+        df.delete_many(ids)
+        write_art(track, art, df)
+    reg = custom_models(track)
+    used = {lk['custom'] for _, _, lk in _imported_objects(track)}
+    for logical in [k for k, v in reg.items() if v.get('invisible') and v.get('wall', 'obj') == kind and k not in used]:
+        for p in (custom_model_path(logical), wall_mesh_path(logical)):
+            if os.path.exists(p):
+                os.remove(p)
+        del reg[logical]
+        _forget_model(logical)
+    save_custom_models(track, reg)
+    return len(found)
+
+
+def walls_auto(req):
+    """Murs invisibles le long des bords de la route : req = {track, margin (m), height (m), piece (m),
+    sides 'both' | 'left' | 'right', offroad (bool)}. Les murs automatiques precedents sont remplaces ; les murs
+    ajoutes a la main ou importes restent (et comptent comme des murs existants)."""
+    track = req['track']
+    margin, height = float(req.get('margin', 3)) * 39.37, float(req.get('height', 10)) * 39.37
+    piece = max(10.0, float(req.get('piece', 50))) * 39.37
+    report = []
+    progress.step('anciens murs automatiques', 0.0)
+    n_old = remove_wall_objects(track, 'auto')
+    # sol mesure = collision a jour du decor enregistre, sans les anciens murs automatiques (rien a refaire si elle
+    # l'est deja) ; une collision enregistree en retard sur le decor faisait voir du vide partout
+    with progress.span(0.02, 0.3):
+        sync_collision(track)
+    if n_old:
+        report.append(f'{n_old} ancien(s) mur(s) automatique(s) remplacé(s)')
+    progress.step('bords de la route', 0.3)
+    loop, _ = race_path_points(track)
+    if len(loop) < 4:
+        raise ValueError('pas de parcours : crée d\'abord le parcours (mode Course)')
+    pieces = walls.generate(ground_for(track), loop, road_ground(track), margin=margin, piece=piece,
+                            sides=req.get('sides', 'both'), offroad=bool(req.get('offroad')))
+    if not pieces:
+        report.append('aucun bord à fermer (pas de vide au bord de la route'
+                      + ('' if req.get('offroad') else ' ; « hors route » non coché') + ')')
+        return {'report': report, 'ids': [], 'file': main_art(track)}
+    progress.step('murs', 0.55)
+    reg = custom_models(track)
+    taken = {os.path.basename(k).lower() for k in reg}
+    batch = f"murs invisibles automatiques — {time.strftime('%d/%m %H:%M')}"
+    items = []
+    for k, pc in enumerate(pieces):
+        P = np.asarray(pc['points'], np.float64)
+        pivot = [float((P[:, 0].min() + P[:, 0].max()) / 2), float((P[:, 1].min() + P[:, 1].max()) / 2), float(P[:, 2].min())]
+        pos, tris = walls.ribbon((P - pivot).tolist(), height)
+        name = free_model_name(track, f'MurInvisible_{k + 1:03d}', taken)
+        logical = write_wall_model(track, reg, name, pos, tris, wall='auto', **{'import': batch})
+        items.append((name, logical, pivot, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], WALL_SURFACE))
+    save_custom_models(track, reg)
+    art = main_art(track)
+    ids = place_custom_objects(track, art, items)
+    length = sum(float(np.linalg.norm(np.diff(np.asarray(pc['points'])[:, :2], axis=0), axis=1).sum()) for pc in pieces)
+    n_void = sum(pc['reason'] == 'void' for pc in pieces)
+    report.append(f'{len(pieces)} mur(s) invisible(s) : {length / 39.37:.0f} m, hauteur {height / 39.37:.0f} m, à '
+                  f'{margin / 39.37:.1f} m du bord ({n_void} au bord d\'un vide, {len(pieces) - n_void} hors route)')
+    with progress.span(0.6, 1.0):
+        report.append(sync_collision(track))
+    return {'report': report, 'ids': ids, 'file': art}
+
+
+JOIN_DEFAULT = 120                                      # m : bouts de murs de zone relies (poteaux de barriere 40-110 m)
+
+
+def walls_zone(req):
+    """Murs invisibles le long des bords des objets du decor choisis : req = {track, objects: [{file, id}],
+    margin (m), height (m), piece (m), offroad (bool), join (m : bouts relies, 0 = non)}. Jamais dans la bande de la route (si le parcours existe).
+    Les murs d'une precedente generation sur exactement les memes objets sont remplaces."""
+    track = req['track']
+    margin, height = float(req.get('margin', 1)) * 39.37, float(req.get('height', 10)) * 39.37
+    piece = max(10.0, float(req.get('piece', 50))) * 39.37
+    reg = custom_models(track)
+    chosen, names = [], []
+    for ref in req.get('objects') or []:
+        o = next((x for x in DecorFile(base_file(track, ref['file'])[0]).objects() if x['id'] == int(ref['id'])), None)
+        if o is None:
+            raise ValueError(f"objet introuvable (id {ref['id']}) : enregistre le décor puis recommence")
+        if (reg.get(model_logical_path(o['model'])) or {}).get('invisible'):
+            continue                                    # les murs invisibles choisis avec le reste sont ignores
+        chosen.append(o)
+        names.append(f"{ref['file']}|{o['name']}")
+    if not chosen:
+        raise ValueError('choisis d\'abord un ou plusieurs objets du décor (pas des murs invisibles)')
+    key = '\n'.join(sorted(names))
+    report = []
+    progress.step('anciens murs de cette zone', 0.0)
+    old = [(art, o) for art, o, lk in _wall_objects(track, 'zone') if (reg.get(lk['custom']) or {}).get('zone') == key]
+    if old:
+        by_art = defaultdict(list)
+        for art, o in old:
+            by_art[art].append(o['id'])
+        for art, ids in by_art.items():
+            df = DecorFile(base_file(track, art)[0])
+            df.delete_many(ids)
+            write_art(track, art, df)
+        report.append(f'{len(old)} mur(s) de la génération précédente sur ces objets remplacé(s)')
+    with progress.span(0.02, 0.3):
+        sync_collision(track)                           # sol a jour, sans les murs remplaces
+    progress.step('bords des objets choisis', 0.3)
+    ground = ground_for(track)
+    loop, _ = race_path_points(track)
+    corridor = walls.Corridor(ground, loop, road_ground(track)) if len(loop) >= 4 else None
+    tris = np.concatenate([object_world_array(track, o) for o in chosen])
+    pieces = walls.zone(ground, tris, corridor, margin=margin, piece=piece, offroad=bool(req.get('offroad')), height=height,
+                        join=max(0.0, float(req.get('join', JOIN_DEFAULT))) * 39.37)
+    if corridor is None:
+        report.append('pas encore de parcours : la route n\'a pas pu être évitée')
+    if not pieces:
+        report.append('aucun bord à fermer sur ces objets (pas de vide au bord'
+                      + ('' if req.get('offroad') else ' ; « vers le sol non choisi » non coché') + ', ou bords sur la route)')
+        return {'report': report, 'ids': [], 'file': main_art(track)}
+    progress.step('murs', 0.6)
+    taken = {os.path.basename(k).lower() for k in reg}
+    batch = f"murs invisibles autour de {chosen[0]['name']}{f' (+{len(chosen) - 1})' if len(chosen) > 1 else ''} — {time.strftime('%d/%m %H:%M')}"
+    items = []
+    for k, pc in enumerate(pieces):
+        P = np.asarray(pc['points'], np.float64)
+        pivot = [float((P[:, 0].min() + P[:, 0].max()) / 2), float((P[:, 1].min() + P[:, 1].max()) / 2), float(P[:, 2].min())]
+        pos, tris_ = walls.ribbon((P - pivot).tolist(), height)
+        name = free_model_name(track, f'MurZone_{k + 1:03d}', taken)
+        logical = write_wall_model(track, reg, name, pos, tris_, wall='zone', zone=key, **{'import': batch})
+        items.append((name, logical, pivot, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], WALL_SURFACE))
+    save_custom_models(track, reg)
+    art = main_art(track)
+    ids = place_custom_objects(track, art, items)
+    length = sum(float(np.linalg.norm(np.diff(np.asarray(pc['points'])[:, :2], axis=0), axis=1).sum()) for pc in pieces)
+    n_void = sum(pc['reason'] == 'void' for pc in pieces)
+    report.append(f'{len(pieces)} mur(s) invisible(s) autour de {len(chosen)} objet(s) : {length / 39.37:.0f} m, hauteur '
+                  f'{height / 39.37:.0f} m ({n_void} au bord d\'un vide, {len(pieces) - n_void} vers un autre sol)')
+    with progress.span(0.65, 1.0):
+        report.append(sync_collision(track))
+    return {'report': report, 'ids': ids, 'file': art}
+
+
+def wall_add(req):
+    """Un mur invisible droit : req = {track, pos [x, y, z sol], yaw (rad), length (m), height (m)}."""
+    track = req['track']
+    length, height = float(req.get('length', 20)) * 39.37, float(req.get('height', 10)) * 39.37
+    pos = [float(v) for v in req.get('pos') or [0, 0, 0]]
+    if pos[2] < KILL_Z + 1000:
+        pos[2] = 0.0
+    reg = custom_models(track)
+    name = free_model_name(track, 'MurInvisible_main')
+    p, t = walls.straight(length, height)
+    logical = write_wall_model(track, reg, name, p, t, wall='manual', **{'import': f"mur invisible — {time.strftime('%d/%m %H:%M')}"})
+    save_custom_models(track, reg)
+    art = main_art(track)
+    ids = place_custom_objects(track, art, [(name, logical, pos, [0.0, 0.0, float(req.get('yaw') or 0.0)],
+                                             [1.0, 1.0, 1.0], WALL_SURFACE)])
+    return {'ids': ids, 'file': art, 'report': [f'{name} : {length / 39.37:.0f} × {height / 39.37:.0f} m', sync_collision(track)]}
+
+
+def set_invisible(req):
+    """Modele importe <-> mur invisible : req = {track, model (chemin du decor ou logique), invisible (bool)}.
+    Tous les objets de ce modele changent. Rendu invisible : le .igz visible est garde a cote (<nom>.visible.igz)
+    pour le retour ; un mur cree invisible redevient visible avec la texture du gabarit (UV projetees)."""
+    track = req['track']
+    logical = model_logical_path(req['model']) if not req['model'].startswith('models/') else req['model']
+    reg = custom_models(track)
+    info = reg.get(logical)
+    if info is None:
+        raise ValueError('seulement pour les modèles importés')
+    p = custom_model_path(logical)
+    keep = p[:-4] + '.visible.igz'
+    name = os.path.basename(logical)[:-4]
+    if req.get('invisible'):
+        if info.get('invisible'):
+            return {'report': [f'{name} est déjà un mur invisible']}
+        pos, idx = model_mesh(open(p, 'rb').read())
+        P = [pos[i:i + 3] for i in range(0, len(pos), 3)]
+        T = [idx[i:i + 3] for i in range(0, len(idx) // 3 * 3, 3)]
+        shutil.copyfile(p, keep)
+        material = info.get('material')
+        new = write_wall_model(track, reg, name, P, T, wall=info.get('wall', 'obj'), visible_material=material,
+                               **{k: v for k, v in info.items() if k in ('import', 'obj_object', 'obj_material')})
+        assert new == logical
+        # sans collision, un mur invisible ne sert a rien : collision par defaut des murs
+        links = load_links(track)
+        for art_links in links.values():
+            for lk in art_links.values():
+                if isinstance(lk, dict) and lk.get('custom') == logical and lk.get('surface') == 'none':
+                    lk['surface'] = WALL_SURFACE
+        save_links(track, links)
+        msg = f'{name} : mur invisible (collision seule, rien n\'est affiché en jeu)'
+    else:
+        if not info.get('invisible'):
+            return {'report': [f'{name} est déjà visible']}
+        if os.path.exists(keep):
+            shutil.copyfile(keep, p)
+        else:
+            pos, tris = wall_mesh(track, logical)
+            catalog = {m['id']: m for m in material_catalog(track)}
+            m = catalog.get(info.get('visible_material'))
+            q, n, u, t = complete_mesh([tuple(v) for v in pos], None, None, [tuple(x) for x in tris])
+            open(p, 'wb').write(build_model(read_game_file(track, TEMPLATE), q, n, u, t, [tuple(x) for x in tris],
+                                            f'{CUSTOM_DIR}/{name}', (m['name'], m['ns'], m['dep']) if m else None))
+        info.pop('invisible', None)
+        info['material'] = info.pop('visible_material', None) or info.get('material') or 'gabarit'
+        msg = f'{name} : de nouveau visible en jeu'
+    _forget_model(logical)
+    save_custom_models(track, reg)
+    return {'report': [msg, sync_collision(track)]}
 
 
 def model_bytes(track, logical):
@@ -1784,7 +2591,7 @@ def custom_textures(track):
 
 def custom_file_path(logical):
     """Fichiers de texture / materiau importes : out/editor/textures/<nom de fichier>."""
-    return os.path.join(OUT_DIR, 'textures', os.path.basename(logical))
+    return ci_path(os.path.join(OUT_DIR, 'textures'), os.path.basename(logical))
 
 
 def custom_material_entries(track):
@@ -1915,6 +2722,7 @@ SURFACES = [
     (16, 'Réapparition (on y tombe)', True), (7, 'Terre', False), (46, 'Asphalte', False), (29, 'Sable sombre', False),
     (8, 'Neige', False), (10, 'Glace', False), (18, 'Boue', False), (9, 'Métal', False)]
 _surface_params = {}
+SURFACE_OBSERVED = {5: {'speed': 0.4}}   # constate en jeu, absent de la fiche (herbe : ralentissement du hors-piste)
 
 
 def surface_params():
@@ -1923,15 +2731,28 @@ def surface_params():
         z = IgzFile(pak_tool.read_latest(ARCHIVES, 'LooseData/CollisionMaterials.igz', 'permanent.pak')[0])
         roots = {n: o for n, o in z.root_objects() if n}
         hl = next(o for o, t in z.objects.items() if t == 'CCollisionMaterialHandleList')
-        for idx, item in enumerate(z.dump_object(hl)['@items']):
-            o = roots.get(str(item.get('@handle')).split('::')[-1]) if isinstance(item, dict) else None
+        items = z.dump_object(hl)['@items']
+        names = [str(it.get('@handle')).split('::')[-1] if isinstance(it, dict) else None for it in items]
+        # valeur = rang dans la liste + decalage, cale sur Sand = 38 (valide en jeu) : la lecture de la liste peut
+        # compter ou non une entree nulle en tete (un decalage fixe a fait afficher les fiches du sol voisin)
+        off = 38 - names.index('Sand') if 'Sand' in names else 4
+        for idx, item in enumerate(items):
+            o = roots.get(names[idx]) if names[idx] else None
             if o is None or z.objects.get(o) != 'CCollisionMaterial':
                 continue
-            si = z.dump_object(o).get('_surfaceInfo')
+            m = z.dump_object(o)
+            si = m.get('_surfaceInfo')
             sn = si['@handle'].split('::')[-1] if isinstance(si, dict) and '@handle' in si else None
             s = z.dump_object(roots[sn]) if sn in roots else {}
             if s:
-                _surface_params[idx + 3] = {'speed': s.get('_speedMultiplier'), 'traction': s.get('_traction')}
+                # adherence : traction de la fiche, ou frottement du materiau (glace 0,05 contre 0,5 partout ailleurs)
+                fr = m.get('_dynamicFriction')
+                grip = min(v for v in (s.get('_traction'), fr / 0.5 if isinstance(fr, (int, float)) else None, 1.0)
+                           if isinstance(v, (int, float)))
+                _surface_params[idx + off] = {'speed': s.get('_speedMultiplier'), 'traction': round(grip, 3)}
+        for v, p in SURFACE_OBSERVED.items():
+            if v in _surface_params and (_surface_params[v].get('speed') or 1.0) >= 0.99:
+                _surface_params[v] = {**_surface_params[v], **p}
     return _surface_params
 
 
@@ -2072,15 +2893,18 @@ def import_model(req):
         ghi = [max(p[k] for p in pos) for k in range(3)]
         pivot = [(glo[0] + ghi[0]) / 2, (glo[1] + ghi[1]) / 2, glo[2]]
         local = [(p[0] - pivot[0], p[1] - pivot[1], p[2] - pivot[2]) for p in pos]
-        data = build_model(template, local, nrm, uvs, tan, g['tris'], f'{CUSTOM_DIR}/{name}',
-                           (m['name'], m['ns'], m['dep']) if m else None)
-        open(custom_model_path(logical), 'wb').write(data)
-        _visual_cache.pop(logical, None)
-        _model_cache.pop(logical, None)
-        _preview_cache.pop(logical, None)
-        reg[logical] = {'name': name, 'vertices': len(pos), 'triangles': len(g['tris']),
-                        'material': c.get('material') or 'gabarit', 'obj_object': g['object'], 'obj_material': g['material'],
-                        'import': batch}
+        if c.get('surface') == 'invisible':             # mur invisible : collision seule
+            write_wall_model(track, reg, name, local, g['tris'], wall='obj', obj_object=g['object'],
+                             obj_material=g['material'], **{'import': batch})
+            c = dict(c, surface=WALL_SURFACE)
+        else:
+            data = build_model(template, local, nrm, uvs, tan, g['tris'], f'{CUSTOM_DIR}/{name}',
+                               (m['name'], m['ns'], m['dep']) if m else None)
+            open(custom_model_path(logical), 'wb').write(data)
+            _forget_model(logical)
+            reg[logical] = {'name': name, 'vertices': len(pos), 'triangles': len(g['tris']),
+                            'material': c.get('material') or 'gabarit', 'obj_object': g['object'], 'obj_material': g['material'],
+                            'import': batch}
         obj_name, k = name, 1
         while obj_name in used_names:
             k += 1
@@ -2282,8 +3106,8 @@ def sync_boost_visuals(track, boosts):
 PROJECT_DIR = os.path.dirname(os.path.dirname(HERE))
 IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.tga', '.bmp', '.dds', '.tif', '.tiff', '.webp')
 # decor non roulable : sans collision par defaut (feuillage, fleurs, lampes...) ; modifiable dans la fenetre
-NO_COLLISION_HINT = re.compile(r'leaf|flower|plant|bush|tree|nature|kusa|mist|light|lamp|star(?!t)|cloud|sky|water|effect|confetti|^ef_',
-                               re.I)
+NO_COLLISION_HINT = re.compile(r'leaf|flower|plant|bush|tree|nature|kusa|mist|light|lamp|star(?!t)|cloud|sky|water|effect|confetti|^ef_'
+                               r'|no_?col', re.I)        # « NoCollision_* » : nom donne par l'auteur de la map
 
 
 def _folder(req):
@@ -2294,18 +3118,37 @@ def _folder(req):
 
 
 def _find_file(folder, name):
-    """Fichier du dossier (nom insensible a la casse ; chemin relatif ou seulement le nom de fichier)."""
+    """Fichier du dossier (chemin relatif ou seulement le nom de fichier ; chaque element du chemin insensible a la
+    casse, aussi sous Linux : « Textures\\Herbe.PNG » d'un .mtl Windows trouve textures/herbe.png)."""
     if not name:
         return None
     name = name.replace('\\', '/')
+
+    # chemin donne, sinon le nom seul dans le dossier
     for cand in (name, os.path.basename(name)):
-        p = os.path.join(folder, cand)
-        if os.path.isfile(p):
-            return p
-        low = cand.lower()
-        for f in os.listdir(os.path.dirname(p) if os.path.isdir(os.path.dirname(p)) else folder):
-            if f.lower() == os.path.basename(low):
-                return os.path.join(os.path.dirname(p) if os.path.isdir(os.path.dirname(p)) else folder, f)
+        
+        # chemin absolu : tel quel (sinon le nom seul, essai suivant)
+        if os.path.isabs(cand):
+            if os.path.isfile(cand):
+                return cand
+            continue
+        p = folder
+
+        # element par element : nom exact, sinon le meme a la casse pres
+        for part in cand.split('/'):
+            if part in ('', '.'):
+                continue
+            q = os.path.join(p, part)
+            if not os.path.exists(q):
+                try:
+                    q = os.path.join(p, next(f for f in os.listdir(p) if f.lower() == part.lower()))
+                except (OSError, StopIteration):
+                    break
+            p = q
+        else:
+            # tout le chemin trouve
+            if os.path.isfile(p):
+                return p
     return None
 
 
@@ -2493,6 +3336,9 @@ def import_folder(req):
                             512 if all((choice.get(m) or {}).get('background') for m in users[tex]) else 1024)
     with progress.span(0.05, 0.35):
         for name in progress.items(summ['triangles'], 'texture {i} / {n}'):
+            if (choice.get(name) or {}).get('surface') == 'invisible':    # mur invisible : pas de texture
+                mapping[name] = {'material': None, 'surface': 'invisible'}
+                continue
             info = mtl.get(name, {})
             tex = _find_file(folder, info.get('texture'))
             if tex:
@@ -2537,10 +3383,11 @@ _visual_cache = {}
 
 
 def object_world_array(track, obj):
-    """Triangles monde (pouces) du modele visuel d'un objet, a sa transformation (obj) : tableau (n, 3, 3)."""
+    """Triangles monde (pouces) du modele visuel d'un objet, a sa transformation (obj) : tableau (n, 3, 3).
+    Mur invisible : son maillage de collision (le modele du jeu n'est qu'un point)."""
     logical = model_logical_path(obj['model'])
     if logical not in _visual_cache:
-        pos, idx = model_mesh(model_bytes(track, logical))
+        pos, idx = model_or_wall_mesh(track, logical)
         _visual_cache[logical] = (np.asarray(pos, np.float64).reshape(-1, 3),
                                   np.asarray(idx[:len(idx) // 3 * 3], np.int64).reshape(-1, 3))
     V, F = _visual_cache[logical]
@@ -3056,9 +3903,10 @@ def decor_collision_preview(track, logical, obj_id):
         if isinstance(src, dict) and 'custom' in src:  # objet importe : sa collision est son propre modele
             if src.get('surface') == 'none':
                 return {'tris': [], 'note': 'modele importe sans collision'}
-            pos, idx = model_mesh(model_bytes(track, src['custom']))
+            pos, idx = model_or_wall_mesh(track, src['custom'])
             return {'tris': [round(c, 2) for i in idx for c in pos[i * 3:i * 3 + 3]],
-                    'note': f'modele importe : {len(idx) // 3} triangle(s) de collision (surface '
+                    'note': f"{'mur invisible' if wall_mesh(track, src['custom']) else 'modele importe'} : "
+                            f'{len(idx) // 3} triangle(s) de collision (surface '
                             f'{src.get("surface", "auto")})'}
         o = orig_objs.get(int(src)) if src is not None else None
     if o is None:
@@ -3185,7 +4033,10 @@ def race_chain(tr):
         if not nxt:
             break
         out.append((t, by[nxt[0]]))
-        t = next((x for x in tr['transitions'] if nxt[0] in x['previous_position']), None)
+        # transition de passage (de la spline vers elle-meme, Coco Park Spline_Transition_002) : pas une section
+        cands = [x for x in tr['transitions'] if nxt[0] in x['previous_position'] and x['name'] not in seen]
+        cands.sort(key=lambda x: bool(set(x['next_position']) & set(x['previous_position'])))
+        t = cands[0] if cands else None
     return out
 
 
@@ -3413,9 +4264,11 @@ FALL_TEMPLATE = 'Respawn_Trigger_Bridge'
 DESIGN_ENTITY_TYPES = ('CPlayerStartEntity', 'CEntity', 'CGameEntity', 'igEntity')
 
 
-def world_killz(track):
-    """Plancher du monde (CWorldEntityData._killz) de la version enregistree."""
-    z = IgzFile(base_file(track, start_finish.main_map_file(track))[0])
+def world_killz(track, original=False):
+    """Plancher du monde (CWorldEntityData._killz) de la version enregistree (original : celle du jeu)."""
+    logical = start_finish.main_map_file(track)
+    data = pak_tool.read_latest(ARCHIVES, logical, track_pak(track))[0] if original else base_file(track, logical)[0]
+    z = IgzFile(data)
     w = next((o for o, t in z.objects.items() if t == 'CWorldEntityData'), None)
     return struct.unpack_from('<f', *z._loc(w + 0x40))[0] if w is not None else KILL_Z
 
@@ -3651,12 +4504,159 @@ def minimap_logicals(track):
 # Chaque controle peut porter une correction : 'fix' (automatique, sur la version ENREGISTREE, dans l'historique :
 # « Annuler » la defait) ou 'ui' (ouvre l'outil a utiliser dans l'editeur). Ordre de « Tout corriger » : les fichiers
 # dont dependent les suivants d'abord (la mini-carte, dessinee d'apres le parcours, en dernier).
-FIX_ORDER = ['occlusion', 'sky', 'transitions', 'grid', 'crates', 'boosters', 'falls', 'minimap']
+FIX_ORDER = ['occlusion', 'sky', 'splines', 'transitions', 'grid', 'crates', 'boosters', 'falls', 'minimap']
+# -- hauteur des splines (parcours et IA) au-dessus de la route ----------------------------------------
+# Mesure sur la courbe suivie (Catmull-Rom entre les points), par rapport a la route memorisee (« Creer le parcours »)
+# sinon au sol. Splines generees : position sur la route (0), IA 2 m au-dessus. Jeu d'origine : creux jusqu'a -3,7 m,
+# sauts / chutes jusqu'a 47 m (Sewer Speedway) -> les splines restees comme dans le jeu ne sont pas controlees.
+SPLINE_UNDER = -100.0       # plus de 2,5 m sous la surface : sous la route
+SPLINE_HIGH = 400.0         # plus de 10 m au-dessus (ou rien dessous) : en l'air
+SPLINE_JUMP_END = 6000.0    # en l'air jusqu'au bout de la spline : saut qui passe une transition s'il fait < 150 m
+SPLINE_LIFT = {'position_paths': 0.0, 'ai_paths': 80.0}
+
+
+def _surface_under(road, ground, p):
+    """Niveau de la route sous p : le plus haut qui ne depasse pas p de plus de 150 po, sinon le plus proche (spline
+    enfouie sous la route). Hors de la route memorisee (ou sans elle) : sol sous p seulement — un rocher ou un
+    plafond au-dessus n'est pas « la route » (Crash Cove : surplomb 12 m au-dessus du trace). None : rien dessous."""
+    hs = road.heights(p[0], p[1]) if road is not None else []
+    if hs:
+        below = [h for h in hs if h <= p[2] + 150]
+        return below[0] if below else min(hs, key=lambda h: abs(h - p[2]))
+    return ground.top(p[0], p[1], p[2], above=150) if ground is not None else None
+
+
+def spline_height_issues(cp, road, ground):
+    """Troncons de la courbe sous la route / en l'air hors saut. -> {'under': [(i0, i1, m)], 'air': [(i0, i1, m)],
+    'P', 'seg', 'surf', 'd'} ; un troncon en l'air entre deux points poses (saut de A a B) est accepte, de meme
+    qu'un court saut qui continue sur la section voisine."""
+    P, seg = ai_gen.curve_uniform(cp, 16)
+    P = np.asarray(P, np.float64)
+    surf = [_surface_under(road, ground, p) for p in P]
+    d = [None if h is None else float(p[2] - h) for p, h in zip(P, surf)]
+    L = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(P[:, :2], axis=0), axis=1))])
+    n, out = len(P), {'under': [], 'air': [], 'P': P, 'seg': seg, 'surf': surf, 'd': d}
+
+    def runs(flag):
+        k = 0
+        while k < n:
+            if not flag(k):
+                k += 1
+                continue
+            j = k
+            while j + 1 < n and flag(j + 1):
+                j += 1
+            yield k, j
+            k = j + 1
+    # sous la route : mesurable seulement sur la route memorisee (le sol d'origine a des creux que les splines du jeu
+    # traversent de 3 a 4 m, et un plafond au-dessus n'est pas la route)
+    on_road = [road is not None and bool(road.heights(p[0], p[1])) for p in P]
+    for i0, i1 in runs(lambda k: on_road[k] and d[k] is not None and d[k] < SPLINE_UNDER):
+        out['under'].append((i0, i1, -min(d[i0:i1 + 1]) / 39.37))
+    for i0, i1 in runs(lambda k: d[k] is None or d[k] > SPLINE_HIGH):
+        start, end = i0 == 0, i1 == n - 1
+        if not start and not end:
+            continue                                       # saut : pose avant (A) et apres (B)
+        if start != end and L[i1] - L[i0] < SPLINE_JUMP_END:
+            continue                                       # saut a cheval sur une transition
+        top = max((x for x in d[i0:i1 + 1] if x is not None), default=None)
+        out['air'].append((i0, i1, top / 39.37 if top is not None else None))
+    return out
+
+
+def _zone_dist(P, t):
+    """Distance (vue de dessus, po) des points P au bord de la zone de la transition t (boite : profondeur
+    dimensions[0] dans le sens du cap, largeur dimensions[1]) ; 0 si un point est dedans."""
+    yaw, dims = t.get('yaw') or 0.0, t.get('dimensions') or [0.0, 0.0, 0.0]
+    d = np.asarray(P, np.float64)[:, :2] - np.asarray(t['position'][:2], np.float64)
+    along = np.abs(d @ [math.cos(yaw), math.sin(yaw)]) - dims[0] / 2
+    side = np.abs(d @ [-math.sin(yaw), math.cos(yaw)]) - dims[1] / 2
+    return float(np.min(np.hypot(np.maximum(along, 0), np.maximum(side, 0))))
+
+
+def _used_splines(tr):
+    """Noms des splines que la course utilise : citees par une transition ou un embranchement en place (pas ecarte
+    sous la carte), ou de depart. Les restes de l'ancien trace (Cortex Castle AI_Spline_01..05, cites seulement par
+    des embranchements ecartes) n'en font pas partie."""
+    used = set(tr.get('starting_splines') or [])
+    for t in tr['transitions']:
+        if t['position'][2] > FAR_BELOW + 1:
+            for k in ('previous_ai', 'next_ai', 'previous_position', 'next_position'):
+                used |= set(t.get(k) or [])
+    for f in tr.get('forks') or []:
+        if f['position'][2] > FAR_BELOW + 1:
+            used |= {str(h).split('::')[-1] for h in f.get('ai_paths') or []}
+            if f.get('position_path'):
+                used.add(str(f['position_path']).split('::')[-1])
+    return used
+
+
+def _edited_splines(track, tr):
+    """Splines utilisees par la course et differentes de celles du jeu d'origine (nom absent ou points changes)."""
+    try:
+        orig = RaceSystem(pak_tool.read_latest(ARCHIVES, race_file(track), track_pak(track))[0],
+                          file_ns=f'{track}_RaceSystem').decode()
+    except KeyError:
+        return list(tr['splines'])
+    o = {s['name']: s['control_points'] for s in orig['position_paths'] + orig['ai_paths']}
+    same = lambda a, b: b is not None and len(a) == len(b) and np.allclose(np.asarray(a, float), np.asarray(b, float), atol=1.0)
+    used = _used_splines(tr)
+    return [s for s in tr['splines'] if s['name'] in used and not same(s['control_points'], o.get(s['name']))]
+
+
+def fix_spline_heights(track):
+    """Points des splines modifiees sous la route ou en l'air (hors saut) remis a la hauteur habituelle de la spline
+    au-dessus de la route (mediane de ses points bien poses ; generees : 0 / 2 m). Sauts gardes."""
+    tr = load_track(track)
+    road, ground = road_ground(track), ground_for(track)
+    out, moved = {}, 0
+    for s in _edited_splines(track, tr):
+        cp = s['control_points']
+        if len(cp) < 2:
+            continue
+        r = spline_height_issues(cp, road, ground)
+        bad = set()
+        for i0, i1, _ in r['under'] + r['air']:
+            bad |= set(range(i0, i1 + 1))
+        if not bad:
+            continue
+        good = [x for k, x in enumerate(r['d']) if x is not None and k not in bad]
+        lift = float(np.clip(np.median(good), 0, 250)) if good else SPLINE_LIFT.get(s['kind'], 0.0)
+        pts = [list(p) for p in cp]
+        blind = []                                         # sans rien dessous (trou de la route) : voisins
+        for i, p in enumerate(pts):
+            k = min(i * 16, len(r['P']) - 1)               # echantillon de la courbe sur ce point de controle
+            if not any(j in bad for j in range(max(0, k - 8), min(len(r['P']), k + 9))):
+                continue
+            h = _surface_under(road, ground, p)
+            if h is None:
+                blind.append(i)
+            elif abs(p[2] - (h + lift)) > 1:
+                p[2] = h + lift
+                moved += 1
+        known = [i for i in range(len(pts)) if i not in blind]
+        for i in blind:                                    # hauteur interpolee entre les points voisins
+            a = max((j for j in known if j < i), default=None)
+            b = min((j for j in known if j > i), default=None)
+            if a is None and b is None:
+                continue
+            z = pts[a][2] if b is None else pts[b][2] if a is None else \
+                pts[a][2] + (pts[b][2] - pts[a][2]) * (i - a) / (b - a)
+            if abs(pts[i][2] - z) > 1:
+                pts[i][2] = z
+                moved += 1
+        out[s['name']] = pts
+    if not out:
+        return 'splines : toutes à bonne hauteur'
+    save_track({'track': track, 'splines': out, 'transitions': {}})
+    return f'splines posées sur la route : {moved} point(s) sur {len(out)} spline(s)'
+
+
 FIX_LABELS = {'occlusion': 'Retirer les zones d\'occultation', 'sky': 'Appliquer un ciel',
               'transitions': 'Replacer sur le parcours',
               'grid': 'Replacer la grille derrière la ligne', 'crates': 'Tout poser au sol',
               'boosters': 'Refaire les plaques des boosters', 'falls': 'Refaire chutes et réapparitions',
-              'minimap': 'Générer la mini-carte'}
+              'minimap': 'Générer la mini-carte', 'splines': 'Poser les splines sur la route'}
 UI_LABELS = {'mkroute': 'Recréer le parcours…', 'regenall': 'Régénérer les splines IA…', 'dambiance': 'Choisir un ciel…'}
 
 
@@ -3759,7 +4759,7 @@ def fix_occlusion(track):
     return 'zones d\'occultation de l\'ancienne piste retirées'
 
 
-FIXES = {'transitions': fix_transitions, 'grid': fix_grid, 'crates': fix_crates, 'boosters': fix_boosters, 'sky': fix_sky, 'occlusion': fix_occlusion,
+FIXES = {'splines': fix_spline_heights, 'transitions': fix_transitions, 'grid': fix_grid, 'crates': fix_crates, 'boosters': fix_boosters, 'sky': fix_sky, 'occlusion': fix_occlusion,
          'falls': lambda t: '; '.join(auto_falls({'track': t}).get('report') or ['chutes et réapparitions refaites']),
          'minimap': lambda t: generate_minimap(t)['report'][0]}
 
@@ -3815,6 +4815,8 @@ def preinstall_check(track):
     bad_t = []
     for t in tr['transitions']:
         label = 'ligne d\'arrivée' if t['increment_lap'] else t['name'].replace('RaceSystem_SplineTransition_', 'transition ')
+        if not t['increment_lap'] and t['position'][2] <= FAR_BELOW + 1:   # ecartee sous la carte (raccourci retire)
+            continue
         nxt = [n for n in t['next_position'] if n in dense]
         if not nxt:
             bad_t.append((f'{label} : aucune spline de position suivante', None))
@@ -3824,7 +4826,9 @@ def preinstall_check(track):
             bad_t.append((f'{label} : à {dist / 39.37:.0f} m de sa spline de position', 'transitions'))
         elif math.cos(head - (t['yaw'] or 0.0)) < 0:
             bad_t.append((f'{label} : tournée dans le sens inverse du parcours', 'transitions'))
-        far_ai = [n for n in t['next_ai'] if n in dense and nearest(dense[n], t['position'])[0] > 1500]
+        # distance au bord de la zone (pas a son centre : sur une route tres large, la voie exterieure passe a 38 m
+        # du centre tout en traversant la zone, Crash Cove)
+        far_ai = [n for n in t['next_ai'] if n in dense and _zone_dist(dense[n], t) > 1000]
         if far_ai and dist <= 1500:                    # zone a sa place mais IA loin : il faut refaire le parcours
             bad_t.append((f'{label} : {len(far_ai)} spline(s) IA suivante(s) loin de la zone', None))
         if not t['next_ai']:
@@ -3873,6 +4877,31 @@ def preinstall_check(track):
             add('attention', 'Splines IA', f'{100 * off / tot:.0f} % des trajets IA hors de la route', ui='regenall')
     if ai and not knots and not longs:
         add('ok', 'Splines IA', f'{len(ai)} splines, sans nœud ni long segment')
+    # hauteur des splines modifiees : un peu au-dessus de la route, ou en l'air seulement pendant un saut (A -> B)
+    progress.step('hauteur des splines', 0.5)
+    edited = _edited_splines(track, tr)
+    under, air = [], []
+    for s in edited:
+        if len(s['control_points']) < 2:
+            continue
+        r = spline_height_issues(s['control_points'], road, ground)
+        kind = 'parcours' if s['kind'] == 'position_paths' else 'IA'
+        if r['under']:
+            under.append(f"{s['name']} ({kind}, jusqu'à {max(x[2] for x in r['under']):.0f} m dessous)")
+        if r['air']:
+            top = [x[2] for x in r['air'] if x[2] is not None]
+            air.append(f"{s['name']} ({kind}, " + (f'{max(top):.0f} m au-dessus' if top else 'sans sol dessous') + ')')
+    if under:
+        add('erreur', 'Hauteur des splines', f'{len(under)} spline(s) sous la route (plus de 2,5 m) : '
+                                              f'{", ".join(under[:4])}{" …" if len(under) > 4 else ""}', fix='splines')
+    if air:
+        void = ' — sans sol dessous : branche restée sur l\'ancien tracé ? (à déplacer sur ta route ou à retirer des ' \
+               'transitions)' if any('sans sol' in a for a in air) else ''
+        add('attention', 'Hauteur des splines', f'{len(air)} spline(s) en l\'air hors d\'un saut (plus de 10 m, sans '
+                                                f'retomber) : {", ".join(air[:4])}{" …" if len(air) > 4 else ""}{void}', fix='splines')
+    if not under and not air:
+        add('ok', 'Hauteur des splines', f'{len(edited)} spline(s) modifiée(s) au-dessus de la route (en l\'air '
+                                         f'seulement pendant les sauts)' if edited else 'splines du jeu d\'origine')
     # 3) sol, hauteur
     kz = world_killz(track)
     low = min((float(np.min(np.asarray(s['control_points'])[:, 2])) for s in pos.values()), default=None)
@@ -3882,13 +4911,16 @@ def preinstall_check(track):
             add('erreur', 'Route', f'la route est à z = {zr:.0f}, sous le plancher de chute ({kz:.0f}) : les karts y sont « tombés »')
         else:
             add('ok', 'Route', f'au-dessus du plancher de chute (z ≈ {zr:.0f})')
-    if low is not None and low - 400 < kz:
-        add('erreur', 'Chutes', f'le parcours descend à z = {low:.0f}, à moins de 10 m du plancher de chute ({kz:.0f}) : '
+    if low is not None and low - 40 < kz:          # jeu d'origine : 3,8 m de marge seulement (Tiny Arena)
+        add('erreur', 'Chutes', f'le parcours descend à z = {low:.0f}, à moins d\'1 m du plancher de chute ({kz:.0f}) : '
                                 f'refais « Chutes et réapparitions » (la map a bougé ?)', fix='falls')
     # reapparitions (points des splines de position)
     rnames = sorted({str(r).split('::')[-1] for s in pos.values() for r in (s.get('respawn_points') or [])})
     if rnames:
         poses = start_finish.read_entity_poses(base_file(track, start_finish.design_file(track))[0], rnames)
+        if len(poses) < len(rnames):                  # rangees dans le _RaceSystem (Sewer Speedway, Slide Coliseum...)
+            poses.update(start_finish.read_entity_poses(base_file(track, race_file(track))[0],
+                                                        [n for n in rnames if n not in poses]))
         lost = [n for n, p in poses.items() if p['pos'][2] > FAR_BELOW / 2 and not ground.heights(p['pos'][0], p['pos'][1])]
         if lost:
             add('attention', 'Réapparitions', f'{len(lost)} point(s) sans sol dessous : {", ".join(lost[:5])}', fix='falls')
@@ -4025,8 +5057,9 @@ def install_plan(track):
     for logical, src_pak in sky_copies.items():
         per_archive[os.path.join(ARCHIVES, track_pak(track))][logical] = pak_tool.read_latest(ARCHIVES, logical, src_pak)[0]
     # boosters : script des plaques turbo (deja dans update.pak) a declarer dans le manifeste de la piste
-    pu = saved_path(powerup.powerup_file(track))
-    kinds = {c['kind'] for c in powerup.read_crates(open(pu, 'rb').read())} if os.path.exists(pu) else set()
+    pu = saved_path(crate_file(track)) if crates_supported(track) else None
+    kinds = {c['kind'] for c in powerup.read_crates(open(pu, 'rb').read(), crates_in_design(track))} \
+        if pu and os.path.exists(pu) else set()
     if 'boost' in kinds:
         entries.append(('vsc', powerup.BOOST_SCRIPT))
     # TNT / Nitro / fruits : scripts, modeles et materiaux a declarer ; fichiers absents des archives communes copies
@@ -4043,6 +5076,9 @@ def install_plan(track):
     entries += [e for e in tp_entries if e not in entries]
     for logical, src_pak in tp_copies.items():
         per_archive[os.path.join(ARCHIVES, track_pak(track))][logical] = pak_tool.read_latest(ARCHIVES, logical, src_pak)[0]
+    # survol d'introduction : cameras reecrites, dans les archives de survol de la piste
+    for arc, files in flyby_install_files(track).items():
+        per_archive[arc].update(files)
     # ...et declares dans le manifeste de streaming, sinon le jeu ne les charge pas (invisibles)
     if entries:
         man = pkg_manifest.manifest_logical(track)
@@ -4114,7 +5150,9 @@ def install_track(track):
     progress.step('autres pistes installées', 0.03)
     # archives de menu modifiees par une installation precedente et plus concernees : remises a l'origine (avec les
     # fichiers des autres pistes qui s'y trouvaient)
-    stale = [a for a in menu_track_archives(track) if a not in per_archive and os.path.exists(pak_tool.backup_path(a))]
+    # (idem pour les archives de survol quand les plans d'origine sont revenus)
+    stale = [a for a in menu_track_archives(track) + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)]
+             if a not in per_archive and os.path.exists(pak_tool.backup_path(a))]
     others = _others_for(list(per_archive) + stale, track, kept)
     for arc in stale:
         _rewrite(arc, others.get(arc, {}))
@@ -4142,7 +5180,8 @@ def uninstall_track(track):
     """Archives de la piste remises a l'origine ; les archives partagees gardent les fichiers des autres pistes
     installees (reinstalles aussitot)."""
     done, kept = [], []
-    arcs = [os.path.join(ARCHIVES, n) for n in pak_tool.UPDATE_ARCHIVES + (track_pak(track),)] + menu_track_archives(track)
+    arcs = [os.path.join(ARCHIVES, n) for n in pak_tool.UPDATE_ARCHIVES + (track_pak(track),)] + menu_track_archives(track) \
+        + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)]
     arcs = [a for a in arcs if os.path.exists(pak_tool.backup_path(a))]
     _set_installed(track, False)
     others = _others_for(arcs, track, kept)
@@ -4222,6 +5261,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, progress.get())
             elif u.path == '/api/archives':
                 self._send(200, archives_info())
+            elif u.path == '/api/pack_tracks':                # pistes exportables en pack de maps
+                self._send(200, {'tracks': mappack.exportable_tracks(), 'all': list_tracks()})
+            elif u.path == '/api/pack_download':              # pack exporte (dossier exports du projet seulement)
+                p = mappack.export_file(parse_qs(u.query).get('name', [''])[0])
+                if p is None:
+                    self._send(404, {'error': 'introuvable'})
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/zip')
+                    self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(p)}"')
+                    self.send_header('Content-Length', str(os.path.getsize(p)))
+                    self.end_headers()
+                    with open(p, 'rb') as f:
+                        shutil.copyfileobj(f, self.wfile)
             elif u.path == '/api/tracks':
                 self._send(200, list_tracks())
             elif u.path == '/api/track':
@@ -4252,7 +5305,8 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._send(500, {'error': repr(e)})
 
-    PROGRESS_LABELS = {'/api/save': 'Enregistrement de la course', '/api/install': 'Installation dans le jeu',
+    PROGRESS_LABELS = {'/api/pack_export': 'Export des maps', '/api/pack_import': 'Import des maps',
+                       '/api/save': 'Enregistrement de la course', '/api/install': 'Installation dans le jeu',
                        '/api/uninstall': 'Désinstallation', '/api/reset': "Retour à l'original",
                        '/api/decor_save': 'Enregistrement du décor', '/api/import_model': 'Import du modèle',
                        '/api/set_custom_material': 'Texture du modèle', '/api/import_texture': "Import de l'image",
@@ -4267,10 +5321,19 @@ class Handler(BaseHTTPRequestHandler):
                        '/api/apply_menu': 'Nom et images de la piste', '/api/set_surface': 'Type de sol',
                        '/api/object_alpha': 'Transparence de la texture', '/api/surfaces': 'Types de sol',
                        '/api/ambiance_info': "Lecture de l'éclairage", '/api/set_ambiance': 'Ambiance',
-                       '/api/place_library': "Ajout d'un objet de la bibliothèque", '/api/fix': 'Corrections'}
+                       '/api/place_library': "Ajout d'un objet de la bibliothèque", '/api/fix': 'Corrections',
+                       '/api/walls_auto': 'Murs invisibles', '/api/wall_add': 'Mur invisible',
+                       '/api/walls_zone': 'Murs invisibles autour de la sélection',
+                       '/api/set_invisible': 'Mur invisible'}
 
     def do_POST(self):
         try:
+            if urlparse(self.path).path == '/api/pack_upload':      # pack de maps (.zip) : octets bruts
+                from urllib.parse import unquote
+                data = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                name = unquote(parse_qs(urlparse(self.path).query).get('name', ['pack.zip'])[0])
+                self._send(200, mappack.save_upload(data, name))
+                return
             req = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             routes = {'/api/save': lambda: with_history(req['track'], 'course', lambda: save_track(req)),
                       '/api/install': lambda: install_track(req['track']),
@@ -4313,10 +5376,19 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/export_obj': lambda: export_obj(req),
                       '/api/archives': lambda: choose_archives(req),
                       '/api/pick_folder': lambda: pick_folder(req),
+                      '/api/flyby_auto': lambda: flyby_auto(req),
+                      '/api/pack_export': lambda: mappack.export_pack(req),
+                      '/api/pack_import': lambda: mappack.import_pack(req),
                       '/api/fix': lambda: with_history(req['track'], 'corrections : ' + ', '.join(req.get('fixes') or []),
                                                        lambda: apply_fixes(req)),
                       '/api/place_library': lambda: with_history(req['track'], f"bibliothèque : {os.path.basename(req.get('model') or '')[:-4]}",
-                                                                 lambda: place_library(req))}
+                                                                 lambda: place_library(req)),
+                      '/api/walls_auto': lambda: with_history(req['track'], 'murs invisibles automatiques', lambda: walls_auto(req)),
+                      '/api/wall_add': lambda: with_history(req['track'], 'mur invisible', lambda: wall_add(req)),
+                      '/api/walls_zone': lambda: with_history(req['track'], 'murs invisibles autour de la sélection',
+                                                              lambda: walls_zone(req)),
+                      '/api/set_invisible': lambda: with_history(req['track'], 'mur invisible' if req.get('invisible') else 'mur visible',
+                                                                 lambda: set_invisible(req))}
             if self.path == '/api/settings':                 # rapide, sans verrou ni barre de progression
                 self._send(200, set_settings(req))
             elif self.path in routes:
@@ -4401,18 +5473,67 @@ def set_archives(path):
     return path
 
 
-def ask_folder(title, initial=None):
-    """Fenetre Windows de choix de dossier, ouverte par le serveur (meme PC) au premier plan."""
+FOLDER_DIALOG = None           # (titre, dossier initial) -> chemin ou None : fenetre de l'application (app.py, Linux)
+
+
+def _ask_folder_tk(title, initial):
     import tkinter as tk
     from tkinter import filedialog
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
     try:
-        path = filedialog.askdirectory(parent=root, mustexist=True, title=title,
-                                       initialdir=initial if initial and os.path.isdir(initial) else None)
+        return filedialog.askdirectory(parent=root, mustexist=True, title=title, initialdir=initial)
     finally:
         root.destroy()
+
+
+def _ask_folder_linux(title, initial):
+    """zenity (GNOME...) ou kdialog (KDE). None si aucun des deux ; '' si annule."""
+    kde = 'KDE' in os.environ.get('XDG_CURRENT_DESKTOP', '').upper()
+    tools = ('kdialog', 'zenity') if kde else ('zenity', 'kdialog')
+    tool = next((t for t in tools if shutil.which(t)), None)
+    if not tool:
+        return None
+    if tool == 'zenity':
+        cmd = ['zenity', '--file-selection', '--directory', '--title', title]
+        cmd += ['--filename', os.path.join(initial, '')] if initial else []
+    else:
+        cmd = ['kdialog', '--title', title, '--getexistingdirectory', initial or os.path.expanduser('~')]
+    env = dict(os.environ)
+    if getattr(sys, 'frozen', False):                 # PyInstaller : bibliotheques du systeme pour l'outil, pas les notres
+        orig = env.pop('LD_LIBRARY_PATH_ORIG', None)
+        env.pop('LD_LIBRARY_PATH', None)
+        if orig:
+            env['LD_LIBRARY_PATH'] = orig
+
+    # bloque jusqu'au choix
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    # chemin sur stdout ; code 1 = annule
+    return r.stdout.strip() if r.returncode == 0 else ''
+
+
+def ask_folder(title, initial=None):
+    """Fenetre de choix de dossier, ouverte par le serveur (meme PC) au premier plan : celle de l'application si
+    elle en fournit une, sinon zenity / kdialog sous Linux (tkinter souvent absent), sinon tkinter."""
+    initial = initial if initial and os.path.isdir(initial) else None
+
+    # None = pas de fenetre disponible, '' = annule
+    path = None
+    if FOLDER_DIALOG:
+        
+        path = FOLDER_DIALOG(title, initial)
+    elif sys.platform.startswith('linux'):
+        # 2. zenity / kdialog
+        path = _ask_folder_linux(title, initial)
+    if path is None and not FOLDER_DIALOG:
+        # 3. tkinter
+        try:
+            path = _ask_folder_tk(title, initial)
+        except ImportError:
+            raise RuntimeError('aucune fenêtre de choix de dossier disponible : installer zenity (ou python3-tk), '
+                               'ou lancer le serveur avec --archives "<dossier archives du jeu>"')
     return os.path.normpath(path) if path else None
 
 

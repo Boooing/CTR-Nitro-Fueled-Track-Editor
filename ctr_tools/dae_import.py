@@ -9,7 +9,9 @@ defaut), l'import convertit ensuite comme pour un OBJ.
 """
 import math
 import os
+import re
 import xml.etree.ElementTree as ET
+from urllib.parse import unquote
 
 import numpy as np
 
@@ -78,7 +80,11 @@ class Dae:
             return None
         ref = f.find('ref')                                  # COLLADA 1.5 : <init_from><ref>...</ref>
         txt = (ref.text if ref is not None else f.text) or ''
-        txt = txt.strip().replace('file:///', '').replace('file://', '')
+        txt = txt.strip()
+        if txt.startswith('file://'):                        # URI : file:///C:/x.png (Windows), file:///home/x.png
+            txt = unquote(txt[len('file://'):])
+            if re.match(r'^/[A-Za-z]:', txt):
+                txt = txt[1:]
         return txt or None
 
     def material_info(self, mat_id):

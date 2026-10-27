@@ -86,9 +86,10 @@ def close_holes(m, n=2):
     return m
 
 
-def largest_component(m):
+def _labels(m):
+    """Morceaux 4-connexes -> (etiquettes, {etiquette: nombre de pixels})."""
     lab = np.zeros(m.shape, np.int32)
-    best, best_n, cur = 0, 0, 0
+    sizes, cur = {}, 0
     H, W = m.shape
     for y0, x0 in zip(*np.nonzero(m)):
         if lab[y0, x0]:
@@ -104,9 +105,202 @@ def largest_component(m):
                 if 0 <= yy < H and 0 <= xx < W and m[yy, xx] and not lab[yy, xx]:
                     lab[yy, xx] = cur
                     q.append((yy, xx))
-        if n > best_n:
-            best, best_n = cur, n
-    return lab == best
+        sizes[cur] = n
+    return lab, sizes
+
+
+def largest_component(m):
+    lab, sizes = _labels(m)
+    return lab == max(sizes, key=sizes.get) if sizes else m
+
+
+def join_pieces(mask, max_gap_px, min_share=0.02):
+    """Morceaux de route separes par une coupure courte (bande d'une autre surface, porte, trou) : relies a chaque
+    endroit ou ils se touchent presque (moins de max_gap_px). Complete bridge_gaps quand les bords de la coupure sont
+    irreguliers (les bouts du squelette ne se font plus face : Mystery Caves, route coupee deux fois -> la boucle
+    trouvee etait un petit tour de 600 m). Seuls les gros morceaux (>= min_share de la route) sont relies.
+    -> (masque complete, pixels ajoutes, nombre de liaisons)."""
+    from PIL import Image, ImageDraw
+    lab, sizes = _labels(mask)
+    if not sizes:
+        return mask, np.zeros(mask.shape, bool), 0
+    total = sum(sizes.values())
+    big = [k for k, n in sizes.items() if n >= min_share * total]
+    if len(big) < 2:
+        return mask, np.zeros(mask.shape, bool), 0
+    edge = mask & ~_erode(mask)
+    dm = depth(mask)
+    width = 2 * float(np.median(dm[mask])) + 1          # largeur de route courante (pixels)
+    border = {k: np.argwhere(edge & (lab == k)) for k in big}
+    img = Image.fromarray(np.zeros(mask.shape, np.uint8))
+    draw = ImageDraw.Draw(img)
+    n = 0
+    for i, a in enumerate(big):
+        for b in big[i + 1:]:
+            A, B = border[a], border[b]
+            if not len(A) or not len(B):
+                continue
+            near = []                                           # (distance, pixel de A, pixel de B) sous le seuil
+            for k in range(0, len(A), 256):
+                d = np.linalg.norm(A[k:k + 256, None, :] - B[None, :, :], axis=2)
+                j = d.argmin(1)
+                dd = d[np.arange(len(j)), j]
+                for t in np.nonzero(dd <= max_gap_px)[0]:
+                    near.append((float(dd[t]), tuple(A[k + t]), tuple(B[j[t]])))
+            # un lien par endroit de contact (les contacts a plus de 2 x max_gap l'un de l'autre sont distincts)
+            near.sort()
+            spots = []
+            for dist, pa, pb in near:
+                if all(math.hypot(pa[0] - s[1][0], pa[1] - s[1][1]) > 2 * max_gap_px for s in spots):
+                    spots.append((dist, pa, pb))
+            for dist, pa, pb in spots:
+                if not _face_bridge(draw, A, B, pa, pb, dist, width):
+                    w = max(3, int(2 * min(dm[_inner(dm, pa)], dm[_inner(dm, pb)])))
+                    draw.line([(pa[1], pa[0]), (pb[1], pb[0])], fill=255, width=w)
+                n += 1
+    added = (np.asarray(img) > 0) & ~mask
+    return mask | added, added, n
+
+
+def _face_bridge(draw, A, B, pa, pb, dist, width):
+    """Pont = enveloppe des deux bords qui se font face (pixels de bord A pres de pa, B pres de pb, a moins de ~l'ecart
+    + une largeur de route l'un de l'autre). Un trait entre les deux pixels (ou bouts de squelette) les plus proches
+    partait d'un coin quand les bouts de route sont en biais : le trace traversait le trou sur le cote de la route
+    (Crash Cove). -> False si pas d'enveloppe (trait a tracer)."""
+    reach, near_r = max(1.5 * dist, dist + width), dist + 2 * width
+    face = []
+    for P_, Q_, c in ((A, B, pa), (B, A, pb)):
+        loc = P_[np.hypot(P_[:, 0] - c[0], P_[:, 1] - c[1]) <= near_r]
+        if len(loc) and len(Q_):
+            dq = np.min(np.linalg.norm(loc[:, None, :] - Q_[None, :, :], axis=2), axis=1) \
+                if len(loc) * len(Q_) < 4e6 else np.full(len(loc), dist)
+            face.append(loc[dq <= reach])
+    face = np.concatenate(face) if face else np.zeros((0, 2))
+    hull = _hull(face) if len(face) >= 3 else []
+    if len(hull) < 3:
+        return False
+    draw.polygon([(float(q[1]), float(q[0])) for q in hull], fill=255)
+    return True
+
+
+def _end_bridge(draw, edge, dm, e, t):
+    """Pont entre deux bouts de squelette : enveloppe des bords coupes autour de chaque bout (le squelette s'arrete a
+    une demi-largeur du bout de la route : bord coupe et coins a moins de ~1,8 demi-largeur), en plus du trait."""
+    face = []
+    for c in (e, t):
+        r = 1.8 * float(dm[_inner(dm, c)]) + 2
+        face.append(edge[np.hypot(edge[:, 0] - c[0], edge[:, 1] - c[1]) <= r])
+    face = np.concatenate(face)
+    hull = _hull(face) if len(face) >= 3 else []
+    if len(hull) >= 3:
+        draw.polygon([(float(q[1]), float(q[0])) for q in hull], fill=255)
+
+
+def _hull(P):
+    """Enveloppe convexe (chaine monotone) de points (n, 2) -> sommets dans l'ordre."""
+    pts = sorted(set(map(tuple, np.asarray(P).tolist())))
+    if len(pts) < 3:
+        return pts
+    cross = lambda o, a, b: (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lower, upper = [], []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def join_cuts(mask, max_gap_px, blocked=None):
+    """Route coupee a un seul endroit (en « C » : un seul morceau, ses deux bouts presque face a face) : deux bouts du
+    squelette proches a vol d'oiseau mais tres loin le long de la route sont relies, sans exiger qu'ils pointent l'un
+    vers l'autre (bords de coupure irreguliers : Dingo Canyon). blocked(p, q) -> True si un mur / obstacle se dresse
+    entre les deux (route parallele derriere une separation : pas une coupure). -> (masque, pixels ajoutes, n)."""
+    from PIL import Image, ImageDraw
+    skel = thin(mask)
+    ends = [tuple(p) for p in np.argwhere(skeleton_ends(skel))]
+    if len(ends) < 2:
+        return mask, np.zeros(mask.shape, bool), 0
+    dm = depth(mask)
+    H, W = mask.shape
+
+    def along(a, limit):
+        """Distance le long du squelette depuis a (pixels atteints en moins de limit pas)."""
+        dist, q = {a: 0}, deque([a])
+        while q:
+            cur = q.popleft()
+            if dist[cur] >= limit:
+                continue
+            for dy, dx in OFFS:
+                p = (cur[0] + dy, cur[1] + dx)
+                if 0 <= p[0] < H and 0 <= p[1] < W and skel[p] and p not in dist:
+                    dist[p] = dist[cur] + 1
+                    q.append(p)
+        return dist
+    reach = max_gap_px + 2 * float(np.median(dm[skel])) + 3
+    edge = np.argwhere(mask & ~_erode(mask))
+    E = np.array(ends)
+    img = Image.fromarray(np.zeros(mask.shape, np.uint8))
+    draw = ImageDraw.Draw(img)
+    used, n = set(), 0
+    for i, e in enumerate(ends):
+        if i in used:
+            continue
+        d = np.linalg.norm(E - e, axis=1)
+        cand = [j for j in np.argsort(d) if j != i and j not in used and 3 < d[j] <= reach]
+        if not cand:
+            continue
+        near = along(e, int(8 * reach) + 20)
+        for j in cand:
+            t = ends[j]
+            if t in near:                                 # meme bout de route (ou bavure) : pas une coupure
+                continue
+            k = max(2, int(d[j]))
+            ys = np.round(np.linspace(e[0], t[0], k)).astype(int)
+            xs = np.round(np.linspace(e[1], t[1], k)).astype(int)
+            if (~mask[ys, xs]).sum() < 2 or (blocked is not None and blocked(e, t)):
+                continue
+            w = max(3, int(2 * min(dm[_inner(dm, e)], dm[_inner(dm, t)])))
+            draw.line([(e[1], e[0]), (t[1], t[0])], fill=255, width=w)
+            _end_bridge(draw, edge, dm, e, t)
+            used |= {i, j}
+            n += 1
+            break
+    added = (np.asarray(img) > 0) & ~mask
+    return mask | added, added, n
+
+
+def _wall_between(ground, zmap, lo, cell, rise=150.0, top=1500.0):
+    """-> blocked(p, q) pour join_cuts : un sol plus de `rise` po au-dessus de la ligne droite entre les deux bouts
+    (hauteur de la route a chaque bout) = mur, separation, rocher : les deux routes ne sont pas relies."""
+    def z_at(p):
+        win = zmap[max(0, p[0] - 4):p[0] + 5, max(0, p[1] - 4):p[1] + 5]
+        ok = win[np.isfinite(win)]
+        return float(ok.max()) if len(ok) else None
+
+    def blocked(p, q):
+        za, zb = z_at(p), z_at(q)
+        if za is None or zb is None:
+            return True
+        for u in np.linspace(0, 1, 24):
+            y, x = p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u
+            wx, wy = lo[0] + (x + 0.5) * cell, lo[1] + (y + 0.5) * cell
+            zi = za + (zb - za) * u
+            if any(zi + rise < h <= zi + top for h in ground.heights(wx, wy)):
+                return True
+        return False
+    return blocked
+
+
+def _inner(dm, p, r=6):
+    """Pixel le plus profond (le plus loin du bord) pres de p : largeur de la route a cet endroit."""
+    y, x = p
+    win = dm[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1]
+    k = np.unravel_index(int(win.argmax()), win.shape)
+    return (max(0, y - r) + k[0], max(0, x - r) + k[1])
 
 
 def fill_small_holes(m, keep_ratio=0.25):
@@ -193,6 +387,7 @@ def bridge_gaps(mask, max_gap_px, max_angle=35.0):
     draw = ImageDraw.Draw(img)
     cos_max = math.cos(math.radians(max_angle))
     n, done = 0, set()
+    edge = np.argwhere(mask & ~_erode(mask))
     for i, (e, d) in enumerate(ends):
         best = None
         for j, (t, dt) in enumerate(ends):
@@ -215,10 +410,11 @@ def bridge_gaps(mask, max_gap_px, max_angle=35.0):
                 best = (dist, j, t)
         if best is None:
             continue
-        _, j, t = best
+        dist, j, t = best
         done.add((min(i, j), max(i, j)))
         w = max(3, int(2 * min(dm[e], dm[t])))
         draw.line([(e[1], e[0]), (t[1], t[0])], fill=255, width=w)
+        _end_bridge(draw, edge, dm, e, t)
         n += 1
     bridge = (np.asarray(img) > 0) & ~mask
     return mask | bridge, bridge, n
@@ -418,8 +614,9 @@ def skeleton_graph(s, dmap):
 def walk_graph(s, dmap, start_px, heading, k=10):
     """Boucle de course sur le graphe du squelette : depuis le troncon du depart dans la direction de course,
     a chaque carrefour le troncon pas encore emprunte le plus dans l'axe (puis le plus large). Un carrefour peut etre
-    traverse plusieurs fois (huit, route qui repasse sous un pont), un troncon une seule fois.
-    -> pixels [(y, x)], ou None si le squelette n'a pas de carrefour (boucle simple : walk_loop)."""
+    traverse plusieurs fois (huit, route qui repasse sous un pont), un troncon une seule fois. Candidate en plus : la
+    boucle la plus longue sans demi-tour (_longest_cycle) ; road_loop garde la plus longue une fois lissee.
+    -> [pixels [(y, x)] par boucle candidate], ou None si le squelette n'a pas de carrefour (boucle simple : walk_loop)."""
     nodes, edges = skeleton_graph(s, dmap)
     if not edges:
         return None
@@ -436,6 +633,9 @@ def walk_graph(s, dmap, start_px, heading, k=10):
     forward = float(t @ d0) >= 0
     unit = lambda v: np.asarray(v, float) / max(1e-9, float(np.linalg.norm(v)))
     wmax = max(e['w'] for e in edges)
+    # boucle la plus longue sans demi-tour, ou le choix glouton (ci-dessous) s'il fait plus long : un vrai virage
+    # en epingle a un carrefour (Cortex Castle) peut passer pour un demi-tour
+    longest = _longest_cycle(edges, ei, si, forward, k)
     path = list(px[si:]) if forward else list(px[si::-1])
     node = edges[ei]['b'] if forward else edges[ei]['a']
     used = {ei}
@@ -453,19 +653,75 @@ def walk_graph(s, dmap, start_px, heading, k=10):
                 score = float(tin @ tout) + 0.15 * e['w'] / wmax
                 if best is None or score > best[0]:
                     best = (score, i, fwd, c)
-        if best is None:
-            return None                                              # bloque : ancien parcours
+        if best is None:                                             # bloque : ancien parcours
+            return [longest] if longest is not None else None
         _, i, fwd, c = best
         gap = np.subtract(c[0], path[-1])                            # traversee du carrefour (noeud fusionne)
         n = int(max(abs(gap[0]), abs(gap[1])))
         path += [(int(round(path[-1][0] + gap[0] * u / n)), int(round(path[-1][1] + gap[1] * u / n))) for u in range(1, n)]
         if i == ei:                                                  # retour sur le troncon du depart : boucle fermee
             path += list(c[:si + 1] if fwd else c[:len(c) - si])
-            return path[:-1]
+            return [p for p in (path[:-1], longest) if p is not None]
         path += list(c)
         used.add(i)
         node = edges[i]['b'] if fwd else edges[i]['a']
-    return None
+    return [longest] if longest is not None else None
+
+
+MAX_TURN = -0.3          # cos : virage de plus de ~107 deg a un carrefour = demi-tour, interdit
+MAX_EXPAND = 200000      # etats explores au plus (sinon : choix glouton de walk_graph)
+
+
+def _longest_cycle(edges, ei, si, forward, k=10):
+    """Boucle la plus longue depuis le troncon du depart (dans le sens de course) jusqu'a y revenir, chaque troncon
+    une fois, sans demi-tour aux carrefours. Le vrai tour passe partout ; un raccourci, une route interieure ou un
+    detour evite sont plus courts (Turbo Track : la route du milieu coupait 1,5 km ; Android Alley, Cortex Castle).
+    A longueur presque egale (5 %), la plus droite. -> pixels, ou None (pas de boucle / recherche trop longue)."""
+    unit = lambda v: np.asarray(v, float) / max(1e-9, float(np.linalg.norm(v)))
+    by_node = {}
+    for i, e in enumerate(edges):
+        by_node.setdefault(e['a'], []).append((i, True))
+        by_node.setdefault(e['b'], []).append((i, False))
+    seq = lambda i, fwd: edges[i]['px'] if fwd else edges[i]['px'][::-1]
+    tout = {(i, f): unit(np.subtract(seq(i, f)[min(k, len(seq(i, f)) - 1)], seq(i, f)[0])) for i in range(len(edges)) for f in (True, False)}
+    tin = {(i, f): unit(np.subtract(seq(i, f)[-1], seq(i, f)[max(0, len(seq(i, f)) - 1 - k)])) for i in range(len(edges)) for f in (True, False)}
+    first = seq(ei, forward)
+    s0 = si if forward else len(first) - 1 - si          # position du depart dans le troncon parcouru
+    head = len(first) - s0                                # du depart au bout du troncon
+    best = [None, -1.0, 0.0]                              # (chemin de troncons, longueur, rectitude)
+    expand = [0]
+
+    def dfs(node, last, used, length, straight, route):
+        expand[0] += 1
+        if expand[0] > MAX_EXPAND:
+            return
+        for i, fwd in by_node.get(node, []):
+            turn = float(tin[last] @ tout[(i, fwd)])
+            if turn < MAX_TURN:
+                continue
+            if i == ei:
+                if fwd != forward:
+                    continue
+                total = length + s0
+                better = total > best[1] * 1.05 or (total > best[1] * 0.95 and straight + turn > best[2])
+                if better:
+                    best[:] = [route + [(i, fwd)], total, straight + turn]
+                continue
+            if i in used:
+                continue
+            e = edges[i]
+            dfs(e['b'] if fwd else e['a'], (i, fwd), used | {i}, length + len(e['px']), straight + turn, route + [(i, fwd)])
+    dfs(edges[ei]['b'] if forward else edges[ei]['a'], (ei, forward), {ei}, head, 0.0, [(ei, forward)])
+    if best[0] is None or expand[0] > MAX_EXPAND:
+        return None
+    path = list(first[s0:])
+    for i, fwd in best[0][1:]:
+        c = seq(i, fwd)
+        gap = np.subtract(c[0], path[-1])                 # traversee du carrefour (noeud fusionne)
+        n = int(max(abs(gap[0]), abs(gap[1])))
+        path += [(int(round(path[-1][0] + gap[0] * u / n)), int(round(path[-1][1] + gap[1] * u / n))) for u in range(1, n)]
+        path += list(c[:s0 + 1]) if i == ei else list(c)
+    return path[:-1]
 
 
 def _smooth_closed(P, k):
@@ -491,8 +747,10 @@ def _resample_closed(P, step):
     return np.array(out), total
 
 
-def layout(loop, n_sections, overlap=2000.0, spacing=2500.0, finish_lift=660.0, height=2600.0, margin=800.0):
-    """Decoupe une boucle (points tous les ~300 po, depart = ligne d'arrivee) en n sections egales.
+def layout(loop, n_sections, overlap=2000.0, spacing=2500.0, finish_lift=660.0, height=2600.0, margin=800.0,
+           avoid=None):
+    """Decoupe une boucle (points tous les ~300 po, depart = ligne d'arrivee) en n sections egales. avoid(point) :
+    obstacle touche (points de controle resserres la, voir ai_gen.fit_controls).
     -> {'sections': [points de controle de la spline de position (chevauchent de `overlap` les transitions)],
         'transitions': [{position, yaw, dimensions}] (la 1re = ligne d'arrivee, au debut de la boucle),
         'section_paths': [points denses de chaque section (pour placer les reapparitions)]}"""
@@ -509,7 +767,7 @@ def layout(loop, n_sections, overlap=2000.0, spacing=2500.0, finish_lift=660.0, 
     for k in range(n_sections):
         s0, s1 = k * total / n_sections, (k + 1) * total / n_sections
         ids = [idx_at(s) for s in np.arange(s0 - overlap, s1 + overlap + 1, step)]
-        sections.append(fit_controls([list(P[i]) for i in ids], spacing))
+        sections.append(fit_controls([list(P[i]) for i in ids], spacing, avoid=avoid))
         paths.append([list(P[i]) for i in (idx_at(s) for s in np.arange(s0, s1, step))])
         i0 = idx_at(s0)
         t = P[(i0 + 1) % n, :2] - P[(i0 - 1) % n, :2]
@@ -547,11 +805,12 @@ def check_extent(tris, cell=CELL):
                          f're-importe-la a l\'echelle proposee')
 
 
-def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start_z=None, max_gap=0.0):
+def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start_z=None, max_gap=0.0, min_z=None):
     """Boucle centrale de la route (voir l'en-tete du module). `ground` : GroundQuery pour poser le trace sur
     la route ; start_z : hauteur du sol au depart (sinon hauteur max de la route a cet endroit). max_gap (po) :
     trous franchis (saut au-dessus d'un vide, morceaux de route separes) : le trace continue en ligne droite
-    jusqu'au morceau suivant, hauteur interpolee entre le tremplin et la reception ; 0 = aucun."""
+    jusqu'au morceau suivant, hauteur interpolee entre le tremplin et la reception ; 0 = aucun. min_z : plancher de
+    chute du monde (les niveaux de route dessous sont ignores)."""
     check_extent(tris, cell)
     progress.step('image de la route', 0.05)
     mask, zmap, lo, cell = rasterize(tris, cell)
@@ -561,6 +820,11 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
     bridge, n_jumps = np.zeros(mask.shape, bool), 0
     if max_gap > 0:
         closed, bridge, n_jumps = bridge_gaps(closed, max_gap / cell)
+        closed, joined, _ = join_pieces(closed, max_gap / cell)
+        bridge |= joined                                # hauteur interpolee puis posee sur le sol, comme un saut
+        if ground is not None:
+            closed, joined, _ = join_cuts(closed, max_gap / cell, _wall_between(ground, zmap, lo, cell))
+            bridge |= joined
     road = largest_component(closed)
     dmap = depth(road)                                  # largeur reelle (avant bouchage des obstacles)
     mask = fill_small_holes(road)
@@ -570,47 +834,117 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
     if not skel.any():
         raise ValueError('la route ne forme pas de boucle fermee (rien ne reste apres ebarbage)')
     start_px = ((start_xy[1] - lo[1]) / cell, (start_xy[0] - lo[0]) / cell)
-    path = walk_graph(skel, dmap, start_px, heading)          # carrefours, croisements sous un pont
-    if path is None or len(path) < 30:
-        path = walk_loop(skel, dmap, start_px, heading)        # boucle simple (aucun carrefour)
-    if len(path) < 30:
+    paths = [p for p in walk_graph(skel, dmap, start_px, heading) or [] if len(p) >= 30]   # carrefours, ponts
+    if not paths:
+        paths = [walk_loop(skel, dmap, start_px, heading)]     # boucle simple (aucun carrefour)
+    if len(paths[0]) < 30:
         raise ValueError('boucle trop courte : le circuit est-il bien ferme ?')
-    P = np.array([[lo[0] + (x + 0.5) * cell, lo[1] + (y + 0.5) * cell] for y, x in path])
-    P = _smooth_closed(P, max(2, int(round(600 / cell))))
-    P, total = _resample_closed(P, step)
+    # candidates (choix glouton, boucle la plus longue) : la plus longue une fois lissee (le vrai tour, pas un raccourci)
+    best = None
+    for path in paths:
+        P = np.array([[lo[0] + (x + 0.5) * cell, lo[1] + (y + 0.5) * cell] for y, x in path])
+        P = _smooth_closed(P, max(2, int(round(600 / cell))))
+        P, total = _resample_closed(P, step)
+        if best is None or total > best[1]:
+            best = (P, total)
+    P, total = best
     # hauteur : on suit la route en continuite depuis le depart (niveau le plus proche du point precedent),
     # pour ne pas monter sur une passerelle ou une arche qui passe au-dessus
     def zmap_at(x, y):
         iy, ix = int((y - lo[1]) / cell), int((x - lo[0]) / cell)
         zz = zmap[max(0, min(iy, zmap.shape[0] - 1)), max(0, min(ix, zmap.shape[1] - 1))]
         return float(zz) if np.isfinite(zz) else None
-    # hauteur : d'abord la ROUTE elle-meme (zmap = dessus des triangles de route) ; le sol le plus proche pouvait
-    # etre un niveau enfoui sous la route (sable de Mario Circuit 3, 1,1 m dessous : trace, zones et caisses dessous)
-    z_prev = zmap_at(*P[0]) if zmap_at(*P[0]) is not None else (start_z if start_z is not None else 0.0)
-    near_bridge = _dilate(_dilate(bridge)) & ~raw if n_jumps else bridge
+    # hauteur : d'abord la ROUTE elle-meme (ses triangles seuls) ; le sol le plus proche pouvait etre un niveau enfoui
+    # sous la route (sable de Mario Circuit 3, 1,1 m dessous : trace, zones et caisses dessous). Parmi les niveaux de
+    # route, le plus proche du point precedent, pas le plus haut : dans un tuyau (Sewer Speedway) la voute est de la
+    # meme surface que le fond, le trace passait 15 a 38 m au-dessus du sol, sur la voute.
+    from ai_gen import GroundQuery
+    road_q = GroundQuery(tris, np.zeros(len(tris), int))
+    z_prev = start_z if start_z is not None else (zmap_at(*P[0]) if zmap_at(*P[0]) is not None else 0.0)
+    near_bridge = _dilate(_dilate(bridge)) & ~raw if bridge.any() else bridge
     on_bridge = lambda x, y: bool(near_bridge[min(max(int((y - lo[1]) / cell), 0), raw.shape[0] - 1),
                                               min(max(int((x - lo[0]) / cell), 0), raw.shape[1] - 1)])
-    pts, air = [], []
+    pts, air, guess = [], [], set()                    # guess : hauteur reprise du point precedent (rien trouve)
     for x, y in P:
         if on_bridge(x, y):                            # au-dessus du trou : hauteur interpolee ensuite
             pts.append([float(x), float(y), None])
             air.append(True)
             continue
         z = None
-        zm = zmap_at(x, y)
-        if zm is not None and abs(zm - z_prev) < 400:
-            z = zm
+        # sinon le niveau de route le plus proche, a n'importe quelle hauteur : apres une chute de plus de 10 m (Android
+        # Alley), la hauteur gardee restait 40 m au-dessus (ou sous) la route sur tout le reste du tour
+        # (jamais sous le plancher de chute : fond de riviere de Barin Ruins, tuyau inaccessible de Sewer Speedway)
+        levels = [h for h in road_q.heights(x, y) if min_z is None or h > min_z + 100]
+        if levels:
+            z = min(levels, key=lambda v: abs(v - z_prev))
         if z is None and ground is not None:
             g = ground.at(x, y, z_prev, window=300.0)
             z = g[0] if g else None
+        guess.add(len(pts))
         if z is None:
             z = z_prev
+        else:
+            guess.discard(len(pts))
         pts.append([float(x), float(y), z])
         air.append(False)
         z_prev = z
     _interpolate_air(pts)
+    if ground is not None:
+        _lift_onto_ground(pts, [a or i in guess for i, a in enumerate(air)], ground)
     widths = [float(dmap[int((y - lo[1]) / cell), int((x - lo[0]) / cell)]) * cell for x, y, _ in pts]
-    return {'points': pts, 'half_widths': widths, 'length': float(total), 'air': air, 'jumps': n_jumps}
+    moved = _avoid_obstacles(pts, air, widths, ground) if ground is not None else 0
+    return {'points': pts, 'half_widths': widths, 'length': float(total), 'air': air, 'jumps': n_jumps,
+            'obstacles': moved}
+
+
+def _avoid_obstacles(pts, air, half_widths, ground):
+    """Ligne centrale ecartee des objets solides poses sur la route (rocher, pilier : la route continue dessous, la
+    ligne et les IA passaient au travers) : cote libre le plus proche, decalage progressif (pente 0,35 au plus).
+    pts modifies sur place -> nombre de points deplaces."""
+    from ai_gen import CLEARANCE, Obstacles, _slope_envelope, avoid_bounds
+    n = len(pts)
+    if n < 4:
+        return 0
+    P = np.array(pts, np.float64)
+    t = np.roll(P[:, :2], -1, axis=0) - np.roll(P[:, :2], 1, axis=0)
+    t /= np.maximum(np.linalg.norm(t, axis=1), 1e-9)[:, None]
+    normals = [np.array([-v[1], v[0]]) for v in t]
+    ds = np.linalg.norm(np.roll(P[:, :2], -1, axis=0) - P[:, :2], axis=1)
+    slope = list(0.35 * ds)
+    hw = [max(0.0, w - CLEARANCE) for w in half_widths]
+    lo, hi, off = [-w for w in hw], list(hw), [0.0] * n
+    obs, total = Obstacles(ground), 0
+    for _ in range(3):
+        lo, hi, moved = avoid_bounds(obs, P.tolist(), normals, list(P[:, 2]), off, lo, hi, air)
+        if not moved:
+            break
+        total += moved
+        hi_e, lo_e = _slope_envelope(hi, slope, upper=True), _slope_envelope(lo, slope, upper=False)
+        off = [min(h, max(l, o)) if l <= h else o for o, l, h in zip(off, lo_e, hi_e)]
+    if not total:
+        return 0
+    for i, p in enumerate(pts):
+        if off[i]:
+            x, y = p[0] + normals[i][0] * off[i], p[1] + normals[i][1] * off[i]
+            g = ground.at(x, y, p[2], window=300.0)
+            p[0], p[1], p[2] = float(x), float(y), float(g[0]) if g else p[2]
+    return total
+
+
+LIFT_MAX = 1000.0     # po : sol au-dessus d'un trou franchi jusqu'a ~25 m plus haut = le kart roule dessus
+
+
+def _lift_onto_ground(pts, air, ground):
+    """Points franchis (trou de la route, hauteur interpolee ou devinee) sous un sol qui n'est pas de la route : posés
+    dessus. Crash Cove : la route de sable s'interrompt sous une butte d'herbe (la rampe du saut) ; la ligne droite
+    interpolee passait 14 m sous la butte, et les IA avec. Le niveau le plus proche au-dessus est pris (pas un plafond
+    plus haut)."""
+    for p, a in zip(pts, air):
+        if not a:
+            continue
+        above = [h for h in ground.heights(p[0], p[1]) if p[2] < h <= p[2] + LIFT_MAX]
+        if above:
+            p[2] = float(min(above))
 
 
 def _interpolate_air(pts):

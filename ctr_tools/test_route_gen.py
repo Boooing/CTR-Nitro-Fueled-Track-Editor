@@ -51,7 +51,57 @@ def main(archives):
           '3 points de reapparition poses sur le sol de la section 2')
     overpass(check)
     jump(check)
+    cut_twice(check)
+    skewed_gaps(check)
     print('tous les tests passent')
+
+
+def skewed_gaps(check):
+    """Anneau coupe par deux trous en biais (bout de route en biais : 10 m d'un cote, 40 m de l'autre) : le pont
+    au-dessus du trou couvre tout l'espace entre les deux bords, le trace le traverse au milieu de la route (il passait
+    par le coin le plus proche, sur le cote : Crash Cove)."""
+    M = 39.37
+    R, w = 300 * M, 15 * M
+    tris, n, bands = [], 720, 6
+    p = lambda a, r: [r * np.cos(a), r * np.sin(a), 0.0]
+    for i in range(n):
+        a0, a1 = 2 * np.pi * i / n, 2 * np.pi * (i + 1) / n
+        for k in range(bands):
+            r0, r1 = R - w + 2 * w * k / bands, R - w + 2 * w * (k + 1) / bands
+            half = (25 * M + 15 * M * ((r0 + r1) / 2 - R) / w) / 2 / R     # demi-trou : 5 m a l'interieur, 20 m dehors
+            if any(abs((a - c + np.pi) % (2 * np.pi) - np.pi) < half for a in (a0, a1) for c in (1.0, 4.0)):
+                continue
+            tris += [[p(a0, r0), p(a0, r1), p(a1, r1)], [p(a0, r0), p(a1, r1), p(a1, r0)]]
+    tris = np.array(tris)
+    loop = route_gen.road_loop(tris, [R, -100.0], np.pi / 2, ground=ai_gen.GroundQuery(tris, [38] * len(tris)),
+                               max_gap=60 * M)
+    P = np.array(loop['points'])
+    ang = np.arctan2(P[:, 1], P[:, 0])
+    over = P[np.min([np.abs((ang - c + np.pi) % (2 * np.pi) - np.pi) for c in (1.0, 4.0)], axis=0) < 5 * M / R]
+    dev = np.abs(np.hypot(over[:, 0], over[:, 1]) - R) if len(over) else np.array([np.inf])
+    check(loop['length'] > 0.9 * 2 * np.pi * R and len(over) and dev.max() < 0.5 * w,
+          f"trous en biais : {len(over)} point(s) au-dessus, a {dev.max() / M:.1f} m au plus du milieu de la route (bord a {w / M:.0f} m)")
+
+
+def cut_twice(check):
+    """Anneau de route coupe a deux endroits (bandes de 8 m d'une autre surface, bords en dents de scie : les bouts du
+    squelette ne se font pas face) : les deux morceaux sont relies a chaque coupure (Mystery Caves), pas un petit tour."""
+    M = 39.37
+    R, w = 300 * M, 15 * M
+    tris = []
+    n = 720
+    for i in range(n):
+        a0, a1 = 2 * np.pi * i / n, 2 * np.pi * (i + 1) / n
+        cut = lambda a, c: abs((a - c + np.pi) % (2 * np.pi) - np.pi) * R < 4 * M
+        if cut(a0, 1.0) or cut(a1, 1.0) or cut(a0, 4.0) or cut(a1, 4.0):
+            continue
+        jag = (60.0 * (i % 3)) if (cut(a0 - 0.03, 1.0) or cut(a0 + 0.03, 1.0)) else 0.0     # bords irreguliers
+        p = lambda a, r: [r * np.cos(a), r * np.sin(a), 0.0]
+        tris += [[p(a0, R - w - jag), p(a0, R + w), p(a1, R + w)], [p(a0, R - w - jag), p(a1, R + w), p(a1, R - w)]]
+    tris = np.array(tris)
+    loop = route_gen.road_loop(tris, [R, -100.0], np.pi / 2, ground=ai_gen.GroundQuery(tris, [38] * len(tris)),
+                               max_gap=40 * M)
+    check(loop['length'] > 0.9 * 2 * np.pi * R, f"anneau coupe deux fois : boucle de {loop['length'] / M:.0f} m sur {2 * np.pi * R / M:.0f} m")
 
 
 def jump(check):

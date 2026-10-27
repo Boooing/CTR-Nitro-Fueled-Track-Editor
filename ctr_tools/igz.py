@@ -376,6 +376,8 @@ class IgzFile:
         return f1[v & 0x7FFFFFFF] if (v & 0x7FFFFFFF) < len(f1) else None
 
     def handle_list(self, list_off):
+        if list_off is None:                               # liste absente (pointeur nul) : vide
+            return []
         count, _, data = self.list_info(list_off)
         return [self.named_handle(self.u32(data + i * 8)) for i in range(count)]
 

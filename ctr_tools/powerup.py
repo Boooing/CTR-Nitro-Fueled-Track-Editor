@@ -57,15 +57,15 @@ TILT_MIN_DEG = 3.0         # pente plus faible : caisse laissee a plat (Crash Co
 # calcul compare aux caisses inclinees d'origine (sol d'origine) : ecart median 1,5 deg, max 2,8 (Roo's Tubes, 15 caisses)
 
 
-def tilt_outdated(data, height_at, orig_data, tol=0.02):
+def tilt_outdated(data, height_at, orig_data, tol=0.02, crates_only=False):
     """Caisses « ? » / fruits dont l'inclinaison enregistree ne suit pas la pente du sol (fichier ecrit avant ce calcul,
     ou sol modifie) : -> nombre. Les caisses d'origine restees a leur place gardent l'inclinaison du jeu : ignorees."""
     df = DecorFile(data)
     z = df.igz
     by_name = {n: o for o, n in df.names.items()}
-    untouched = {(c['name'], tuple(c['pos'])) for c in read_crates(orig_data)}
+    untouched = {(c['name'], tuple(c['pos'])) for c in read_crates(orig_data, crates_only)}
     n = 0
-    for c in read_crates(data):
+    for c in read_crates(data, crates_only):
         if (c['name'], tuple(c['pos'])) in untouched:
             continue
         o = by_name.get(c['name'])
@@ -194,9 +194,20 @@ def _content_kind(df, ent):
     return None
 
 
-def read_crates(data):
+def is_crate(kind):
+    """Objet gere comme une caisse : caisses « ? » / fruits, boosters, TNT / Nitro / fruit Wumpa poses."""
+    return kind in ('question', 'fruit', 'boost') or kind in EXTRAS
+
+
+def read_crates(data, crates_only=False):
     """[{'name', 'kind' ('question' | 'fruit' | 'boost' | autre nom de donnees), 'pos'} (+ 'yaw', 'dims' pour
-    les boosters)] dans l'ordre du fichier."""
+    les boosters)] dans l'ordre du fichier. crates_only : seulement les caisses (fichier _Design de Coco Park,
+    Turbo Track, Blizzard Bluff, ou elles cotoient la grille, les reapparitions, les succes...)."""
+    out = _read_entities(data)
+    return [c for c in out if is_crate(c['kind'])] if crates_only else out
+
+
+def _read_entities(data):
     df = DecorFile(data)
     z = df.igz
     kind_of = {o: k for k, n in KINDS.items() for o, nm in df.names.items() if nm == n}
@@ -219,12 +230,14 @@ def read_crates(data):
     return out
 
 
-def write_crates(orig_data, crates, donor=None, extras=None, height_at=None):
-    """Fichier reconstruit depuis l'original : crates = [{'name' (caisse d'origine gardee, ou nouvelle / absente),
+def write_crates(orig_data, crates, donor=None, extras=None, height_at=None, crates_only=False, keep_tilt=None):
+    """Fichier reconstruit depuis l'original (crates_only : depuis le _Design enregistre, seules ses caisses sont
+    concernees, ses autres entites restent telles quelles) : crates = [{'name' (caisse d'origine gardee, ou nouvelle / absente),
     'kind', 'pos'} | {'kind': 'boost', 'pos', 'yaw', 'dims'} | {'kind': 'tnt' | 'nitro' | 'wumpa', 'pos'}]. Caisses
     d'origine absentes de la liste : retirees. donor : boost_donor(...) (s'il y a des boosters) ; extras :
     {type: extra_donor(...)} pour les objets d'EXTRAS. height_at(x, y, z) -> hauteur du sol : les caisses posees
-    ou deplacees (et TNT / Nitro) sont inclinees comme la pente (tilt_euler), sinon a plat.
+    ou deplacees (et TNT / Nitro) sont inclinees comme la pente (tilt_euler), sinon a plat. keep_tilt : {(nom, pos)}
+    des caisses du jeu jamais deplacees ; les autres caisses gardees sont re-inclinees (base deja enregistree).
     Retourne (IgzFile, rapport, ids ajoutes)."""
     euler_at = (lambda p: tilt_euler(height_at, *[float(v) for v in p])) if height_at else (lambda p: [0.0, 0.0, 0.0])
     boosts = [c for c in crates if c['kind'] == 'boost']
@@ -233,7 +246,7 @@ def write_crates(orig_data, crates, donor=None, extras=None, height_at=None):
     df = DecorFile(orig_data)
     z = df.igz
     by_name = {n: o for o, n in df.names.items() if z.objects.get(o) in ENTITY_TYPES}
-    orig = {c['name']: c for c in read_crates(orig_data)}
+    orig = {c['name']: c for c in read_crates(orig_data, crates_only)}
     # modele de copie par type : une caisse d'origine de ce type, avec le champ de bits le plus courant
     bits = collections.defaultdict(collections.Counter)
     for n, c in orig.items():
@@ -266,7 +279,13 @@ def write_crates(orig_data, crates, donor=None, extras=None, height_at=None):
         tilted += any(e)
     moved = 0
     for name, c in kept.items():
-        if any(abs(a - b) > 1e-3 for a, b in zip(c['pos'], orig[name]['pos'])):
+        is_moved = any(abs(a - b) > 1e-3 for a, b in zip(c['pos'], orig[name]['pos']))
+        if not is_moved and keep_tilt is not None and height_at and (name, tuple(orig[name]['pos'])) not in keep_tilt:
+            # deja posee / deplacee lors d'une sauvegarde precedente : inclinaison suivant le sol actuel
+            e = euler_at(c['pos'])
+            _set_tilt(df, by_name[name], c['pos'], e, z.u32(template[orig[name]['kind']] + 0x38))
+            tilted += any(e)
+        if is_moved:
             # deplacee : inclinaison du sol a sa nouvelle place (Crash Cove crate_question_001, 19 deg a l'origine,
             # remise a plat ailleurs : un coin rentrait dans le sol)
             e = euler_at(c['pos'])

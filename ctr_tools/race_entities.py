@@ -86,6 +86,25 @@ class RaceSystemEditor(SplineEditor):
         return self.by_name[new_name]
 
 
+    def add_entity_copy(self, new_name, template):
+        """Copie d'une entite (transition, spline de position) avec tout ce qui lui est propre ; listes et position
+        a regler ensuite."""
+        if new_name in self.by_name:
+            raise ValueError(f'{new_name} existe deja')
+        self.igz.deep_clone_entity(self.by_name[template], new_name)
+        self._names()
+        return self.by_name[new_name]
+
+    def remove_entity(self, name):
+        """Retire une entite (transition) de la liste racine, avec ce qu'elle ne partage avec aucune autre."""
+        ent = self.by_name[name]
+        others = set()
+        for n, o in self.by_name.items():
+            if o != ent and self.igz.objects.get(o) in ('CEntity', 'igEntity'):
+                others |= self.igz.reachable(o)[0]
+        self.igz.remove_roots([o for o in self.igz.reachable(ent)[0] if o not in others])
+        self._names()
+
     def forks(self):
         out = {}
         for name, o in self.by_name.items():
@@ -105,6 +124,8 @@ class RaceSystemEditor(SplineEditor):
                     self.set_transition_paths(tname, **{key: [n for n in paths[key] if n != name]})
         for fcomp in self.forks().values():
             lst = self.igz.deref(fcomp + 0x18)                      # _aiPaths
+            if lst is None:                                         # embranchement sans liste (Sewer Speedway)
+                continue
             cur = self.igz.handle_list(lst)
             if any(h and h[0] == name for h in cur):
                 self.igz.set_handle_list(lst, [h for h in cur if h and h[0] != name])
@@ -139,7 +160,14 @@ class TTRStatsEditor:
         """
         sp, segs = self.spline_stats(template)
         if not sp:
-            raise KeyError(f'pas de stats pour {template}')
+            # modele sans stats (Slide Coliseum : 35 des 60 splines IA n'en ont pas) : celles d'une autre spline
+            others = self._objs('CRaceTrackSplineStats')
+            if not others:
+                raise KeyError(f'pas de stats pour {template}')
+            h0 = self.igz.u32(others[0] + 0x0C)
+            sp = [o for o in others if self.igz.u32(o + 0x0C) == h0]
+            segs = sorted((o for o in self._objs('CRaceTrackSplineSegmentStats') if self.igz.u32(o + 0x0C) == h0),
+                          key=lambda o: self.igz.u32(o + 0x10))
         h = fnv1a(new_name)
         n = 0
         for o in sp:

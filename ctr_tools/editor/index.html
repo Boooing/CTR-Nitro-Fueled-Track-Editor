@@ -134,6 +134,9 @@
       <label><input type="checkbox" id="showhelp" checked> Afficher l'aide des raccourcis</label>
       <div class="sep"></div>
       <button id="archdir" title="Dossier « archives » du jeu installé pour shadPS4">📁 Dossier des archives du jeu…</button>
+      <button id="packexp" title="Une ou plusieurs de tes maps dans un .zip à partager (sans aucun fichier du jeu)">📦 Exporter des maps (.zip)…</button>
+      <button id="packimp" title="Installe les maps d'un pack .zip à la place des pistes de ton choix">📦 Importer un pack de maps (.zip)…</button>
+      <div class="sep"></div>
       <button id="uninstall" title="Remet les archives du jeu d'origine (ta piste reste enregistrée dans l'éditeur)">↩ Restaurer les archives du jeu</button>
       <button id="reset" class="danger" title="Oublie les modifications enregistrées du mode actuel">🗑 Repartir de l'original</button>
     </div>
@@ -188,6 +191,8 @@
    <div class="body"><div id="crates" class="card"></div></div></details>
   <details class="sec" open><summary>⚡ Boosters <span class="hint">plaques turbo</span></summary>
    <div class="body"><div id="boosts" class="card"></div></div></details>
+  <details class="sec" id="secflyby"><summary>🎬 Survol d'introduction <span class="hint">caméras avant la course</span></summary>
+   <div class="body"><div id="flyby" class="card"></div></div></details>
   <details class="sec adv"><summary>🔧 Avancé : transitions et splines</summary>
    <div class="body">
     <h3>Transitions (clic : éditer les liens)</h3><div id="transitions"></div>
@@ -209,8 +214,16 @@
   <details class="sec" open><summary>📚 Objets du jeu <span class="hint">palmiers, panneaux, rochers…</span></summary>
    <div class="body"><p class="lead">Des objets des autres pistes du jeu, avec leurs textures, posés au centre de la vue.</p>
     <div class="stack"><button id="dlib" title="Parcourir les objets de décor des 47 pistes et arènes">Bibliothèque d'objets du jeu…</button></div></div></details>
+  <details class="sec" open><summary>🧱 Murs invisibles <span class="hint">collision seule, rien à l'écran en jeu</span></summary>
+   <div class="body"><p class="lead">Empêchent les karts de tomber ou de couper. En violet dans l'éditeur ; chaque morceau se déplace, se tourne, s'allonge (échelle X) ou se rehausse (échelle Z) avec les poignées. Un modèle OBJ peut aussi devenir un mur invisible (clic droit, ou à l'import).</p>
+    <div class="stack"><button id="dwallauto" class="primary" title="Murs le long des bords de la route, là où il y a du vide (et hors route si tu veux)">Générer le long de la route…</button>
+     <button id="dwallzone" title="Clique (Maj+clic : plusieurs) les parties de la map dans la vue 3D, puis ce bouton : murs le long de leurs bords, jamais sur le parcours">Murs autour de la sélection…</button>
+     <button id="dwalladd" title="Mur droit de 20 m au centre de la vue, face à la caméra">Ajouter un mur au centre de la vue</button>
+     <button id="dwallsel" title="Pour les déplacer ou les supprimer (Suppr) ensemble">Sélectionner tous les murs invisibles</button></div>
+    <label style="display:flex;gap:6px;align-items:center;margin:6px 0 0"><input type="checkbox" id="dwallvis" checked> Afficher les murs invisibles</label></div></details>
   <details class="sec" open><summary>🛠 Finitions de la map</summary>
    <div class="body"><div class="stack">
+    <button id="dmovez" title="Monte ou descend tous les objets du décor d'un coup (la collision suit à l'enregistrement)">↕ Déplacer toute la map en hauteur…</button>
     <button id="dlight" title="Collision simplifiée, textures en 512, nettoyage des modèles inutilisés">Alléger la map…</button>
     <button id="dalpha" title="Découpe alpha (feuillages, grillages) des textures importées">Transparence des textures…</button>
     <button id="dambiance" title="Jour, soir ou nuit : soleil, brouillard, couleurs de l'image">🌅 Ambiance (jour, soir, nuit)…</button></div></div></details>
@@ -271,7 +284,11 @@ function resize() {
 }
 addEventListener('resize', resize);
 let tour = null;                                          // visite virtuelle en cours (voir startTour)
-renderer.setAnimationLoop(t => { if (tour) tourTick(t); renderer.render(scene, camera); });
+renderer.setAnimationLoop(t => {
+  if (tour) tourTick(t);
+  if (flyPreview) flyPreview();                         // lecture du survol d'introduction (voir playFlyby)
+  renderer.render(scene, camera);
+});
 
 // ---- state ------------------------------------------------------------------------------
 let track = null, splines = [], transitions = {}, starting = [], deleted = [], colMesh = null, selected = null,
@@ -319,7 +336,7 @@ function renderPanel() {
   for (const t of Object.values(transitions)) {
     const row = document.createElement('div'); row.className = 'row' + (editingTransition === t.name ? ' sel' : '');
     row.innerHTML = `<span class="sw" style="background:${t.increment_lap ? 'var(--ok)' : '#888'}"></span>
-      <label title="${esc(t.name)}">${esc(t.name.replace(/^.*?Transition_?/i, 'Transition '))}</label>
+      <label title="${esc(t.name)}">${esc(t.name.replace(/^.*?Transition_?/i, 'Transition '))}</label>${t.isNew ? '<span class="tag new">nouvelle</span>' : ''}
       <span class="tag">${t.previous_ai.length}→${t.next_ai.length} IA</span>`;
     row.querySelector('label').onclick = () => { editingTransition = t.name; renderPanel(); focusOn(t.position); };
     tb.appendChild(row);
@@ -381,7 +398,9 @@ function renderTransitionEditor() {
   const t = transitions[editingTransition]; if (!t) return;
   const card = document.createElement('div'); card.className = 'card';
   let html = `<div style="display:flex;justify-content:space-between;gap:6px"><b>${esc(t.name)}</b><button id="tclose">Fermer</button></div>
-    <label style="display:flex;gap:6px;margin:6px 0"><input type="checkbox" id="tlap" ${t.increment_lap ? 'checked' : ''}> ligne d'arrivée (incrementLap)</label>`;
+    <label style="display:flex;gap:6px;margin:6px 0"><input type="checkbox" id="tlap" ${t.increment_lap ? 'checked' : ''}> ligne d'arrivée (incrementLap)</label>
+    <div class="btns" style="margin-bottom:4px"><button id="tadd2" title="Coupe la section qui suit cette zone en deux : nouvelle transition au milieu, nouvelle spline de position pour la seconde moitié">✂ Ajouter une transition dans la section suivante</button>
+    <button id="tdel2" class="danger" ${t.increment_lap ? 'disabled title="La ligne d\'arrivée ne peut pas être supprimée"' : 'title="Les deux sections autour de cette zone fusionnent ; leurs splines IA sont refaites"'}>🗑 Supprimer cette transition</button></div>`;
   for (const [key, label, kind] of LIST_KEYS) {
     html += `<div style="color:var(--muted);font-size:11px;margin-top:6px">${label}</div><div class="links">`;
     for (const s of splines.filter(s => s.kind === kind)) {
@@ -391,6 +410,8 @@ function renderTransitionEditor() {
   }
   card.innerHTML = html;
   card.querySelector('#tclose').onclick = () => { editingTransition = null; renderPanel(); };
+  card.querySelector('#tadd2').onclick = () => addTransitionAfter(t);
+  card.querySelector('#tdel2').onclick = () => deleteTransitionUi(t);
   card.querySelector('#tlap').onchange = e => { t.increment_lap = e.target.checked; markDirty(); renderTransitionMarkers(); renderPanel(); };
   card.querySelectorAll('input[data-key]').forEach(cb => cb.onchange = e => {
     const { key, name } = e.target.dataset;
@@ -454,7 +475,7 @@ function renderStartMarkers() {
 }
 // rotation limitee au cap (axe Z) pour la grille et les zones ; caisses : deplacement seulement
 function applyGizmoAxes() {
-  if (mode === 'race' && selected?.kind === 'crate' && gizmo.getMode() !== 'translate') gizmo.setMode('translate');
+  if (mode === 'race' && (selected?.kind === 'crate' || selected?.kind === 'flyPose') && gizmo.getMode() !== 'translate') gizmo.setMode('translate');
   const yawOnly = mode === 'race' && selected?.kind && gizmo.getMode() === 'rotate';
   gizmo.showX = gizmo.showY = !yawOnly;
   // poignees de taille : zones de transition et boosters (profondeur X, largeur Y, hauteur Z)
@@ -599,7 +620,8 @@ function renderBoostMarkers() {
     // plaque au sol + fleche (sens du turbo = +X local)
     const pad = new THREE.Mesh(new THREE.PlaneGeometry(d[0], d[1]), new THREE.MeshBasicMaterial({ color: 0xffb020, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthTest: false }));
     pad.position.z = 5; pad.renderOrder = 12; pad.raycast = () => {};
-    const arrow = new THREE.Mesh(new THREE.ConeGeometry(Math.min(d[0], d[1]) * 0.25, d[0] * 0.6, 3), new THREE.MeshBasicMaterial({ color: 0x1a2a6a, depthTest: false }));
+    const arrow = new THREE.Mesh(new THREE.ConeGeometry(Math.min(d[0], d[1]) * 0.25, d[0] * 0.6, 3), new THREE.MeshBasicMaterial({ color: 0x000000, depthTest: false, transparent: true, opacity: 1 }));
+    // noire et dessinee apres la plaque et les faces de la boite (rendu transparent, renderOrder) : bien visible
     arrow.rotation.z = -Math.PI / 2; arrow.position.z = 15; arrow.renderOrder = 13; arrow.raycast = () => {};
     m.add(pad, arrow);
     m.position.set(b.pos[0], b.pos[1], b.pos[2]); m.rotation.set(0, 0, b.yaw || 0);
@@ -647,6 +669,107 @@ function makeTeleporter(t) {
   teleporters[t.name] = { pos: [p[0], p[1], (g ?? p[2]) + 60], yaw };
   renderTransitionMarkers(); markDirty(); selectTeleportArrival(t.name);
   status('Téléporteur créé : place l\'anneau violet (arrivée) avec W / E, puis enregistre');
+}
+// ---- survol d'introduction (cinematique avant la course) ------------------------------------------
+// Plans des archives <piste>_*flyby*.pak ; un plan = pose de debut et de fin (position de la camera + point
+// regarde) ; le serveur recalcule les cles (mouvement adouci, meme minutage). flyby = {cle: modele} des plans
+// modifies (absents : plan d'origine).
+let flybyShots = [], flyby = {}, flybyLoaded = '{}', flyPreview = null;
+const flyGroup = new THREE.Group(); scene.add(flyGroup);
+const FLY_COLORS = [0x4fd1c5, 0xf6ad55, 0xb794f4, 0xfc8181, 0x68d391];
+const flyCamGeo = new THREE.ConeGeometry(90, 220, 4).rotateZ(-Math.PI / 2);   // pointe vers +X
+const flyModel = s => flyby[s.key] || s.original;
+const flyEase = t => t * t * (3 - 2 * t);
+function flyPoseAt(m, t) {
+  const s = flyEase(t), lerp = (a, b) => a.map((v, k) => v + (b[k] - v) * s);
+  return { pos: lerp(m.start.pos, m.end.pos), look: lerp(m.start.look, m.end.look) };
+}
+function renderFlybyMarkers() {
+  flyGroup.clear();
+  if (!$('flyshow')?.checked) return;
+  flybyShots.forEach((s, i) => {
+    const m = flyModel(s), col = FLY_COLORS[i % FLY_COLORS.length];
+    const pts = Array.from({ length: 13 }, (_, k) => new THREE.Vector3(...flyPoseAt(m, k / 12).pos));
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: col, depthTest: false }));
+    line.renderOrder = 9; line.raycast = () => {}; flyGroup.add(line);
+    for (const which of ['start', 'end']) {
+      const p = m[which], sel = selected?.kind === 'flyPose' && selected.key === s.key && selected.which === which;
+      const cam = new THREE.Mesh(flyCamGeo, new THREE.MeshBasicMaterial({ color: sel && selected.part === 'pos' ? 0xffe27a : col, depthTest: false }));
+      const d = new THREE.Vector3(...p.look).sub(new THREE.Vector3(...p.pos));
+      cam.position.set(...p.pos); cam.rotation.set(0, -Math.atan2(d.z, Math.hypot(d.x, d.y)), Math.atan2(d.y, d.x), 'ZYX');
+      cam.renderOrder = 10; cam.userData = { kind: 'flyPose', key: s.key, which, part: 'pos' };
+      cam.add(numberSprite(`${i + 1}${which === 'start' ? '▶' : '■'}`));
+      const look = new THREE.Mesh(new THREE.SphereGeometry(70, 10, 8), new THREE.MeshBasicMaterial({ color: sel && selected.part === 'look' ? 0xffe27a : col, depthTest: false, transparent: true, opacity: 0.8 }));
+      look.position.set(...p.look); look.renderOrder = 10; look.userData = { kind: 'flyPose', key: s.key, which, part: 'look' };
+      const ray = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...p.pos), new THREE.Vector3(...p.look)]),
+        new THREE.LineDashedMaterial({ color: col, dashSize: 120, gapSize: 120, depthTest: false }));
+      ray.computeLineDistances(); ray.raycast = () => {}; ray.renderOrder = 9;
+      flyGroup.add(cam, look, ray);
+    }
+  });
+}
+function renderFlybyPanel() {
+  const box = $('flyby'); if (!box) return;
+  if (!flybyShots.length) { box.innerHTML = '<span style="color:var(--muted)">Pas de survol d\'introduction pour cette piste.</span>'; return; }
+  const n = Object.keys(flyby).length;
+  box.innerHTML = `<div style="color:var(--muted);font-size:12px;margin-bottom:6px">Cinématique jouée avant la course. Sur une map importée, les caméras
+      d'origine filment l'ancienne piste : génère des plans d'après ton parcours, ou mets un plan fixe derrière la grille.</div>
+    ${flybyShots.map((s, i) => `<div class="row" style="gap:6px"><span class="sw" style="background:${hex(FLY_COLORS[i % FLY_COLORS.length])}"></span>
+      <span style="flex:1">${esc(s.label)} <span style="color:var(--muted);font-size:11px">${s.duration.toFixed(1)} s${s.final ? ' · fin sur la grille' : ''}</span>
+      ${flyby[s.key] ? '<span class="tag new">modifié</span>' : ''}</span>
+      <button data-fv="${i}" title="Joue le plan dans la vue 3D">▶</button><button data-fe="${i}" title="Sélectionne la caméra de début du plan">Modifier</button>
+      ${flyby[s.key] ? `<button data-fo="${i}" title="Plan d'origine">↺</button>` : ''}</div>`).join('')}
+    <label style="display:flex;gap:6px;margin:6px 0"><input type="checkbox" id="flyshow" ${$('flyshow')?.checked ? 'checked' : ''}> Afficher les caméras dans la vue 3D</label>
+    <div class="btns" style="display:flex;gap:6px;flex-wrap:wrap">
+      <button id="flyauto" class="primary" title="Travellings le long de ton parcours, puis descente vers la grille">Générer depuis le parcours</button>
+      <button id="flyfixed" title="Tous les plans : caméra fixe derrière la grille (le survol ne montre plus rien de faux)">Plan fixe sur la grille</button>
+      <button id="flyplay">▶ Tout voir</button>${n ? '<button id="flyorig">Tout remettre d\'origine</button>' : ''}</div>`;
+  box.querySelectorAll('[data-fv]').forEach(b => b.onclick = () => playFlyby([flybyShots[+b.dataset.fv]]));
+  box.querySelectorAll('[data-fe]').forEach(b => b.onclick = () => selectFlyPose(flybyShots[+b.dataset.fe].key, 'start', 'pos'));
+  box.querySelectorAll('[data-fo]').forEach(b => b.onclick = () => { delete flyby[flybyShots[+b.dataset.fo].key]; flybyChanged(); });
+  $('flyshow').onchange = () => { renderFlybyMarkers(); };
+  $('flyplay').onclick = () => playFlyby(flybyShots.filter(s => !s.label.startsWith('Survol court')));
+  $('flyorig')?.addEventListener('click', () => { flyby = {}; flybyChanged(); });
+  const gen = async mode => {
+    try {
+      const r = await api('/api/flyby_auto', { track, mode });
+      flyby = { ...r.models }; $('flyshow').checked = true; flybyChanged();
+      status(mode === 'fixed' ? 'Plan fixe derrière la grille pour tout le survol — enregistre puis installe'
+        : 'Survol généré d\'après le parcours — ▶ pour le voir, déplace les caméras si besoin, puis enregistre', 'ok');
+    } catch (e) { status('Erreur : ' + e.message, 'err'); }
+  };
+  $('flyauto').onclick = () => gen('auto');
+  $('flyfixed').onclick = () => gen('fixed');
+}
+function flybyChanged() {
+  if (selected?.kind === 'flyPose') select(null);
+  renderFlybyMarkers(); renderFlybyPanel(); markDirty();
+}
+function selectFlyPose(key, which, part) {
+  if (!$('flyshow').checked) { $('flyshow').checked = true; }
+  select(null); renderFlybyMarkers();
+  select(flyGroup.children.find(x => x.userData.kind === 'flyPose' && x.userData.key === key && x.userData.which === which && x.userData.part === part));
+}
+// lecture d'un ou plusieurs plans dans la vue 3D (camera de l'editeur), puis retour a la vue d'avant
+function playFlyby(shots) {
+  if (flyPreview) return;
+  const saved = { pos: camera.position.clone(), target: orbit.target.clone(), fov: camera.fov };
+  const list = shots.map(s => ({ m: flyModel(s), d: s.duration * 1000 }));
+  const total = list.reduce((a, s) => a + s.d, 0), t0 = performance.now();
+  const shown = flyGroup.visible;
+  orbit.enabled = false; gizmo.visible = false; flyGroup.visible = false; camera.fov = 70; camera.updateProjectionMatrix();
+  flyPreview = () => {
+    let t = performance.now() - t0;
+    if (t >= total) {
+      camera.position.copy(saved.pos); orbit.target.copy(saved.target); camera.fov = saved.fov; camera.updateProjectionMatrix();
+      orbit.enabled = true; gizmo.visible = true; flyGroup.visible = shown; orbit.update(); flyPreview = null; status('Fin du survol'); return false;
+    }
+    const s = list.find(x => (t -= x.d) < 0) || list[list.length - 1];
+    const p = flyPoseAt(s.m, Math.min(1, (t + s.d) / s.d));
+    camera.position.set(...p.pos); camera.up.set(0, 0, 1); camera.lookAt(...p.look);
+    return true;
+  };
+  status('Survol en cours…');
 }
 function removeTeleporter(name) {
   delete teleporters[name];
@@ -811,6 +934,14 @@ function startChanged() {
       t.dimensions = [0, 1, 2].map(k => Math.max(100, Math.round(base[k] * Math.abs(m.scale.getComponent(k)))));
     }
     if (teleporters[sel.name]) renderTeleportMarkers();  // trajet portail -> arrivee
+  } else if (sel.kind === 'flyPose') {
+    const m = flyGroup.children.find(x => x.userData.kind === 'flyPose' && x.userData.key === sel.key && x.userData.which === sel.which && x.userData.part === sel.part);
+    const s = flybyShots.find(x => x.key === sel.key);
+    if (m && s) {
+      const cur = JSON.parse(JSON.stringify(flyModel(s)));
+      cur[sel.which][sel.part] = m.position.toArray().map(v => Math.round(v * 10) / 10);
+      flyby[sel.key] = cur;
+    }
   } else if (sel.kind === 'tpArrival') {
     const m = tpGroup.children.find(x => x.userData.kind === 'tpArrival' && x.userData.name === sel.name);
     if (m) {
@@ -858,6 +989,7 @@ function renderStartSelection(valuesOnly) {
   if (sel.kind === 'grid') { ({ pos, yaw } = startGrid[sel.index]); }
   else if (sel.kind === 'gridAll') { pos = gridPivot.position.toArray(); yaw = gridPivot.rotation.z; }
   else if (sel.kind === 'tpArrival') { ({ pos, yaw } = teleporters[sel.name]); }
+  else if (sel.kind === 'flyPose') { pos = flyModel(flybyShots.find(x => x.key === sel.key))[sel.which][sel.part]; yaw = 0; }
   else { const t = transitions[sel.name]; pos = t.position; yaw = t.yaw || 0; }
   if (valuesOnly && box.querySelector('[data-s]')) {
     const vals = { pos, yaw: [yaw * DEG], dim: sel.kind === 'transition' ? transitions[sel.name]?.dimensions || [] : [] };
@@ -875,6 +1007,40 @@ function renderStartSelection(valuesOnly) {
     html = `<div><b>Grille de départ complète</b> (8 places + repère bleu)</div>
       <div style="color:var(--muted);font-size:11px">Déplace / tourne tout le bloc. La flèche blanche = sens de départ.</div>
       ${field('pos', 'Centre', pos, 50)}${field('yaw', 'Rotation°', [yaw * DEG], 5)}${modes}`;
+  } else if (sel.kind === 'flyPose') {
+    const s = flybyShots.find(x => x.key === sel.key), i = flybyShots.indexOf(s);
+    const other = (w, p) => `<button data-fp="${w}:${p}" ${w === sel.which && p === sel.part ? 'disabled' : ''}>${w === 'start' ? 'Début' : 'Fin'} · ${p === 'pos' ? 'caméra' : 'regard'}</button>`;
+    html = `<div><b>🎬 ${esc(s.label)}</b> — ${sel.which === 'start' ? 'début' : 'fin'} du plan, ${sel.part === 'pos' ? 'position de la caméra' : 'point regardé'}</div>
+      <div style="color:var(--muted);font-size:11px">Pendant ${s.duration.toFixed(1)} s, la caméra glisse de sa position de début à celle de fin en tournant
+      d'un point regardé (boule) à l'autre. Astuce : cadre la vue 3D comme tu veux, puis « Prendre la vue actuelle ».</div>
+      ${field('pos', 'Position', pos, 50)}
+      <div class="btns" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">${other('start', 'pos')}${other('start', 'look')}${other('end', 'pos')}${other('end', 'look')}</div>
+      <div class="btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+        <button id="flytake" class="primary" title="La caméra de ${sel.which === 'start' ? 'début' : 'fin'} prend la position et la direction de la vue 3D actuelle">Prendre la vue actuelle</button>
+        <button id="flylookthrough" title="Place la vue 3D à la place de cette caméra">Regarder par cette caméra</button>
+        <button id="flyplay1">▶ Voir le plan</button>
+        ${flyby[s.key] ? '<button id="flyorig1">Plan d\'origine</button>' : ''}</div>`;
+    box.innerHTML = html;
+    box.querySelectorAll('[data-fp]').forEach(b => b.onclick = () => { const [w, p] = b.dataset.fp.split(':'); selectFlyPose(s.key, w, p); });
+    box.querySelectorAll('[data-s]').forEach(inp => inp.onchange = () => {
+      const k = +inp.dataset.s.split(':')[1], v = parseFloat(inp.value); if (Number.isNaN(v)) return;
+      const cur = JSON.parse(JSON.stringify(flyModel(s))); cur[sel.which][sel.part][k] = v; flyby[s.key] = cur;
+      selectFlyPose(s.key, sel.which, sel.part); renderFlybyPanel(); markDirty();
+    });
+    $('flytake').onclick = () => {
+      const cur = JSON.parse(JSON.stringify(flyModel(s))), dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+      const p = camera.position.toArray().map(v => Math.round(v * 10) / 10);
+      cur[sel.which] = { pos: p, look: p.map((v, k) => Math.round((v + dir.getComponent(k) * 3000) * 10) / 10) };
+      flyby[s.key] = cur; selectFlyPose(s.key, sel.which, sel.part); renderFlybyPanel(); markDirty();
+      status(`${s.label} : ${sel.which === 'start' ? 'début' : 'fin'} = vue actuelle`);
+    };
+    $('flylookthrough').onclick = () => {
+      const p = flyModel(s)[sel.which];
+      camera.position.set(...p.pos); orbit.target.set(...p.look); orbit.update();
+    };
+    $('flyplay1').onclick = () => playFlyby([s]);
+    $('flyorig1')?.addEventListener('click', () => { delete flyby[s.key]; flybyChanged(); });
+    return;
   } else if (sel.kind === 'tpArrival') {
     html = `<div><b>🌀 Arrivée du téléporteur</b> <span style="color:var(--muted);font-size:11px">${esc(sel.name)}</span></div>
       <div style="color:var(--muted);font-size:11px">Le kart qui entre dans la zone violette réapparaît ici, flèche blanche = sens de la course.
@@ -893,6 +1059,8 @@ function renderStartSelection(valuesOnly) {
       ${t.increment_lap ? '<button id="sgalign">Replacer la grille derrière cette ligne</button>' : ''}</div>
       <div style="color:var(--muted);font-size:11px;margin-top:4px">Après avoir déplacé une zone : « Raccorder les splines IA » (sinon les IA
       arrivent au bout de leur spline avant la zone et tournent en rond).</div>
+      <div class="btns" style="margin-top:6px"><button id="tadd" title="Coupe la section qui suit cette zone en deux : nouvelle transition au milieu, nouvelle spline de position pour la seconde moitié">✂ Ajouter une transition dans la section suivante</button>
+      <button id="tdel" class="danger" ${t.increment_lap ? 'disabled title="La ligne d\'arrivée ne peut pas être supprimée"' : 'title="Les deux sections autour de cette zone fusionnent ; leurs splines IA sont refaites"'}>🗑 Supprimer cette transition</button></div>
       <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:6px">${teleporters[t.name]
         ? `<div><b>🌀 Téléporteur</b> <span class="tag" style="background:#b36bff33;color:#d6b0ff">portail</span></div>
            <div style="color:var(--muted);font-size:11px;margin:2px 0">Les karts qui entrent dans cette zone réapparaissent à l'arrivée (anneau violet), avec l'effet de
@@ -929,6 +1097,8 @@ function renderStartSelection(valuesOnly) {
     teleporters[sel.name] = { pos: [tp.pos[0], tp.pos[1], (g ?? tp.pos[2] - 60) + 60], yaw: h ?? tp.yaw };
     selectTeleportArrival(sel.name); markDirty();
   });
+  $('tadd')?.addEventListener('click', () => addTransitionAfter(transitions[sel.name]));
+  $('tdel')?.addEventListener('click', () => deleteTransitionUi(transitions[sel.name]));
   $('sjoin')?.addEventListener('click', () => {
     const r = joinAiSplinesToTransition(transitions[sel.name]);
     markDirty(); renderPanel(); status('Splines IA : ' + r + ' (enregistre puis installe)');
@@ -1066,11 +1236,13 @@ function renderSelection(valuesOnly) {
   box.innerHTML = `<div><b>${esc(s.name)}</b> — point ${i + 1}/${s.points.length} ${s.isNew ? '<span class="tag new">nouvelle</span>' : ''}</div>
     <div class="xyz">x ${p[0].toFixed(1)}  y ${p[1].toFixed(1)}  z ${p[2].toFixed(1)}</div>
     <div class="btns"><button id="ins">+ Point après</button><button id="del">Supprimer le point</button>
-    ${ai ? '<button id="dup">Dupliquer la spline</button><button id="rmspl" class="danger">Supprimer la spline</button>' : ''}</div>
+    ${ai ? '<button id="dup">Dupliquer la spline</button><button id="rmspl" class="danger">Supprimer la spline</button>'
+         : '<button id="cut" title="Nouvelle transition à ce point : la section est coupée en deux">✂ Nouvelle transition ici</button>'}</div>
     <div class="btns" style="margin-top:6px"><button id="genai" class="primary" title="Splines IA réparties sur la largeur de la route, d'après le sol">Générer les splines IA de cette section…</button></div>`;
   $('ins').onclick = insertAfter; $('del').onclick = removeSelected;
   $('genai').onclick = () => openAiGenerator(s);
   if (ai) { $('dup').onclick = duplicateSpline; $('rmspl').onclick = deleteSpline; }
+  else $('cut').onclick = cutSectionHere;
 }
 
 // ---- edition ----------------------------------------------------------------------------
@@ -1087,6 +1259,11 @@ function select(handle) {
     renderBoostMarkers(); if (selected?.kind === 'boost') handle = boostGroup.children.find(x => x.userData.index === selected.index);
   }
   if (selected?.kind === 'transition') { renderTransitionMarkers(); handle = markers.children.find(x => x.userData.name === selected.name); }
+  if (was === 'flyPose' || selected?.kind === 'flyPose') {
+    renderFlybyMarkers();
+    if (selected?.kind === 'flyPose') handle = flyGroup.children.find(x => x.userData.kind === 'flyPose' && x.userData.key === selected.key
+                                                                       && x.userData.which === selected.which && x.userData.part === selected.part);
+  }
   if (was === 'tpArrival' || selected?.kind === 'tpArrival') {
     renderTeleportMarkers();
     if (selected?.kind === 'tpArrival') handle = tpGroup.children.find(x => x.userData.kind === 'tpArrival' && x.userData.name === selected.name);
@@ -1095,6 +1272,10 @@ function select(handle) {
   applyGizmoAxes();
   renderSelection(); renderPanel();
 }
+// camera de survol relachee : lignes du plan redessinees (la poignee est recreee puis reprise)
+gizmo.addEventListener('dragging-changed', e => {
+  if (!e.value && mode === 'race' && selected?.kind === 'flyPose') { const s = selected; selectFlyPose(s.key, s.which, s.part); renderFlybyPanel(); }
+});
 gizmo.addEventListener('objectChange', () => {
   if (mode === 'decor') { decorChanged(); return; }
   if (!selected) return;
@@ -1119,6 +1300,7 @@ renderer.domElement.addEventListener('pointerup', e => {
     || ray.intersectObjects(crateGroup.children, false)[0] || ray.intersectObjects(boostGroup.children, false)[0]
     || ray.intersectObjects(startGroup.children, false)[0]
     || ray.intersectObjects(tpGroup.children.filter(x => x.userData.kind === 'tpArrival'), false)[0]
+    || ray.intersectObjects(flyGroup.children.filter(x => x.userData.kind === 'flyPose'), false)[0]
     || ray.intersectObjects(markers.children, false)[0];
   select(hit ? hit.object : null);
 });
@@ -1259,12 +1441,15 @@ function replaceSpecial(old, pts) {
 // Toute la piste en une fois : chaque section (spline de position) puis, en option, les chemins speciaux ;
 // raccords de toutes les transitions a la fin ; une seule etape d'annulation.
 async function regenerateAllAi(opt) {
-  const sections = splines.filter(s => s.kind === 'position_paths').map(ref => ({ ref, ...sectionOf(ref) }));
+  // opt.only : splines de position du tour seulement (« Créer le parcours » : branches de l'ancien trace detachees) ;
+  // opt.share : section qui avait plusieurs branches -> ses IA etaient partagees entre elles
+  const sections = splines.filter(s => s.kind === 'position_paths' && (!opt.only || opt.only.has(s.name)))
+    .map(ref => ({ ref, ...sectionOf(ref) }));
   const specials = opt.specials && !opt.dropSpecials ? splines.filter(s => s.kind === 'ai_paths' && isSpecialAi(s)) : [];
   let k = 0;
   for (const sec of sections) {                       // calculs d'abord (rien n'est modifie si une requete echoue)
     status(`Génération : section ${++k}/${sections.length}…`);
-    sec.n = opt.lanes || sec.existing.length || 5;
+    sec.n = opt.lanes || Math.round(sec.existing.length / (opt.share?.[sec.ref.name] || 1)) || 5;
     // keepAir (parcours cree depuis la route, splines a hauteur de route) : au-dessus d'un trou franchi, les voies
     // gardent la hauteur du parcours au lieu de descendre au fond du trou
     sec.res = await api('/api/gen_ai_splines', { track, reference: sec.ref.points, lanes: sec.n, randomness: opt.randomness,
@@ -1290,6 +1475,14 @@ async function regenerateAllAi(opt) {
     }
   }
   const joins = Object.values(transitions).map(t => joinAiSplinesToTransition(t));
+  // transitions de passage au milieu d'une section (Coco Park Spline_Transition_002 : de 201_OLD vers 201_OLD) :
+  // IA precedentes = suivantes = celles de la section, comme dans le jeu
+  for (const t of Object.values(transitions)) {
+    const same = (t.next_position || []).find(n => (t.previous_position || []).includes(n));
+    if (!same || t.next_ai.length) continue;
+    const entry = Object.values(transitions).find(x => x !== t && x.next_position?.includes(same) && !x.previous_position?.includes(same));
+    if (entry?.next_ai.length) { t.next_ai = [...entry.next_ai]; t.previous_ai = [...entry.next_ai]; }
+  }
   const left = splines.filter(s => s.kind === 'ai_paths' && !s.isNew && !covered.has(s.name) && !(opt.specials && isSpecialAi(s)));
   const knotted = splines.filter(s => s.kind === 'ai_paths' && knots(s.points) > 0).map(s => s.name);
   select(null); renderPanel(); markDirty();
@@ -1310,6 +1503,152 @@ function knots(points) {
     }
   return n;
 }
+// ---- sections : transitions ajoutees / retirees (serveur : save_track, plan_sections) ----------------
+// Ajout : une transition coupe une section ; la seconde moitie devient une nouvelle spline de position (copie de la
+// premiere cote serveur), la transition est une copie d'une transition ordinaire ; IA de la section inchangees
+// (transition de passage : IA precedentes = suivantes, comme Coco Park Spline_Transition_002). Retrait : les deux
+// sections fusionnent et leurs IA sont regenerees. Reapparitions / embranchements : rattaches par le serveur.
+let deletedTransitions = [], sectionMerges = {};
+const isPassThrough = t => (t.next_position || []).some(n => (t.previous_position || []).includes(n));
+function nextEntityName(template) {
+  const taken = new Set([...splines.map(s => s.name), ...Object.keys(transitions), ...deleted, ...deletedTransitions]);
+  const m = template.match(/^(.*?)(\d+)(\D*)$/);
+  if (m) for (let k = +m[2] + 1; ; k++) { const n = m[1] + String(k).padStart(m[2].length, '0') + m[3]; if (!taken.has(n)) return n; }
+  let k = 2; while (taken.has(`${template}_${k}`)) k++;
+  return `${template}_${k}`;
+}
+// section s coupee a son point i (1 .. n-2) ; -> la nouvelle transition
+function splitSection(s, i) {
+  while (s.points.length < 4)                             // assez de points pour deux moities qui se chevauchent
+    s.points = s.points.flatMap((p, k) => k ? [s.points[k - 1].map((v, j) => (v + p[j]) / 2), p] : [p]);
+  i = Math.max(1, Math.min(s.points.length - 2, i ?? Math.floor(s.points.length / 2)));
+  const ts = Object.values(transitions);
+  const start = ts.find(t => t.next_position?.includes(s.name) && !isPassThrough(t));
+  const tmpl = ts.find(t => !t.isNew && !t.increment_lap && !teleporters[t.name]) || ts.find(t => !t.isNew);
+  if (!tmpl) throw new Error('aucune transition du jeu à copier');
+  const s2 = { name: nextEntityName(s.name), kind: 'position_paths', points: s.points.slice(i - 1), isNew: true,
+               template: s.isNew ? s.template : s.name, respawns: (s.respawns || []).slice(Math.ceil((s.respawns || []).length / 2)) };
+  s.respawns = (s.respawns || []).slice(0, Math.ceil((s.respawns || []).length / 2));
+  const p = s.points[i], a = s.points[i - 1], b = s.points[i + 1];
+  s.points = s.points.slice(0, i + 2);
+  for (const t of ts) if (t.previous_position?.includes(s.name)) t.previous_position = t.previous_position.map(n => n === s.name ? s2.name : n);
+  const nt = { name: nextEntityName(tmpl.name), isNew: true, template: tmpl.name, increment_lap: false,
+               previous_position: [s.name], next_position: [s2.name],
+               previous_ai: [...(start?.next_ai || [])], next_ai: [...(start?.next_ai || [])],
+               position: [p[0], p[1], p[2] + 660], yaw: Math.atan2(b[1] - a[1], b[0] - a[0]),
+               dimensions: [...(start?.dimensions || tmpl.dimensions || [500, 2000, 1500])] };
+  transitions[nt.name] = nt;
+  sectionMerges[s2.name] = s.name;
+  splines.push(s2); buildSpline(s); buildSpline(s2);
+  return nt;
+}
+// deux splines de position successives (elles se chevauchent autour de la transition) -> un seul trace : la seconde
+// reprend apres son point le plus proche de la fin de la premiere, vers l'avant (comme powerup.chain_paths)
+function joinPaths(a, b) {
+  const end = a[a.length - 1];
+  let k = 0; b.forEach((q, j) => { if (Math.hypot(q[0] - end[0], q[1] - end[1]) < Math.hypot(b[k][0] - end[0], b[k][1] - end[1])) k = j; });
+  if (k + 1 < b.length && (b[k][0] - end[0]) * (b[k + 1][0] - b[k][0]) + (b[k][1] - end[1]) * (b[k + 1][1] - b[k][1]) <= 0) k++;
+  return [...a, ...b.slice(k)];
+}
+// transition retiree : sections fusionnees ; regen = IA de la section fusionnee regenerees (sinon elles s'arretent)
+async function removeTransition(t, regen = true) {
+  if (t.increment_lap) throw new Error('la ligne d\'arrivée ne peut pas être supprimée');
+  if ((t.previous_position || []).length !== 1 || (t.next_position || []).length !== 1)
+    throw new Error(`${t.name} relie plusieurs splines de position (embranchement) : pas supprimable ici`);
+  const P = byName(t.previous_position[0]), N = byName(t.next_position[0]);
+  const others = Object.values(transitions).filter(x => x !== t);
+  const old = [...new Set([...t.previous_ai, ...t.next_ai])].map(byName).filter(s => s && !isSpecialAi(s));
+  const needAi = regen && t.previous_ai.some(n => !t.next_ai.includes(n));
+  const merged = P && N && P !== N ? joinPaths(P.points, N.points) : null;
+  delete transitions[t.name];
+  if (!t.isNew) deletedTransitions.push(t.name);
+  if (teleporters[t.name]) { delete teleporters[t.name]; renderTeleportMarkers(); }
+  if (merged) {
+    P.points = merged; P.respawns = [...(P.respawns || []), ...(N.respawns || [])];
+    for (const x of others) for (const key of ['previous_position', 'next_position'])
+      if (x[key]?.includes(N.name)) x[key] = [...new Set(x[key].map(n => n === N.name ? P.name : n))];
+    N.group.removeFromParent(); splines = splines.filter(x => x !== N);
+    if (!N.isNew) deleted.push(N.name);
+    for (const [k, v] of Object.entries(sectionMerges)) if (v === N.name) sectionMerges[k] = P.name;
+    sectionMerges[N.name] = P.name;
+    buildSpline(P);
+  }
+  if (editingTransition === t.name) editingTransition = null;
+  const lanes = needAi && old.length ? await regenSpan(old) : 0;
+  return merged ? `${t.name} supprimée : ${N.name} fusionnée dans ${P.name}` + (lanes ? `, ${lanes} voies IA refaites` : '')
+                : `${t.name} supprimée`;
+}
+// IA `old` refaites sur toute leur portee : de leur vraie transition de depart (dans ses suivantes seulement) a leur
+// vraie transition d'arrivee, a travers les transitions de passage (ajoutees dans une section) ou elles restent
+// precedentes = suivantes ; -> nombre de voies creees
+async function regenSpan(old) {
+  const names = new Set(old.map(s => s.name)), has = (lst) => (lst || []).some(n => names.has(n));
+  const chain = raceChain(), ts = chain.map(c => c.transition);
+  const i0 = ts.findIndex(x => has(x.next_ai) && !has(x.previous_ai));
+  const i1 = ts.findIndex(x => has(x.previous_ai) && !has(x.next_ai));
+  if (i0 < 0 || i1 < 0) return 0;
+  const span = [];                                       // sections de i0 jusqu'a i1 (tour ferme)
+  for (let k = i0; span.length < chain.length; k = (k + 1) % chain.length) { span.push(k); if ((k + 1) % chain.length === i1) break; }
+  const ref = span.slice(1).reduce((acc, k) => joinPaths(acc, chain[k].position.points), chain[span[0]].position.points);
+  const start = ts[i0], end = ts[i1];
+  const n = Math.max(start.next_ai.filter(x => names.has(x)).length, end.previous_ai.filter(x => names.has(x)).length) || 5;
+  const gen = await api('/api/gen_ai_splines', { track, reference: ref, lanes: n, randomness: 0.5, margin: 0.15,
+                                                  seed: Math.floor(Math.random() * 1000), keep_air: true });
+  const before = new Set(splines.map(s => s.name));
+  applyGeneratedLanes(chain[i0].position, gen.lanes, { start, end, existing: old, replace: true, join: true, quiet: true });
+  const created = splines.filter(s => !before.has(s.name)).map(s => s.name);
+  for (const k of span.slice(1)) {                       // transitions de passage au milieu
+    const x = ts[k];
+    x.previous_ai = [...new Set([...x.previous_ai, ...created])]; x.next_ai = [...new Set([...x.next_ai, ...created])];
+  }
+  return created.length;
+}
+// tour principal ramene a n sections (« Creer le parcours ») : coupe la plus longue / retire en partant de la fin
+async function setSectionCount(n) {
+  let chain = raceChain();
+  const curveLen = s => s.points.reduce((a, p, i) => a + (i ? Math.hypot(p[0] - s.points[i - 1][0], p[1] - s.points[i - 1][1]) : 0), 0);
+  while (chain.length < n) {
+    const c = chain.reduce((a, b) => curveLen(b.position) > curveLen(a.position) ? b : a);
+    splitSection(c.position); chain = raceChain();
+  }
+  while (chain.length > n) {
+    const c = [...chain].reverse().find((c, j) => j < chain.length - 1 && (c.transition.previous_position || []).length === 1
+                                          && (c.transition.next_position || []).length === 1 && !isPassThrough(c.transition));
+    if (!c) throw new Error(`impossible de descendre à ${n} sections (transitions à embranchements)`);
+    await removeTransition(c.transition, false); chain = raceChain();
+  }
+  return chain;
+}
+async function addTransitionAfter(t) {
+  const s = byName(t.next_position?.[0]);
+  if (!s) { status('Cette transition n\'a pas de spline de position suivante', 'err'); return; }
+  try {
+    const nt = splitSection(s);
+    renderTransitionMarkers(); markDirty();
+    select(markers.children.find(x => x.userData.name === nt.name)); focusOn(nt.position);
+    status(`${nt.name} ajoutée au milieu de ${s.name} (nouvelle section ${nt.next_position[0]}) — déplace-la si besoin, puis enregistre`, 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+}
+async function cutSectionHere() {
+  const { spline: s, index: i } = selected;
+  if (i < 1 || i > s.points.length - 2) { status('Choisis un point qui n\'est ni le premier ni le dernier de la section', 'err'); return; }
+  try {
+    const nt = splitSection(s, i);
+    renderTransitionMarkers(); markDirty();
+    select(markers.children.find(x => x.userData.name === nt.name));
+    status(`${nt.name} ajoutée : ${s.name} coupée en deux (nouvelle section ${nt.next_position[0]}) — enregistre pour l'appliquer`, 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+}
+async function deleteTransitionUi(t) {
+  if (!(await ask(`Supprimer ${t.name} ? Les deux sections autour fusionnent (leurs splines IA sont refaites).`))) return;
+  try {
+    select(null);
+    const r = await removeTransition(t);
+    renderTransitionMarkers(); renderPanel(); markDirty();
+    status(r + ' — vérifie puis enregistre (Ctrl+Z pour annuler)', 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+}
+
 // ---- creer le parcours depuis la route ----------------------------------------------------------
 // Ordre de course : ligne d'arrivee -> spline de position suivante -> transition qui la termine -> ...
 function raceChain() {
@@ -1321,7 +1660,9 @@ function raceChain() {
     const p = byName(t.next_position?.[0]);
     if (!p) break;
     out.push({ transition: t, position: p });
-    t = ts.find(x => x.previous_position?.includes(p.name));
+    // transition de passage (de la spline vers elle-meme) : pas une section
+    const cands = ts.filter(x => x.previous_position?.includes(p.name) && !seen.has(x.name));
+    t = cands.find(x => !isPassThrough(x)) || cands[0];
   }
   return out;
 }
@@ -1359,6 +1700,10 @@ async function openRouteCreator() {
       <input id="rjump" type="number" min="0" max="150" step="5" value="40" style="${field};width:70px;margin:0"> m</label>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Un trou sous un saut, ou un espace entre deux morceaux : le parcours continue tout droit
       jusqu'au bout de route d'en face (dans le prolongement). Aucun point de réapparition au-dessus d'un trou. 0 = ne rien franchir.</div>
+    <label style="display:flex;gap:8px;align-items:center;margin-bottom:2px">Sections (= transitions, ligne d'arrivée comprise)
+      <input id="rsec" type="number" min="1" max="30" step="1" value="${chain.length}" style="${field};width:70px;margin:0"></label>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Actuellement ${chain.length}. Plus de sections = classement et réapparitions
+      plus fins sur un long circuit. Si le nombre change, les transitions sont ajoutées / retirées et toutes les splines IA régénérées.</div>
     <label style="display:block"><input type="checkbox" id="rrev"> Sens inverse</label>
     <label style="display:block"><input type="checkbox" id="rneut" checked> Écarter les zones de chute / réapparition et les embranchements de l'ancien tracé</label>
     <label style="display:block;margin-bottom:6px"><input type="checkbox" id="rai" checked> Générer toutes les splines IA (raccourcis et sauts de l'ancien tracé retirés)</label>
@@ -1390,7 +1735,8 @@ async function openRouteCreator() {
       : { surfaces: ov.querySelector('#rsurf').value.split(/[^0-9]+/).filter(Boolean).map(Number) };
     const opt = { reverse: ov.querySelector('#rrev').checked, neutralize: ov.querySelector('#rneut').checked,
                   ai: ov.querySelector('#rai').checked, randomness: +ov.querySelector('#rr').value / 100,
-                  maxJump: Math.max(0, +ov.querySelector('#rjump').value || 0) };
+                  maxJump: Math.max(0, +ov.querySelector('#rjump').value || 0),
+                  sections: Math.max(1, Math.min(30, Math.round(+ov.querySelector('#rsec').value || chain.length))) };
     ov.remove();
     try { status(await createRoute(chain, source, opt), 'ok'); } catch (e) { status('Erreur : ' + e.message, 'err'); }
   };
@@ -1421,6 +1767,13 @@ async function pickRoadInDecor(ticked) {
 }
 async function createRoute(chain, source, opt) {
   const fin = chain[0].transition;
+  let changed = '';
+  if (opt.sections && opt.sections !== chain.length) {    // transitions ajoutees / retirees, IA toutes refaites
+    const before = chain.length;
+    chain = await setSectionCount(opt.sections);
+    opt = { ...opt, ai: true };
+    changed = ` (${before} → ${chain.length} transitions)`;
+  }
   status('Analyse de la route et calcul du tracé…');
   const r = await api('/api/route_layout', { track, source, start: fin.position, heading: fin.yaw || 0, reverse: opt.reverse,
     sections: chain.length, respawns: chain.map(c => c.position.respawns || []), max_jump: opt.maxJump ?? 40 });
@@ -1433,14 +1786,52 @@ async function createRoute(chain, source, opt) {
   realignGridOnFinish(true);                            // grille + repere derriere la nouvelle ligne
   designPoses = { ...designPoses, ...r.respawns, ...(opt.neutralize ? r.design_moves : {}) };
   raceEntityPositions = { ...raceEntityPositions, ...(opt.neutralize ? r.race_moves : {}) };
+  const br = detachOldBranches(chain);
   let ai = '';
   if (opt.ai) ai = ' · ' + await regenerateAllAi({ lanes: 0, randomness: opt.randomness, margin: 0.15, seed: Math.floor(Math.random() * 1000),
-                                                   specials: false, dropSpecials: true, keepAir: true });
+                                                   specials: false, dropSpecials: true, keepAir: true,
+                                                   only: new Set(chain.map(c => c.position.name)), share: br.share });
   else { select(null); renderPanel(); markDirty(); }
-  return (r.note ? r.note + ' · ' : '') + `Parcours créé : ${Math.round(r.length / 39.37)} m, ${chain.length} sections, ${Object.keys(r.respawns).length} réapparitions` +
+  return (r.note ? r.note + ' · ' : '') + `Parcours créé : ${Math.round(r.length / 39.37)} m, ${chain.length} sections${changed}, ${Object.keys(r.respawns).length} réapparitions` +
     (r.jumps ? `, ${r.jumps} saut(s) franchi(s)` : '') +
+    (br.branches ? `, ${br.branches} branche(s) de l'ancien tracé retirée(s)` : '') +
     (opt.neutralize ? `, ${Object.keys(r.design_moves).length + Object.keys(r.race_moves).length} entités écartées` : '') + ai +
     ' — vérifie puis enregistre (Ctrl+Z pour annuler)';
+}
+// branches de l'ancien trace : section a plusieurs splines de position (Mystery Caves split_02, raccourcis de Sewer
+// Speedway, Turbo Track...). Le parcours cree est une seule boucle : les branches sont detachees des transitions du
+// tour (elles restent inutilisees, comme les autres restes de l'ancien trace) et les transitions qui ne sont qu'a
+// elles ecartees sous la carte (« Vérifier » les ignore). Sinon leurs IA restaient sur l'ancien trace, reliees au tour.
+// -> { share: {spline du tour: nombre de splines de position de sa section avant}, branches }
+function detachOldBranches(chain) {
+  const main = new Set(chain.map(c => c.position.name)), lap = new Set(chain.map(c => c.transition.name));
+  const share = {}, gone = new Set();
+  for (const c of chain) {
+    share[c.position.name] = Math.max(1, (c.transition.next_position || []).length);
+    for (const k of ['previous_position', 'next_position']) {
+      (c.transition[k] || []).filter(n => !main.has(n)).forEach(n => gone.add(n));
+      c.transition[k] = (c.transition[k] || []).filter(n => main.has(n));
+    }
+  }
+  for (const t of Object.values(transitions)) {
+    if (lap.has(t.name)) continue;
+    const refs = [...(t.previous_position || []), ...(t.next_position || [])];
+    // de passage au milieu d'une section du tour (Coco Park 002) : gardee ; un raccourci qui revient sur le tour
+    // (Sewer Speedway SplineTransition_Shortcut : de la spline 3 vers la 4, mais sur l'ancien raccourci) : ecarte
+    if (isPassThrough(t) && refs.every(n => main.has(n))) continue;
+    refs.filter(n => !main.has(n)).forEach(n => gone.add(n));
+    t.position = [t.position[0], t.position[1], -100000];                // FAR_BELOW du serveur
+  }
+  // IA qui quittent le tour vers une branche (ou en reviennent) : retirees des listes du tour ; celles de la section
+  // (de sa transition de depart a celle d'arrivee, branches comprises) sont ensuite regenerees
+  if (gone.size) for (let k = 0; k < chain.length; k++) {
+    const a = chain[k].transition, b = chain[(k + 1) % chain.length].transition;
+    const sec = new Set((a.next_ai || []).filter(n => (b.previous_ai || []).includes(n)));
+    if (!sec.size) continue;
+    a.next_ai = a.next_ai.filter(n => sec.has(n));
+    b.previous_ai = b.previous_ai.filter(n => sec.has(n));
+  }
+  return { share, branches: gone.size };
 }
 function openRegenerateAll() {
   const ov = document.createElement('div');
@@ -1525,7 +1916,8 @@ function snapshotState() {
   if (mode === 'decor') return JSON.stringify(dEdits);
   return JSON.stringify({ splines: splines.map(s => ({ name: s.name, kind: s.kind, shortcut: s.shortcut, points: s.points,
     isNew: s.isNew, template: s.template, visible: s.visible, respawns: s.respawns })), transitions, starting, deleted,
-    startGrid, playerStart, replacedAi, designPoses, raceEntityPositions, crates, boosts, teleporters });
+    startGrid, playerStart, replacedAi, designPoses, raceEntityPositions, crates, boosts, teleporters, flyby,
+    deletedTransitions, sectionMerges });
 }
 function resetHistory() { undoStack = [snapshotState()]; redoStack = []; updateUndoButtons(); }
 function pushHistory() {
@@ -1557,9 +1949,10 @@ function restoreState(s) {
     transitions = st.transitions; starting = st.starting; deleted = st.deleted;
     startGrid = st.startGrid || []; playerStart = st.playerStart; replacedAi = st.replacedAi || {};
     designPoses = st.designPoses || {}; raceEntityPositions = st.raceEntityPositions || {}; crates = st.crates || [];
-    boosts = st.boosts || []; teleporters = st.teleporters || {};
+    boosts = st.boosts || []; teleporters = st.teleporters || {}; flyby = st.flyby || {};
+    deletedTransitions = st.deletedTransitions || []; sectionMerges = st.sectionMerges || {};
     select(null); renderTransitionMarkers(); renderStartMarkers(); renderCrateMarkers(); renderBoostMarkers();
-    renderTeleportMarkers(); renderPanel();
+    renderTeleportMarkers(); renderFlybyMarkers(); renderFlybyPanel(); renderPanel();
   }
   dirty = undoStack.length > 1;
   updateUndoButtons();
@@ -1644,7 +2037,11 @@ function textureMaterial({ ns, decal }) {
       : new THREE.MeshLambertMaterial({ map: t, alphaTest: 0.5, side: THREE.DoubleSide });
   })();
 }
+// mur invisible : violet translucide (rien n'est affiche en jeu)
+const wallMat = new THREE.MeshBasicMaterial({ color: 0xc040ff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
+let showWalls = true;
 function baseMaterial(m) {
+  if (m.userData.obj.invisible) return wallMat;
   const g = m.geometry, f = fileMats[m.userData.file];
   if (!showTextures || !g.userData.texKeys?.length) return f;
   return [f, ...g.userData.texKeys.map(textureMaterial)];
@@ -1687,7 +2084,7 @@ async function loadDecor(keepCamera) {
 }
 function applyFileVisibility() {
   const vis = Object.fromEntries(decor.files.map(f => [f.file, f.visible]));
-  decorGroup.children.forEach(m => { m.visible = vis[m.userData.file] && !m.userData.deleted; });
+  decorGroup.children.forEach(m => { m.visible = vis[m.userData.file] && !m.userData.deleted && (showWalls || !m.userData.obj.invisible); });
 }
 function renderDecorPanel() {
   const box = $('dfiles'); box.innerHTML = '';
@@ -1784,9 +2181,14 @@ async function openDecorMenu(x, y) {
            { disabled: !imported.length, title: imported.length ? '' : 'seulement pour les modèles importés et les objets de la bibliothèque' })
     + (cur.has('none') ? item('Activer la collision', 'col_on', { disabled: !imported.length })
                        : item('Désactiver la collision', 'col_off', { disabled: !imported.length, title: 'les karts traversent (feuillage, décor lointain)' }))
+    + item(obj?.invisible ? 'Rendre visible en jeu' : 'Mur invisible (rien à l\'écran en jeu)', 'wall',
+           { disabled: !(one && obj.custom_material !== undefined),
+             title: 'modèle importé seul : collision seule, les autres objets du même modèle changent aussi' })
+    + item('Murs invisibles autour de la sélection…', 'zone', { disabled: sel.every(m => m.userData.obj.invisible),
+             title: 'le long des bords de ces objets, jamais sur le parcours' })
     + sep
-    + item('Changer la texture…', 'tex', { disabled: !(one && obj.custom_material !== undefined), title: 'modèle importé seul' })
-    + item('Image externe comme texture…', 'teximg', { disabled: !(one && obj.custom_material !== undefined) })
+    + item('Changer la texture…', 'tex', { disabled: !(one && obj.custom_material !== undefined && !obj.invisible), title: 'modèle importé seul' })
+    + item('Image externe comme texture…', 'teximg', { disabled: !(one && obj.custom_material !== undefined && !obj.invisible) })
     + item(obj?.alpha ? 'Désactiver la transparence' : 'Activer la transparence (découpe)', 'alpha',
            { disabled: !(one && obj.alpha != null), title: 'texture importée depuis une image : parties transparentes non affichées' })
     + sep
@@ -1821,6 +2223,8 @@ async function openDecorMenu(x, y) {
     if (a === 'tex') { const i = $('dtex'); i?.scrollIntoView({ block: 'center' }); i?.focus(); return; }
     if (a === 'teximg') { $('dteximg')?.click(); return; }
     if (a === 'alpha') return setObjectAlpha(one, !obj.alpha);
+    if (a === 'wall') return setInvisible(one, !obj.invisible);
+    if (a === 'zone') { $('dwallzone').click(); return; }
     if (a === 'mv' || a === 'rot' || a === 'scl') { gizmo.setMode({ mv: 'translate', rot: 'rotate', scl: 'scale' }[a]); return; }
     if (a === 'focus') return focusSelection();
     if (a === 'same') { setDecorSelection(decorGroup.children.filter(m => m.visible && m.userData.obj.model === obj.model)); renderDecorPanel(); return; }
@@ -1853,6 +2257,124 @@ async function setObjectAlpha(m, on) {
     status(r.report.join(' · ') + ' — réinstalle pour le voir en jeu', 'ok');
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
 }
+// ---- murs invisibles (collision seule) -----------------------------------------------------
+// Operations enregistrees aussitot (comme le type de sol) ; le decor est recharge apres (les modeles des murs
+// automatiques gardent leurs noms d'une generation a l'autre : geometries oubliees).
+async function wallOperation(path, body, label) {
+  if (dirty && !(await ask('Le décor a des modifications non enregistrées : enregistre-les d\'abord (cette opération est enregistrée aussitôt). Continuer quand même ?'))) return null;
+  status(label + '… (recalcul de la collision)');
+  try {
+    const r = await api(path, { track, ...body });
+    for (const k of Object.keys(geoCache)) if (/[\\/]Custom[\\/]/i.test(k)) delete geoCache[k];
+    await loadDecor(true);
+    if (r.ids?.length) {
+      const ids = new Set(r.ids);
+      setDecorSelection(decorGroup.children.filter(x => x.userData.file === r.file && ids.has(x.userData.obj.id)));
+    }
+    status(r.report.join(' · ') + ' — réinstalle pour le voir en jeu', 'ok');
+    return r;
+  } catch (e) { status('Erreur : ' + e.message, 'err'); return null; }
+}
+async function setInvisible(m, on) {
+  const r = await wallOperation('/api/set_invisible', { model: m.userData.obj.model, invisible: on },
+                                on ? 'Mur invisible' : 'Retour au modèle visible');
+  if (r) for (const k in texMatCache) delete texMatCache[k];
+}
+$('dwallvis').onchange = e => { showWalls = e.target.checked; if (decor) applyFileVisibility(); };
+$('dwallsel').onclick = () => {
+  const all = decorGroup.children.filter(m => m.userData.obj.invisible);
+  if (!all.length) { status('Aucun mur invisible dans le décor'); return; }
+  if (!showWalls) { $('dwallvis').checked = showWalls = true; applyFileVisibility(); }
+  setDecorSelection(all); status(`${all.length} mur(s) invisible(s) sélectionné(s) — Suppr pour les supprimer, puis Enregistrer`);
+};
+$('dwalladd').onclick = () => {
+  const t = orbit.target, d = t.clone().sub(camera.position);
+  const z = groundZ(t.x, t.y, t.z) ?? t.z;
+  wallOperation('/api/wall_add', { pos: [t.x, t.y, z], yaw: Math.atan2(d.y, d.x) + Math.PI / 2, length: 20, height: 10 }, 'Ajout d\'un mur invisible');
+};
+let reloadCollisionAfterSave = false;
+// toute la map en hauteur : chaque objet du decor (tous les fichiers, caches ou non) decale en Z, comme un
+// deplacement a la main (Annuler, Enregistrer : la collision et les plaques de booster suivent)
+$('dmovez').onclick = () => {
+  if (!decor) return;
+  const all = [...allDecorMeshes].filter(m => m.parent);
+  const zs = all.map(m => m.position.z);
+  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const ov = overlayCard(`<div style="margin-bottom:8px"><b>Déplacer toute la map en hauteur</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Les ${all.length} objets du décor (tous les fichiers, imports,
+    objets du jeu, murs invisibles) montent ou descendent ensemble ; leurs origines vont de z = ${Math.round(Math.min(...zs))} à
+    ${Math.round(Math.max(...zs))} po (${(Math.min(...zs) / 39.37).toFixed(0)} à ${(Math.max(...zs) / 39.37).toFixed(0)} m).
+    Enregistre ensuite : la collision suit. <b style="color:var(--text)">Le parcours, la grille, les caisses et les points de
+    réapparition ne bougent pas</b> : recrée le parcours après (« Créer le parcours », puis « Chutes et réapparitions »).</div>
+    <label>Décalage en hauteur (m, négatif = descendre)<input id="mzval" type="number" step="1" value="0" style="${field}"></label>
+    <div class="btns" style="justify-content:flex-end"><button id="mzno">Annuler</button><button id="mzyes" class="primary">Déplacer</button></div>`, 520);
+  const q = s => ov.querySelector(s);
+  q('#mzno').onclick = () => ov.remove();
+  q('#mzyes').onclick = () => {
+    const dz = parseFloat(q('#mzval').value) * 39.37;
+    ov.remove();
+    if (!dz) return;
+    setDecorSelection([]);
+    for (const m of all) { m.position.z += dz; recordDecorEdit(m); }
+    markDirty(); pushHistory(); renderDecorPanel();
+    reloadCollisionAfterSave = true;                       // sol gris (collision) relu apres l'enregistrement
+    status(`${all.length} objets déplacés de ${(dz / 39.37).toFixed(1)} m en hauteur — Enregistrer pour appliquer (collision recalculée), Ctrl+Z pour annuler`, 'ok');
+  };
+};
+// murs le long des bords des parties de la map choisies dans la vue 3D (jamais sur la route du parcours)
+$('dwallzone').onclick = async () => {
+  const chosen = dMulti.filter(m => !m.userData.obj.invisible);
+  if (!chosen.length) { status('Clique d\'abord une ou plusieurs parties de la map dans la vue 3D (Maj+clic pour en ajouter), puis « Murs autour de la sélection… »', 'err'); return; }
+  if (chosen.some(m => m.userData.isNew)) { status('La sélection contient des copies pas encore enregistrées : enregistre le décor d\'abord', 'err'); return; }
+  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const names = chosen.slice(0, 6).map(m => esc(m.userData.obj.name || 'objet')).join(', ') + (chosen.length > 6 ? ` … (+${chosen.length - 6})` : '');
+  const ov = overlayCard(`<div style="margin-bottom:8px"><b>Murs invisibles autour de la sélection</b></div>
+    <div style="font-size:12px;margin-bottom:6px">${chosen.length} objet(s) : ${names}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Un mur est posé le long des bords du dessus de ces objets
+    là où il n'y a plus de sol au même niveau (vide, chute) et, si tu coches la case, là où un autre sol non choisi continue
+    au même niveau. Rien n'est posé entre deux objets choisis qui se touchent, là où un mur ou un talus existe déjà, ni
+    sur la route du parcours ou au-dessus (raccords, croisements, ponts). Recommencer sur les mêmes objets remplace ces murs.</div>
+    <label>Distance au bord (m)<input id="zmargin" type="number" min="0" max="30" step="0.5" value="1" style="${field}"></label>
+    <label>Hauteur (m)<input id="zheight" type="number" min="1" max="100" step="1" value="10" style="${field}"></label>
+    <label>Longueur des morceaux (m)<input id="zpiece" type="number" min="10" max="500" step="10" value="50" style="${field}"></label>
+    <label title="les trous le long du bord sont fermés et les bouts de murs proches reliés (barrière : de poteau en poteau), jamais sur la route ni par-dessus les objets choisis ; 0 = murs séparés">Relier les murs distants de moins de (m)<input id="zjoin" type="number" min="0" max="300" step="5" value="120" style="${field}"></label>
+    <label style="display:flex;gap:6px;align-items:center;margin:0 0 10px"><input type="checkbox" id="zoff"> Aussi vers un autre sol au
+      même niveau (herbe, objet non choisi : empêche d'en sortir)</label>
+    <div class="btns" style="justify-content:flex-end"><button id="zno">Annuler</button><button id="zyes" class="primary">Générer</button></div>`, 520);
+  const q = s => ov.querySelector(s);
+  q('#zno').onclick = () => ov.remove();
+  q('#zyes').onclick = () => {
+    const body = { objects: chosen.map(m => ({ file: m.userData.file, id: m.userData.obj.id })), margin: +q('#zmargin').value,
+                   height: +q('#zheight').value, piece: +q('#zpiece').value, join: +q('#zjoin').value, offroad: q('#zoff').checked };
+    ov.remove();
+    wallOperation('/api/walls_zone', body, 'Murs invisibles autour de la sélection');
+  };
+};
+$('dwallauto').onclick = () => {
+  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const ov = overlayCard(`<div style="margin-bottom:8px"><b>Murs invisibles le long de la route</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Le long des deux bords de la ligne de course enregistrée (crée
+    d'abord le parcours). Un mur est posé là où il n'y a plus de sol au niveau de la route (vide, chute) et, si tu coches la case,
+    là où la route est bordée d'herbe ou de sable. Rien n'est posé là où un mur ou un talus existe déjà, sur une autre partie de
+    la route (croisements, épingles) ni sous un pont. Les murs générés précédemment sont remplacés ; ceux ajoutés à la main ou
+    importés restent. Morceaux séparés : supprime ou déplace ceux qui gênent (raccourcis, sauts).</div>
+    <label>Distance au bord de la route (m)<input id="wmargin" type="number" min="0" max="30" step="0.5" value="3" style="${field}"></label>
+    <label>Hauteur (m)<input id="wheight" type="number" min="1" max="100" step="1" value="10" style="${field}"></label>
+    <label>Longueur des morceaux (m)<input id="wpiece" type="number" min="10" max="500" step="10" value="50" style="${field}"></label>
+    <label>Côtés<select id="wsides" style="${field}"><option value="both">les deux</option><option value="left">gauche seulement</option>
+      <option value="right">droite seulement</option></select></label>
+    <label style="display:flex;gap:6px;align-items:center;margin:0 0 10px"><input type="checkbox" id="woff"> Aussi les bords hors route
+      (herbe, sable… au niveau de la route : empêche de couper)</label>
+    <div class="btns" style="justify-content:flex-end"><button id="wno">Annuler</button><button id="wyes" class="primary">Générer</button></div>`, 520);
+  const q = s => ov.querySelector(s);
+  q('#wno').onclick = () => ov.remove();
+  q('#wyes').onclick = () => {
+    const body = { margin: +q('#wmargin').value, height: +q('#wheight').value, piece: +q('#wpiece').value,
+                   sides: q('#wsides').value, offroad: q('#woff').checked };
+    ov.remove();
+    wallOperation('/api/walls_auto', body, 'Murs invisibles le long de la route');
+  };
+};
 function focusSelection() {
   if (!dMulti.length) return;
   const c = new THREE.Vector3(); dMulti.forEach(m => c.add(m.position)); c.divideScalar(dMulti.length);
@@ -1944,15 +2466,17 @@ function renderDecorSel(valuesOnly) {
     <button data-m="scale" ${obj.has_transform ? '' : 'disabled'}>Échelle (R)</button></div>
     <div class="btns" style="margin-top:6px"><button id="ddup">Dupliquer</button><button id="ddel" class="danger">Supprimer</button><button id="dfocus">Centrer</button></div>
     ${obj.library ? `<div style="margin-top:6px;font-size:12px">📚 Objet de la bibliothèque (de ${esc(obj.library)})</div>` : ''}
+    ${obj.invisible ? `<div style="margin-top:6px;font-size:12px;color:#d9a0ff">🧱 Mur invisible ${{ auto: '(généré le long de la route)', manual: '(ajouté à la main)', zone: '(autour d\'une sélection)' }[obj.invisible] || '(modèle importé)'} :
+      collision seule, rien n'est affiché en jeu. Échelle X = longueur, Z = hauteur.</div>` : ''}
     ${obj.custom_material !== undefined || obj.library ? `<div style="margin-top:6px;font-size:12px">Sol : <b id="dsurf">${esc(surfaceLabel(obj.surface))}</b>
       <span style="color:var(--muted);font-size:11px">(clic droit sur l'objet pour changer)</span></div>` : ''}
-    ${obj.custom_material !== undefined ? `<div style="margin-top:8px"><b>Texture</b> <span style="color:var(--muted);font-size:11px">(modèle importé : ses copies changent aussi)</span>
+    ${obj.custom_material !== undefined && !obj.invisible ? `<div style="margin-top:8px"><b>Texture</b> <span style="color:var(--muted);font-size:11px">(modèle importé : ses copies changent aussi)</span>
       <div style="font-size:11px;color:var(--muted);margin:2px 0">Actuelle : ${esc(obj.custom_material)}</div>
       <div style="display:flex;gap:4px"><input id="dtex" list="dtexlist" placeholder="chercher : wood, rock, palm…" style="flex:1;min-width:0;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:2px 4px">
       <button id="dtexok">Appliquer</button></div><datalist id="dtexlist"></datalist>
       <div class="btns" style="margin-top:4px"><button id="dteximg" title="PNG ou JPG : redimensionnée en 1024×1024, relief plat">Image externe (PNG/JPG)…</button>
       <input id="dteximgf" type="file" accept="image/png,image/jpeg,image/bmp,image/webp" hidden></div></div>` : ''}`;
-  if (obj.custom_material !== undefined) setupTexturePicker(box, m);
+  if (obj.custom_material !== undefined && !obj.invisible) setupTexturePicker(box, m);
   if (obj.custom_material !== undefined || obj.library) {
     loadSurfaces().then(list => { const el = box.querySelector('#dsurf'); if (el) el.textContent = surfaceLabel(obj.surface, list); }).catch(() => {});
   }
@@ -2066,7 +2590,9 @@ async function saveDecor() {
   try {
     const r = await api('/api/decor_save', { track, files });
     await loadDecor(true);
-    if (r.boosts_changed) await loadTrack(track, true);         // boosters (mode Course) suivent leurs plaques
+    // boosters (mode Course) suivent leurs plaques ; map entiere deplacee : sol gris (collision) relu
+    if (r.boosts_changed || reloadCollisionAfterSave) await loadTrack(track, true);
+    reloadCollisionAfterSave = false;
     status('Décor enregistré — ' + r.report.join(' · '), 'ok');
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
 }
@@ -2104,7 +2630,8 @@ $('dimport').onclick = () => {
   try { memo = JSON.parse(localStorage.getItem('ctr_import_mats') || '{}'); } catch (e) { memo = {}; }
   const label = m => m._label;
   const surfOpts = '<option value="auto">comme le sol dessous</option><option value="38">38 (sol courant)</option>'
-    + '<option value="13">13 (bois)</option><option value="16">16</option><option value="none">aucune collision</option>';
+    + '<option value="13">13 (bois)</option><option value="16">16</option><option value="none">aucune collision</option>'
+    + '<option value="invisible">mur invisible (collision seule, rien à l\'écran en jeu)</option>';
   // correspondance automatique : souvenir d'un import precedent, sinon nom identique, sinon nom contenu
   const guess = name => {
     if (memo[name]) return memo[name];
@@ -2181,7 +2708,7 @@ $('dimport').onclick = () => {
       const txt = box.querySelector(`.imat[data-i="${i}"]`).value.trim();
       if (txt && !byLabel[txt]) { status(`Texture inconnue pour « ${o.name || 'sans matériau'} » : choisis-la dans la liste`, 'err'); return; }
       const s = box.querySelector(`.isurf[data-i="${i}"]`).value;
-      materials[o.name] = { material: txt ? byLabel[txt].id : null, surface: s === 'auto' || s === 'none' ? s : parseInt(s) };
+      materials[o.name] = { material: txt ? byLabel[txt].id : null, surface: ['auto', 'none', 'invisible'].includes(s) ? s : parseInt(s) };
     }
     try {
       for (const [k, v] of Object.entries(materials)) if (k) memo[k] = { material: v.material || '', surface: v.surface };
@@ -2332,7 +2859,7 @@ $('dfolder').onclick = () => {
     Utilise la colonne « Transp. » pour la transparence (feuillages). Grosse map : plusieurs minutes.</div>
     <div style="display:flex;gap:6px;align-items:flex-end"><label style="flex:1">Dossier (relatif au projet, ou chemin complet)
       <input id="ffold" value="${esc(lastFolder)}" style="${field}"></label>
-      <button id="fbrowse" style="margin-bottom:8px" title="Choisir le dossier dans une fenêtre Windows">📁 Parcourir…</button>
+      <button id="fbrowse" style="margin-bottom:8px" title="Choisir le dossier dans une fenêtre du système">📁 Parcourir…</button>
       <button id="fscan" style="margin-bottom:8px">Analyser</button></div>
     <div id="finfo" style="font-size:12px;color:var(--muted);margin-bottom:8px">Clique sur « Analyser ».</div>
     <div id="fopts" hidden>
@@ -2367,16 +2894,18 @@ $('dfolder').onclick = () => {
   };
   q('#fscale').oninput = showSize; q('#fup').onchange = showSize;
   const renderMats = () => {
-    const n = scan.materials.filter(m => m.collision).reduce((a, m) => a + m.triangles, 0);
-    q('#fmats').innerHTML = `<table style="width:100%;border-collapse:collapse"><tr style="text-align:left;color:var(--muted)"><th>Collision</th><th title="Découpe alpha (feuillage, grillage) : les parties transparentes de l'image ne s'affichent pas">Transp.</th><th>Matériau</th><th>Texture</th><th style="text-align:right">Triangles</th></tr>`
-      + scan.materials.map((m, i) => `<tr><td><input type="checkbox" class="fcol" data-i="${i}" ${m.collision ? 'checked' : ''}></td>
-        <td><input type="checkbox" class="falpha" data-i="${i}" ${m.alpha ? 'checked' : ''} ${m.texture ? '' : 'disabled'}></td>
+    const n = scan.materials.filter(m => m.collision || m.wall).reduce((a, m) => a + m.triangles, 0);
+    q('#fmats').innerHTML = `<table style="width:100%;border-collapse:collapse"><tr style="text-align:left;color:var(--muted)"><th>Collision</th><th title="Découpe alpha (feuillage, grillage) : les parties transparentes de l'image ne s'affichent pas">Transp.</th><th title="Mur invisible : collision seule, rien n'est affiché en jeu (murs de bordure, barrières anti-chute)">Mur invis.</th><th>Matériau</th><th>Texture</th><th style="text-align:right">Triangles</th></tr>`
+      + scan.materials.map((m, i) => `<tr><td><input type="checkbox" class="fcol" data-i="${i}" ${m.collision || m.wall ? 'checked' : ''} ${m.wall ? 'disabled' : ''}></td>
+        <td><input type="checkbox" class="falpha" data-i="${i}" ${m.alpha ? 'checked' : ''} ${m.texture && !m.wall ? '' : 'disabled'}></td>
+        <td><input type="checkbox" class="fwall" data-i="${i}" ${m.wall ? 'checked' : ''}></td>
         <td style="padding:1px 6px 1px 0">${esc(m.name || '(sans matériau)')}${m.background ? ' <span class="tag" title="Bien plus grand que la route (montagnes, nuages, sol lointain) : sans collision par défaut">fond</span>' : ''}</td>
         <td style="padding:1px 6px;color:${m.texture ? 'var(--text)' : 'var(--err)'}">${m.texture ? esc(m.texture) : m.texture_missing ? 'introuvable : ' + esc(m.texture_missing) : 'couleur unie'}</td>
         <td style="text-align:right">${m.triangles}</td></tr>`).join('') + '</table>'
       + `<div style="color:var(--muted);margin-top:4px">${n} triangles de collision sur ${scan.triangles}</div>`;
     q('#fmats').querySelectorAll('.fcol').forEach(c => c.onchange = () => { scan.materials[+c.dataset.i].collision = c.checked; renderMats(); });
     q('#fmats').querySelectorAll('.falpha').forEach(c => c.onchange = () => { scan.materials[+c.dataset.i].alpha = c.checked; });
+    q('#fmats').querySelectorAll('.fwall').forEach(c => c.onchange = () => { scan.materials[+c.dataset.i].wall = c.checked; renderMats(); });
   };
   q('#fall').onclick = () => { scan.materials.forEach(m => m.collision = true); renderMats(); };
   q('#fnone').onclick = () => { scan.materials.forEach(m => m.collision = false); renderMats(); };
@@ -2390,6 +2919,8 @@ $('dfolder').onclick = () => {
       q('#fopts').hidden = false; q('#fyes').disabled = false;
       // proposes pour ce fichier : axe du fichier (.dae : up_axis) et echelle donnant ~500 m de cote
       q('#fup').value = scan.up || 'y'; q('#fscale').value = scan.scale ?? 1;
+      // materiau nomme comme un mur invisible dans Blender (invisible, nodraw, clip) : coche d'office
+      scan.materials.forEach(m => { m.wall = /invisible|invis_|nodraw|clip/i.test(m.name || ''); });
       renderMats(); showSize();
     } catch (e) { q('#finfo').textContent = 'Erreur : ' + e.message; q('#fopts').hidden = true; q('#fyes').disabled = true; }
   };
@@ -2420,7 +2951,8 @@ $('dfolder').onclick = () => {
     const req = { track, folder, obj: scan.obj, placement: q('#fplace').value, scale: sc * 39.37, force,
                   up: q('#fup').value, pos: orbit.target.toArray(), road_material: scan.road_material || null,
                   texture_size: q('#ftsize').value,
-                  materials: Object.fromEntries(scan.materials.map(m => [m.name, { collision: m.collision, surface: 'auto', alpha: !!m.alpha, background: !!m.background }])) };
+                  materials: Object.fromEntries(scan.materials.map(m => [m.name, m.wall ? { collision: true, surface: 'invisible' }
+                    : { collision: m.collision, surface: 'auto', alpha: !!m.alpha, background: !!m.background }])) };
     ov.remove();
     status(`Import du dossier : ${scan.materials.length} textures à convertir, ${scan.triangles} triangles, collision… (plusieurs minutes)`);
     try {
@@ -2662,7 +3194,7 @@ function tourVisibility() {
   if (dec) applyFileVisibility();
   decorGroup.visible = dec;
   if (colMesh) colMesh.visible = $('tcol').checked || !dec;          // sans decor, le sol gris reste visible
-  root.visible = markers.visible = startGroup.visible = tpGroup.visible = marks;
+  root.visible = markers.visible = startGroup.visible = tpGroup.visible = marks; flyGroup.visible = false;
   crateGroup.visible = boostGroup.visible = true; gizmo.visible = false;
 }
 async function tourDecor() {
@@ -2764,7 +3296,7 @@ async function setMode(m) {
   if (dirty && !(await ask('Des modifications ne sont pas enregistrées. Changer de mode quand même ?'))) { $('mode').value = mode; syncModeTabs(); return; }
   mode = m; gizmo.detach(); selected = null; dSelected = null; dMulti = []; dirty = false; syncModeTabs();
   $('raceSide').hidden = m !== 'race'; $('decorSide').hidden = m !== 'decor';
-  root.visible = markers.visible = startGroup.visible = crateGroup.visible = boostGroup.visible = tpGroup.visible = m === 'race';
+  root.visible = markers.visible = startGroup.visible = crateGroup.visible = boostGroup.visible = tpGroup.visible = flyGroup.visible = m === 'race';
   decorGroup.visible = m === 'decor';
   gizmo.showX = gizmo.showY = true;
   if (colMesh) colMesh.visible = m === 'race' || $('dcolvis').checked;
@@ -2839,6 +3371,8 @@ addEventListener('pointerdown', e => { if (!e.target.closest?.('#more')) $('more
 $('mkminimap').onclick = generateMinimap;
 $('mkfalls').onclick = openFalls;
 $('mkmenu').onclick = openMenuAssets;
+$('packexp').onclick = openPackExport;
+$('packimp').onclick = openPackImport;
 $('sgall2').onclick = selectGridAll;
 $('regenall').onclick = openRegenerateAll;
 $('mkroute').onclick = openRouteCreator;
@@ -2925,6 +3459,7 @@ async function loadTrack(name, keepCamera) {
   const d = await api('/api/track?name=' + encodeURIComponent(name));
   if (name !== track) { matCatalog = null; for (const k in texMatCache) delete texMatCache[k]; for (const k in geoCache) delete geoCache[k]; }
   track = name; root.clear(); colMesh?.removeFromParent(); select(null); deleted = []; editingTransition = null;
+  deletedTransitions = []; sectionMerges = {};
   splines = d.splines.map(s => ({ name: s.name, kind: s.kind, shortcut: s.shortcut, points: s.control_points,
                                   respawns: (s.respawn_points || []).map(n => String(n).split('::').pop()) }));
   designPoses = {}; raceEntityPositions = {};
@@ -2946,6 +3481,10 @@ async function loadTrack(name, keepCamera) {
     [n, { pos: tp.pos || transitions[n]?.position || [0, 0, 0], yaw: tp.yaw || 0 }]));
   teleportersLoaded = JSON.stringify(teleporters);
   renderTeleportMarkers();
+  flybyShots = d.flyby || [];
+  flyby = Object.fromEntries(flybyShots.filter(s => s.custom).map(s => [s.key, s.model]));
+  flybyLoaded = JSON.stringify(flyby);
+  renderFlybyMarkers(); renderFlybyPanel();
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(d.collision.positions, 3));
   g.setIndex(d.collision.indices); g.computeVertexNormals();
@@ -2969,10 +3508,23 @@ async function loadTrack(name, keepCamera) {
 $('save').onclick = async () => {
   if (mode === 'decor') return saveDecor();
   try {
+    const r = await saveRace();
+    const fin = Object.values(transitions).find(t => t.increment_lap), off = fin && transitionOffTrack(fin);
+    if (off) status(`Enregistré, MAIS la ligne d'arrivée ne correspond plus au parcours (${off}) : au départ les IA partiraient de travers. `
+                    + `Sélectionne la ligne d'arrivée → « Recréer le parcours depuis cette ligne ».`, 'err');
+    else status('Enregistré — ' + (r.report.join(' · ') || 'aucun changement'), 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+};
+// enregistrement du mode Course (piste chargee), puis rechargement ; -> reponse du serveur (rapport)
+async function saveRace() {
     const body = {
       track, deleted, starting_splines: starting,
       splines: Object.fromEntries(splines.map(s => [s.name, s.points])),
-      new_splines: splines.filter(s => s.isNew).map(s => ({ name: s.name, template: s.template })),
+      new_splines: splines.filter(s => s.isNew && s.kind === 'ai_paths').map(s => ({ name: s.name, template: s.template })),
+      // sections ajoutees / retirees
+      new_position_splines: splines.filter(s => s.isNew && s.kind === 'position_paths').map(s => ({ name: s.name, template: s.template })),
+      new_transitions: Object.values(transitions).filter(t => t.isNew).map(t => ({ name: t.name, template: t.template })),
+      deleted_transitions: deletedTransitions, section_merges: sectionMerges,
       transitions: Object.fromEntries(Object.values(transitions).map(t => [t.name,
         { increment_lap: t.increment_lap, previous_ai: t.previous_ai, next_ai: t.next_ai,
           previous_position: t.previous_position, next_position: t.next_position,
@@ -2982,15 +3534,132 @@ $('save').onclick = async () => {
       crates: [...crates.filter(c => c.kind in CRATE_KINDS),
                ...boosts.map(b => ({ kind: 'boost', pos: b.pos, yaw: b.yaw || 0, dims: b.dims }))],
       // teleporteurs : envoyes seulement s'ils ont change (le serveur reecrit alors le _Design et le RaceSystem)
-      teleporters: JSON.stringify(teleporters) !== teleportersLoaded ? teleporters : undefined };
+      teleporters: JSON.stringify(teleporters) !== teleportersLoaded ? teleporters : undefined,
+      // survol d'introduction : plans modifies ({} = tous d'origine), seulement s'ils ont change
+      flyby: JSON.stringify(flyby) !== flybyLoaded ? flyby : undefined };
     const r = await api('/api/save', body);
     await loadTrack(track, true);
-    const fin = Object.values(transitions).find(t => t.increment_lap), off = fin && transitionOffTrack(fin);
-    if (off) status(`Enregistré, MAIS la ligne d'arrivée ne correspond plus au parcours (${off}) : au départ les IA partiraient de travers. `
-                    + `Sélectionne la ligne d'arrivée → « Recréer le parcours depuis cette ligne ».`, 'err');
-    else status('Enregistré — ' + (r.report.join(' · ') || 'aucun changement'), 'ok');
-  } catch (e) { status('Erreur : ' + e.message, 'err'); }
-};
+    return r;
+}
+// ---- packs de maps (.zip, voir mappack.py) : export de pistes modifiees, import sur les pistes choisies ----
+function overlayCard(html, width = 620) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = `<div class="card" style="max-width:${width}px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line)">${html}</div>`;
+  document.body.appendChild(ov);
+  return ov;
+}
+const trackLabel = t => t.replace(/^[A-Z]\d+_/, '').replace(/_/g, ' ');
+async function openPackExport() {
+  $('moremenu').hidden = true;
+  let r;
+  try { r = await api('/api/pack_tracks'); } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
+  if (!r.tracks.length) { status('Aucune piste modifiée à exporter', 'err'); return; }
+  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  const ov = overlayCard(`<div style="margin-bottom:6px"><b>📦 Exporter des maps (.zip)</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Le pack contient tes modèles (OBJ), tes images, le parcours, les objets, les réglages,
+      le nom et les images de menu et le survol caméra — <b>aucun fichier du jeu</b>. Il se réimporte (et s'installe) sur n'importe quelle piste,
+      chez toi ou chez quelqu'un qui a son propre jeu.</div>
+    ${r.tracks.map(t => `<label style="display:flex;gap:8px;align-items:center;padding:3px 0"><input type="checkbox" class="pxt" value="${t.track}" checked>
+      <span style="flex:1"><b>${esc(t.title)}</b> <span style="color:var(--muted);font-size:11px">${esc(trackLabel(t.track))} · ${t.models} modèle(s)${t.race ? ' · parcours' : ''}</span></span></label>`).join('')}
+    <div style="display:flex;gap:6px;align-items:flex-end;margin-top:8px"><label style="flex:1">Dossier de destination (relatif au projet, ou chemin complet)
+      <input id="pxdir" value="exports" style="${field}"></label><button id="pxbrowse">📁 Parcourir…</button></div>
+    <div id="pxinfo" style="font-size:12px;color:var(--muted);margin:8px 0"></div>
+    <div class="btns" style="justify-content:flex-end"><button id="pxno">Fermer</button><button id="pxyes" class="primary">Exporter</button></div>`);
+  const q = s => ov.querySelector(s);
+  q('#pxno').onclick = () => ov.remove();
+  q('#pxbrowse').onclick = async () => {
+    try {
+      const p = await (await fetch('/api/pick_folder', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                         body: JSON.stringify({ initial: q('#pxdir').value.trim() }) })).json();
+      if (p.ok) q('#pxdir').value = p.folder;
+    } catch (e) { q('#pxinfo').textContent = 'Erreur : ' + e.message; }
+  };
+  q('#pxyes').onclick = async () => {
+    const tracks = [...ov.querySelectorAll('.pxt:checked')].map(c => c.value);
+    if (!tracks.length) { q('#pxinfo').textContent = 'Coche au moins une map'; return; }
+    q('#pxyes').disabled = true; q('#pxinfo').textContent = 'Export…';
+    try {
+      const x = await api('/api/pack_export', { tracks, folder: q('#pxdir').value.trim() });
+      const file = x.path.split(/[\\/]/).pop(), inExports = /[\\/]exports[\\/][^\\/]+$/.test(x.path);
+      q('#pxinfo').innerHTML = `<span style="color:var(--ok)">Pack créé : <code>${esc(x.path)}</code> (${(x.size / 2 ** 20).toFixed(1)} Mo)</span>`
+        + (inExports ? ` <a href="/api/pack_download?name=${encodeURIComponent(file)}" download>⬇ Télécharger</a>` : '')
+        + `<br>${x.report.map(esc).join('<br>')}`;
+      status('Pack de maps exporté : ' + x.path, 'ok');
+    } catch (e) { q('#pxinfo').textContent = 'Erreur : ' + e.message; }
+    q('#pxyes').disabled = false;
+  };
+}
+async function openPackImport() {
+  $('moremenu').hidden = true;
+  if (dirty && !(await ask('Des modifications ne sont pas enregistrées. Continuer quand même ?'))) return;
+  let all = [];
+  try { all = (await api('/api/pack_tracks')).all; } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
+  const ov = overlayCard(`<div style="margin-bottom:6px"><b>📦 Importer un pack de maps (.zip)</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Choisis le fichier .zip, puis pour chaque map : l'importer ou non, et à la place de quelle piste.
+      La piste remplacée repart de son original avant l'import (ce que tu y avais fait reste récupérable avec « ↶ Annuler »).</div>
+    <label class="btnlike" style="display:inline-block;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 10px;background:#262a32">📁 Choisir le fichier .zip…
+      <input type="file" id="pifile" accept=".zip,application/zip" hidden></label>
+    <div id="pimaps" style="margin-top:8px"></div>
+    <label style="display:flex;gap:6px;margin:8px 0"><input type="checkbox" id="piinst"> Installer dans le jeu après l'import (ferme shadPS4 avant)</label>
+    <div id="piinfo" style="font-size:12px;color:var(--muted);margin:6px 0"></div>
+    <div class="btns" style="justify-content:flex-end"><button id="pino">Fermer</button><button id="piyes" class="primary" disabled>Importer</button></div>`, 680);
+  const q = s => ov.querySelector(s);
+  q('#pino').onclick = () => ov.remove();
+  let info = null;
+  q('#pifile').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    q('#piinfo').textContent = `Lecture de ${f.name}…`; q('#pimaps').innerHTML = ''; q('#piyes').disabled = true;
+    try {
+      const res = await fetch('/api/pack_upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+      info = await res.json(); if (!res.ok) throw new Error(info.error || res.status);
+    } catch (err) { q('#piinfo').textContent = 'Erreur : ' + err.message.replace(/^\w+\(['"]?|['"]?\)$/g, ''); return; }
+    q('#pimaps').innerHTML = info.maps.map((m, i) => `<div style="display:grid;grid-template-columns:auto 72px 1fr;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line)">
+        <input type="checkbox" class="pim" data-i="${i}" checked>
+        <div style="width:72px;height:42px;border-radius:4px;background:#1d2026 center/cover no-repeat ${m.preview ? `url(${m.preview})` : ''}"></div>
+        <div><b>${esc(m.title)}</b> <span style="color:var(--muted);font-size:11px">créée sur ${esc(trackLabel(m.source_track))} · ${m.models} modèle(s)${m.sections ? ` · ${m.sections} sections` : ''}</span>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:3px;font-size:12px">à la place de
+            <select class="pit" data-i="${i}" style="flex:1;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:2px 4px">
+              ${all.map(t => `<option value="${t}" ${t === m.source_track ? 'selected' : ''}>${esc(trackLabel(t))}</option>`).join('')}</select></div></div></div>`).join('');
+    q('#piinfo').textContent = `${info.maps.length} map(s) dans le pack${info.created ? ' (créé le ' + info.created + ')' : ''}.`;
+    q('#piyes').disabled = false;
+  };
+  q('#piyes').onclick = async () => {
+    const maps = [...ov.querySelectorAll('.pim:checked')].map(c => ({ id: info.maps[+c.dataset.i].folder, target: ov.querySelector(`.pit[data-i="${c.dataset.i}"]`).value }));
+    if (!maps.length) { q('#piinfo').textContent = 'Coche au moins une map'; return; }
+    if (new Set(maps.map(m => m.target)).size !== maps.length) { q('#piinfo').textContent = 'Deux maps vers la même piste : choisis une piste différente pour chacune'; return; }
+    const names = maps.map(m => trackLabel(m.target)).join(', ');
+    if (!(await ask(`Remplacer ce qui est enregistré sur : ${names} ? (récupérable avec « ↶ Annuler » sur chaque piste)`))) return;
+    const install = q('#piinst').checked;
+    ov.remove();
+    const lines = [];
+    try {
+      const r = await api('/api/pack_import', { pack: info.pack, maps });
+      for (const x of r.results) {
+        lines.push(`${x.title} → ${trackLabel(x.target)}`);
+        // autre nombre de sections : splines IA refaites comme « Creer le parcours » (generateur de la page)
+        if (x.regen_ai) {
+          status(`${x.title} : splines IA…`);
+          if (!(await gotoMode('race'))) break;
+          $('track').value = x.target; decor = null;
+          await loadTrack(x.target);
+          lines.push('  ' + await regenerateAllAi({ lanes: 0, randomness: 0.5, margin: 0.15, seed: Math.floor(Math.random() * 1000),
+                                                     specials: false, dropSpecials: true, keepAir: true }));
+          await saveRace();
+        }
+        if (install) {
+          status(`${x.title} : installation…`);
+          await api('/api/install', { track: x.target });
+          lines.push('  installée dans le jeu');
+        }
+      }
+      const last = r.results[r.results.length - 1]?.target;
+      if (last && last !== track) { $('track').value = last; decor = null; await loadTrack(last); if (mode === 'decor') { root.visible = markers.visible = false; await loadDecor(); } }
+      else await loadTrack(track, true);
+      status('Pack importé — ' + lines.join(' · '), 'ok');
+    } catch (e) { status('Erreur : ' + e.message, 'err'); }
+  };
+}
 // Nom et images de la piste dans les menus : nom par langue, images remplacees (ou origine), trace genere.
 // Enregistre aussitot (annulable) ; installe dans toutes les archives qui contiennent ces fichiers.
 async function openMenuAssets() {

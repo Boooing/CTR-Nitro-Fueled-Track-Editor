@@ -65,6 +65,31 @@ def main(archives):
     ratio = max(max(a, b) / max(min(a, b), 1) for l in lanes
                 for a, b in zip(*(lambda d: (d, d[1:]))([math.dist(p[:2], q[:2]) for p, q in zip(l, l[1:])])))
     check(knots == 0 and ratio < 4, f'{len(lanes)} voies tres aleatoires : {knots} noeud(s), rapport entre segments voisins {ratio:.1f}')
+
+    # route droite synthetique (120 m x 24 m) : rocher pose dessus (la route continue dessous), trou de 25 m, tremplin
+    def quad(x0, x1, y0, y1, z0=0.0, z1=None):
+        z1 = z0 if z1 is None else z1
+        p = [(x0, y0, z0), (x1, y0, z1), (x1, y1, z1), (x0, y1, z0)]
+        return [(p[0], p[1], p[2]), (p[0], p[2], p[3])]
+    road = quad(0, 2000, -480, 480) + quad(3000, 6000, -480, 480)          # trou de x = 2000 a 3000
+    rock = []
+    cx, cy, rr, hh = 4500.0, 150.0, 200.0, 300.0                           # rocher : prisme a 8 pans, 5 m, 7,6 m de haut
+    ring = [(cx + rr * math.cos(a), cy + rr * math.sin(a)) for a in np.linspace(0, 2 * math.pi, 9)[:-1]]
+    for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
+        rock += [((ax, ay, 0.0), (bx, by, 0.0), (bx, by, hh)), ((ax, ay, 0.0), (bx, by, hh), (ax, ay, hh))]
+        rock += [((cx, cy, hh), (ax, ay, hh), (bx, by, hh))]
+    ramp = quad(1200, 1800, -200, 200, 0.0, 120.0)                         # tremplin : on y monte en pente douce
+    gs = ai_gen.GroundQuery(road + rock + ramp, [38] * len(road) + [6] * len(rock) + [38] * len(ramp))
+    ref2 = [[x, 0.0, 0.0] for x in np.arange(0, 6001, 1000)]
+    rs2 = ai_gen.generate_lanes(gs, ref2, n=5, randomness=0.0, seed=1, keep_air=True)
+    obs = ai_gen.Obstacles(gs)
+    cross = sum(obs.crosses(a, b) for l in rs2['lanes'] for a, b in (lambda c: zip(c, c[1:]))(ai_gen.curve_uniform(l, 16)[0]))
+    inside = sum(1 for l in rs2['lanes'] for c in ai_gen.curve_uniform(l, 16)[0] if math.hypot(c[0] - cx, c[1] - cy) < rr)
+    check(cross == 0 and inside == 0, f'rocher pose sur la route : {cross} traversee(s), {inside} point(s) de voie dedans')
+    ys = [np.interp(2500, [p[0] for p in l], [p[1] for p in l]) for l in rs2['lanes']]
+    check(max(ys) - min(ys) > 400, f'au-dessus du trou : voies ecartees de {(max(ys) - min(ys)) / 39.37:.0f} m (pas resserrees en un point)')
+    yr = [np.interp(1500, [p[0] for p in l], [p[1] for p in l]) for l in rs2['lanes']]
+    check(any(abs(y) < 150 for y in yr), 'tremplin : pas un obstacle (une voie passe dessus)')
     print('tous les tests passent')
 
 

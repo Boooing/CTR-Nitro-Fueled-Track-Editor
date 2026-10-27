@@ -218,11 +218,15 @@ def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, 
     dessus, au lieu de reconnaitre la route a sa surface de collision (une map importee a souvent la meme surface
     partout : herbe, bordures et decor comptaient comme de la route)."""
     samples = catmull_rom(reference, sample)
-    zs = []
+    zs, air = [], []
     for p in samples:                                   # trace pose sur le sol (la route si on la connait)
         g = (road_ground.at(p[0], p[1], p[2], window=1500.0) if road_ground is not None else None) \
             or ground.at(p[0], p[1], p[2])
         zs.append(g[0] if g else p[2])
+        # au-dessus d'un trou (saut) : pas de sol pres du trace -> largeurs et bornes reprises de part et d'autre (elles
+        # tombaient a 0 : toutes les voies se resserraient en un point au-dessus du trou)
+        air.append(ground.at(p[0], p[1], p[2], window=300.0) is None
+                   and (road_ground is None or road_ground.at(p[0], p[1], p[2], window=300.0) is None))
     if road_ground is not None:
         road = set(int(v) for v in np.unique(road_ground.v))
         ground_w = road_ground
@@ -238,8 +242,14 @@ def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, 
         normals.append(nrm)
         lefts.append(road_width(ground_w, p, nrm, zs[i], road))
         rights.append(road_width(ground_w, p, -nrm, zs[i], road))
+    # largeurs mesurees jusqu'a ~15 m du vide : faussees par le bout coupe de la route (mesurees le long du bord) ->
+    # reprises plus loin aussi
+    near = max(1, int(round(600 / sample)))
+    wair = [any(air[max(0, i - near):i + near + 1]) for i in range(len(air))]
+    lefts, rights = _fill_air(lefts, wair), _fill_air(rights, wair)
     k = max(1, int(round(2000 / sample)))               # largeurs lissees sur ~50 m
     lefts, rights = _smooth(lefts, k), _smooth(rights, k)
+    obs = Obstacles(ground)
     rnd = random.Random(seed)
     ds = [float(np.linalg.norm(np.array(b[:2]) - np.array(a[:2]))) for a, b in zip(samples, samples[1:])]
     total = sum(ds) or 1.0
@@ -275,21 +285,31 @@ def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, 
                     right = min(right, r)
             hi.append(left)
             lo.append(-right)
+        hi, lo = _fill_air(hi, wair), _fill_air(lo, wair)
         # decalage final : voulu, lisse, dans les bornes, et dont la variation est limitee (pas de zigzag :
         # au plus ~0,35 de deplacement lateral par unite d'avance, bornes elles-memes « erodees » a cette pente)
         slope = [0.35 * d for d in ds]
         hi_e, lo_e = _slope_envelope(hi, slope, upper=True), _slope_envelope(lo, slope, upper=False)
         off = _smooth(_smooth(want, max(1, int(round(1500 / sample)))), 3)
         off = [min(h, max(l, o)) if l <= h else 0.0 for o, l, h in zip(off, lo_e, hi_e)]
+        # obstacles poses sur la route (rocher, pilier) : la voie passe du cote libre le plus proche, en s'ecartant
+        # progressivement (bornes resserrees puis erodees a la meme pente)
+        for _ in range(3):
+            lo, hi, moved = avoid_bounds(obs, samples, normals, zs, off, lo, hi, air)
+            if not moved:
+                break
+            hi_e, lo_e = _slope_envelope(hi, slope, upper=True), _slope_envelope(lo, slope, upper=False)
+            off = [min(h, max(l, o)) if l <= h else o for o, l, h in zip(off, lo_e, hi_e)]
         pts = []
         for i, p in enumerate(samples):
             x, y = p[0] + normals[i][0] * off[i], p[1] + normals[i][1] * off[i]
-            g = ground.at(x, y, zs[i])
+            g = None if air[i] else ground.at(x, y, zs[i])
             z = (g[0] if g else zs[i]) + lift
-            if keep_air:
+            if keep_air or air[i]:                     # au-dessus d'un trou : hauteur du trace (pas le fond du trou)
                 z = max(z, float(p[2])) if g else float(p[2])
             pts.append([x, y, z])
-        lanes.append(fit_controls(pts, point_spacing))
+        lanes.append(fit_controls(pts, point_spacing, avoid=lambda a, b: obs.crosses(
+            (a[0], a[1], a[2] - lift), (b[0], b[1], b[2] - lift))))
     return {'lanes': lanes, 'widths': list(zip(lefts, rights)), 'road_surfaces': sorted(road)}
 
 
@@ -326,15 +346,180 @@ def _safe_offset(ground, p, nrm, z, off, road):
     return sgn * mag
 
 
+KART_Z = 60.0                    # po : hauteur des rayons de detection (faces raides : rocher, pilier, mur, tronc)
+COVER_LO, COVER_HI = 60.0, 1500.0    # po : dessus 1,5 a 38 m au-dessus de la route : peut-etre l'interieur d'un objet
+INSIDE_R = 1000.0                    # po : interieur = face raide touchee dans les 4 directions a moins de ~25 m
+
+
+def segment_blocked(ground, a, b, steep=False):
+    """Le segment a -> b (3D) traverse-t-il un triangle du sol ? (Moller-Trumbore sur les triangles des cellules de
+    la grille traversees.) steep : seulement les faces raides (pente > ~60 deg : pas un tremplin ni la route)."""
+    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    cells = set()
+    n = max(1, int(math.ceil(np.linalg.norm(b[:2] - a[:2]) / (CELL / 2))))
+    for k in range(n + 1):
+        p = a + (b - a) * (k / n)
+        cells.add((math.floor(p[0] / CELL), math.floor(p[1] / CELL)))
+    idx = [ground.grid[c] for c in cells if c in ground.grid]
+    if not idx:
+        return False
+    T = ground.t[np.unique(np.concatenate(idx))]
+    d = b - a
+    e1, e2 = T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]
+    h = np.cross(np.broadcast_to(d, e2.shape), e2)
+    det = np.einsum('ij,ij->i', e1, h)
+    ok = np.abs(det) > 1e-9
+    if steep:
+        nr = np.cross(e1, e2)
+        ok &= np.abs(nr[:, 2]) < 0.5 * np.linalg.norm(nr, axis=1)
+    inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+    s = a - T[:, 0]
+    u = np.einsum('ij,ij->i', s, h) * inv
+    q = np.cross(s, e1)
+    v = (q @ d) * inv
+    t = np.einsum('ij,ij->i', e2, q) * inv
+    return bool((ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t >= 0) & (t <= 1)).any())
+
+
+class Obstacles:
+    """Objets solides poses sur la route (rocher, pilier, tronc, borne) : la route continue souvent dessous, rien ne
+    les distinguait du sol. Obstacle = face raide traversee a hauteur de kart (un tremplin, une plaque turbo, la route
+    qui monte ne le sont pas), ou interieur d'un objet : un dessus au-dessus de la route ET une face raide touchee dans
+    les 4 directions (sous un pont ou dans un tunnel, devant / derriere restent libres ; sur un tremplin, on y monte
+    en pente douce)."""
+
+    def __init__(self, ground):
+        self.g, self.cache = ground, {}
+
+    def _level(self, x, y, z):
+        g = self.g.at(x, y, z, window=300.0)
+        return g[0] if g else None
+
+    def crosses(self, a, b):
+        """Le segment a -> b, a hauteur de kart au-dessus de la route sous chaque bout, traverse-t-il une face raide ?
+        (au-dessus du vide : non)"""
+        za, zb = self._level(*a[:3]), self._level(*b[:3])
+        if za is None or zb is None or abs(za - zb) > 2 * MAX_STEP:
+            return False                                # vide, ou marche d'un saut (bord du tremplin, reception)
+        return segment_blocked(self.g, (a[0], a[1], za + KART_Z), (b[0], b[1], zb + KART_Z), steep=True)
+
+    def profile(self, p, nrm, tan, z, offs):
+        """Decalages lateraux (pas de STEP) bloques autour de p : faces raides entre deux decalages voisins ou le long
+        du trace (+-150 po), interieur d'un objet, ou objet sans route dessous."""
+        key = (round(p[0]), round(p[1]), round(float(offs[0])), len(offs))
+        if key in self.cache:
+            return self.cache[key]
+        zr = self._level(p[0], p[1], z)
+        if zr is None:
+            self.cache[key] = np.zeros(len(offs), bool)
+            return self.cache[key]
+        pts = [(p[0] + nrm[0] * o, p[1] + nrm[1] * o) for o in offs]
+        lv = [self._level(x, y, zr) for x, y in pts]
+        blk = np.zeros(len(offs), bool)
+        for k, (x, y) in enumerate(pts):
+            above = [h for h in self.g.heights(x, y) if (lv[k] if lv[k] is not None else zr) + COVER_LO < h
+                     <= (lv[k] if lv[k] is not None else zr) + COVER_HI]
+            if lv[k] is None:
+                blk[k] = bool(above)                    # pas de route dessous, mais un objet a cette hauteur
+                continue
+            if above:
+                z0 = lv[k] + KART_Z
+                blk[k] = all(segment_blocked(self.g, (x, y, z0), (x + dx * INSIDE_R, y + dy * INSIDE_R, z0), steep=True)
+                             for dx, dy in ((tan[0], tan[1]), (-tan[0], -tan[1]), (nrm[0], nrm[1]), (-nrm[0], -nrm[1])))
+            a = (x - tan[0] * 150, y - tan[1] * 150, lv[k] + KART_Z)
+            b = (x + tan[0] * 150, y + tan[1] * 150, lv[k] + KART_Z)
+            if segment_blocked(self.g, a, b, steep=True):
+                blk[k] = True
+            if k + 1 < len(offs) and lv[k + 1] is not None and segment_blocked(
+                    self.g, (x, y, lv[k] + KART_Z), (pts[k + 1][0], pts[k + 1][1], lv[k + 1] + KART_Z), steep=True):
+                blk[k] = blk[k + 1] = True
+        self.cache[key] = blk
+        return blk
+
+
+def avoid_bounds(obs, samples, normals, zs, off, lo, hi, air=None, clear=CLEARANCE):
+    """Decalages lateraux `off` (gauche > 0) a moins de `clear` d'un obstacle : bornes lo / hi resserrees pour passer
+    du cote libre le plus proche (dans [lo, hi]). -> (lo, hi, nombre de points deplaces)."""
+    lo, hi = list(lo), list(hi)
+    need = {}                                           # i -> (plus proche libre a gauche, a droite) (None : aucun)
+    for i, p in enumerate(samples):
+        if air is not None and all(air[max(0, i - 2):i + 3]):
+            continue                                    # en plein vol ; au bord du vide : bloc sur la levre du saut
+        W = max(abs(lo[i]), abs(hi[i])) + clear + STEP
+        offs = np.arange(-math.ceil(W / STEP), math.ceil(W / STEP) + 1) * STEP
+        a, b = samples[max(0, i - 1)], samples[min(len(samples) - 1, i + 1)]
+        tan = np.array([b[0] - a[0], b[1] - a[1]])
+        tan /= np.linalg.norm(tan) or 1.0
+        blk = obs.profile(p, normals[i], tan, zs[i], offs)
+        if not blk.any():
+            continue
+        bad = offs[blk]
+        free = lambda o: np.abs(bad - o).min() >= clear
+        if free(off[i]):
+            continue
+        cand = [float(o) for o in offs if lo[i] <= o <= hi[i] and free(o)]
+        need[i] = (min((o for o in cand if o > off[i]), default=None), max((o for o in cand if o < off[i]), default=None))
+    # un seul cote par passage le long d'un obstacle (points voisins) : choisi point par point, la voie alternait
+    # gauche / droite, les bornes se croisaient et elle traversait l'obstacle tout droit
+    runs, n = [], 0
+    for i in sorted(need):
+        if runs and i - runs[-1][-1] <= 2:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    for run in runs:
+        cost = {}
+        for side in (0, 1):
+            opts = [need[i][side] for i in run]
+            if all(o is None for o in opts):
+                continue
+            cost[side] = (sum(o is None for o in opts), sum(abs(o - off[i]) for o, i in zip(opts, run) if o is not None))
+        if not cost:
+            continue
+        side = min(cost, key=cost.get)
+        for i in run:
+            o = need[i][side]
+            if o is None:
+                continue
+            n += 1
+            if side == 0:
+                lo[i] = max(lo[i], o)
+            else:
+                hi[i] = min(hi[i], o)
+    return lo, hi, n
+
+
+def _fill_air(vals, air):
+    """Valeurs au-dessus d'un trou (sans sol pour mesurer) : interpolees entre les points avec sol de part et
+    d'autre (bouts : la plus proche)."""
+    vals = list(vals)
+    known = [i for i, a in enumerate(air) if not a]
+    if not known or len(known) == len(vals):
+        return vals
+    for i, a in enumerate(air):
+        if not a:
+            continue
+        j0 = max((k for k in known if k < i), default=None)
+        j1 = min((k for k in known if k > i), default=None)
+        if j0 is None or j1 is None:
+            vals[i] = vals[j1 if j0 is None else j0]
+        else:
+            vals[i] = vals[j0] + (vals[j1] - vals[j0]) * (i - j0) / (j1 - j0)
+    return vals
+
+
 MIN_SPACING = 500.0       # ecart minimal entre points de controle (~13 m)
 MAX_RATIO = 1.8           # rapport maximal entre deux segments voisins (au-dela, la courbe deborde : boucles)
+Z_TOL_BELOW, Z_TOL_ABOVE = 60.0, 200.0   # po : courbe sous / au-dessus de la voie voulue avant de resserrer
 
 
-def fit_controls(path, spacing, tol=150.0, max_points=120):
+def fit_controls(path, spacing, tol=150.0, max_points=120, avoid=None):
     """Points de controle pris sur `path` (voie voulue, echantillonnee finement). Ecart local = ~moitie du rayon de
     virage (entre MIN_SPACING et `spacing`), variant progressivement ; resserre la ou la courbe Catmull-Rom qui
-    passe par les points s'ecarte de plus de `tol` de la voie (interieur des virages : murs), puis segments voisins
-    equilibres (des points tres proches a cote de segments longs faisaient des noeuds)."""
+    passe par les points s'ecarte de plus de `tol` de la voie (interieur des virages : murs), ou touche un obstacle
+    (avoid(a, b) -> True pour un pas de courbe a -> b : la voie le contourne, la courbe entre deux points espaces le
+    recoupait), puis segments
+    voisins equilibres (des points tres proches a cote de segments longs faisaient des noeuds)."""
     P = np.array(path, np.float64)
     if len(P) < 3:
         return [[round(float(c), 3) for c in p] for p in P]
@@ -372,9 +557,20 @@ def fit_controls(path, spacing, tol=150.0, max_points=120):
     for _ in range(8):                                   # resserrer la ou la courbe s'ecarte de la voie
         curve, seg = curve_uniform(P[idx], 12)
         bad = set()
-        for c, kk in zip(curve, seg):
+        for q, (c, kk) in enumerate(zip(curve, seg)):
             a, b = idx[kk], idx[min(kk + 1, len(idx) - 1)]
-            if b - a >= 2 and _dist_to_polyline(c[:2], P[a:b + 1, :2]) > tol:
+            if b - a < 2:
+                continue
+            if avoid is not None and q and avoid(curve[q - 1], c):
+                bad.add(kk)
+                continue
+            if _dist_to_polyline(c[:2], P[a:b + 1, :2]) > tol:
+                bad.add(kk)
+                continue
+            # hauteur : entre deux points espaces, la courbe passait jusqu'a 6 m sous le sommet d'une bosse (butte de
+            # Crash Cove) ; resserre aussi la ou elle s'enfonce de plus de 1,5 m (ou monte de plus de 5 m)
+            zr = P[a + int(np.argmin(np.linalg.norm(P[a:b + 1, :2] - c[:2], axis=1))), 2]
+            if not -Z_TOL_BELOW <= c[2] - zr <= Z_TOL_ABOVE:
                 bad.add(kk)
         if not bad or len(idx) >= max_points:
             break

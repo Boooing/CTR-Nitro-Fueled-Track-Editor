@@ -124,13 +124,18 @@ def write_entity_poses(data, poses):
         o = _entity_by_name(z, name)
         if o is None:
             raise KeyError(f'entite introuvable : {name}')
-        struct.pack_into('<3f', *z._loc(o + 0x20), *[float(c) for c in p['pos']])
-        tr = z.deref(o + 0x30)
-        if tr is not None:
-            if p.get('yaw') is not None:
-                struct.pack_into('<f', *z._loc(tr + 0x68), float(p['yaw']))
-            struct.pack_into('<I', *z._loc(tr + 0x7C), 1)
+        set_entity_pose(z, o, p)
     return z.to_bytes()
+
+
+def set_entity_pose(z, o, p):
+    """Position (+0x20) et cap (transformation +0x68, si elle existe) de l'entite o du fichier z."""
+    struct.pack_into('<3f', *z._loc(o + 0x20), *[float(c) for c in p['pos']])
+    tr = z.deref(o + 0x30)
+    if tr is not None:
+        if p.get('yaw') is not None:
+            struct.pack_into('<f', *z._loc(tr + 0x68), float(p['yaw']))
+        struct.pack_into('<I', *z._loc(tr + 0x7C), 1)
 
 
 def transition_pose(ed, name):

@@ -68,8 +68,8 @@ python ctr_tools/editor/server.py
 Dossier « archives » du jeu : `--archives "<dossier>"`, sinon celui mémorisé dans `ctr_editor_config.json`, sinon
 la page le demande à l'ouverture (aucun chemin écrit dans le code). Ce fichier garde aussi la langue (anglais par
 défaut ; `window.CTR_SETTINGS` injecté dans la page, `POST /api/settings`), car le stockage du navigateur dépend du
-port. « Importer un dossier » : bouton « 📁 Parcourir… » (`POST /api/pick_folder`, fenêtre Windows ouverte par le
-serveur). « Créer le parcours » : « 🖱 Choisir les routes dans le Décor » (sélection dans la vue 3D, puis retour au
+port. « Importer un dossier » : bouton « 📁 Parcourir… » (`POST /api/pick_folder`, fenêtre de choix ouverte par le
+serveur : celle de l'application sous Linux, sinon `zenity` / `kdialog`, sinon tkinter). « Créer le parcours » : « 🖱 Choisir les routes dans le Décor » (sélection dans la vue 3D, puis retour au
 dialogue avec ces morceaux cochés).
 Ouvrir http://localhost:8765 : vue 3D (collision + splines + transitions), sélection/déplacement/ajout/suppression
 de points, **duplication / suppression de splines IA** (nouvelle spline = copie décalée de 300 po, ajoutée aux
@@ -99,7 +99,7 @@ transparent), sinon un drapeau à damier dessiné (dépôt GitHub sans image du 
 * Archives du jeu : celles mémorisées dans `ctr_editor_config.json` à côté de l'exe, sinon demandées par la page à
   l'ouverture. Dans l'éditeur (application **et**
   navigateur) : ligne « 🎮 Dossier du jeu » en tête du guide et menu « ⋯ › 📁 Dossier des archives du jeu… ».
-  `POST /api/archives` (sans `path` : fenêtre Windows ouverte par le serveur) vérifie le dossier, oublie tous les
+  `POST /api/archives` (sans `path` : fenêtre de choix ouverte par le serveur) vérifie le dossier, oublie tous les
   caches (`clear_caches`), mémorise le choix et la page se recharge. Le serveur seul relit
   `ctr_editor_config.json` à la racine du projet quand `--archives` n'est pas donné.
 * Hors ligne : three.js 0.160.0 est servi localement (`editor/vendor/three`, route `/vendor/`).
@@ -111,6 +111,238 @@ transparent), sinon un drapeau à damier dessiné (dépôt GitHub sans image du 
   (environnement `.build_venv` : pyinstaller, pywebview, numpy, pillow ; `PIP_USE_FEATURE=truststore` si pip
   échoue sur les certificats). Piège : pywebview expose à la page tout attribut public d'un objet `js_api`
   (une fenêtre en attribut public = parcours récursif sans fin, fenêtre figée) ; l'application n'en utilise plus.
+
+### Application Linux (`CTR/appimage/CTR_Track_Editor-<arch>.AppImage`)
+
+Même lanceur (`editor/app.py`), construit par `build_appimage.py` (sous Linux) : dossier PyInstaller dans une AppImage
+(un seul fichier). Fenêtre : pywebview + Qt WebEngine (PyQt6) embarqué ; les autres moteurs de pywebview et les autres
+liaisons Qt sont exclus. Bac à sable Chromium désactivé (`QTWEBENGINE_DISABLE_SANDBOX`, bloqué par AppArmor sur
+Ubuntu 24.04) : la page affichée est celle du serveur local.
+* Données et `ctr_editor_config.json` : à côté du fichier `.AppImage` (l'application elle-même est montée en lecture
+  seule), ou dans un dossier parent qui a déjà des sauvegardes ; dossier non modifiable : `~/.local/share/ctr-track-editor`.
+* Fichiers enregistrés (`out/editor`) et fichiers des maps importées : noms cherchés sans tenir compte de la casse
+  (`server.ci_path`, `_find_file`), comme sous Windows (le manifeste donne des noms en minuscules, les `.mtl` exportés
+  sous Windows des chemins `Textures\Herbe.PNG`).
+* Construire :
+  ```bash
+  python3 -m venv .build_venv
+  .build_venv/bin/python -m pip install pyinstaller pywebview qtpy PyQt6 PyQt6-WebEngine numpy pillow
+  .build_venv/bin/python ctr_tools/editor/build_appimage.py
+  ```
+  `appimagetool` : PATH, `$APPIMAGETOOL`, sinon téléchargé dans `.build`. La glibc de la machine de construction est
+  la plus ancienne acceptée : construire sur une distribution ancienne (Ubuntu 22.04).
+
+### Packs de maps (.zip, `editor/mappack.py`)
+
+Menu « ⋯ » : **📦 Exporter des maps (.zip)** (pistes modifiées au choix, dossier `exports` du projet par défaut,
+lien « ⬇ Télécharger » dans le navigateur) et **📦 Importer un pack de maps (.zip)** (pour chaque map : l'importer ou
+non, et à la place de quelle piste ; option « installer dans le jeu après l'import »).
+Le zip ne contient **aucun fichier du jeu** : `pack.json` (liste), par map `map.json` (décor, parcours, objets,
+réglages, noms, survol…), `models/*.obj` (maillage de chaque modèle importé relu sans perte du `.igz` : positions,
+normales, UV ; coordonnées du jeu, origine = pivot de l'objet), `textures/*` (image source si elle existe encore,
+sinon la texture décodée), `menu/*.png`. Objets du jeu (bibliothèque, copies du décor d'origine) : nom de fichier +
+archive seulement. Import (rejoué avec les fonctions de l'éditeur sur les fichiers d'origine de la piste cible,
+une copie pour « Annuler ») : piste cible remise à l'origine → « Nouvelle map » → textures, modèles (gabarits du
+jeu de l'importateur), objets, collision → ambiance (ciel de la piste source s'il en avait un) et allègement →
+parcours : même nombre de sections = copie exacte (splines IA, liens des transitions, splines de départ) ; sinon
+boucle du tour redécoupée (`route_gen.layout`, comme « Créer le parcours ») et splines IA régénérées par la page
+→ caisses / boosters / TNT…, téléporteurs (même transition, sinon la plus proche), grille et repère de départ,
+anciennes entités écartées (`old_route_moves`), chutes et réapparitions, mini-carte, survol (même rang ; plan final
+→ plan final ; sinon proposé), nom et images de menu. Décor d'origine modifié : rejoué seulement sur la même piste.
+Vérifié sur une copie : Crash Cove → Crash Cove / Roo's Tubes / Mystery Caves (copie exacte, 4 sections) et → Sewer
+Speedway (6 sections : redécoupé, IA régénérées dans la page) ; zip de 6 Mo (22 OBJ, 11 PNG, 2 JSON).
+Corrigé au passage : embranchement sans liste d'IA (Sewer Speedway) — `handle_list(None)` = liste vide ; arrivée de
+téléporteur sur une piste sans point de réapparition dans le `_Design` (Roo's Tubes) : repère importé de Crash Cove.
+Autres tracés de la piste (`_chain_from`) : une transition de passage qui revient sur sa propre spline (Coco Park
+`Spline_Transition_002`, de `201_OLD` vers `201_OLD`) est sautée pour suivre la vraie suite, puis posée au milieu de
+sa spline ; après la régénération, la page lui donne les IA de sa section (précédentes = suivantes, comme le jeu).
+Coco Park, Turbo Track, Blizzard Bluff : caisses / boosters écrits dans le `_Design` (voir « Caisses d'objets »).
+**Non validé en jeu.**
+
+Nombre de sections différent (depuis le 2026-10-27) : la cible est d'abord ramenée au nombre du pack
+(`server.plan_sections` : coupe la section la plus longue / retire en partant de la fin du tour), puis copie exacte
+des IA du pack. Ex. Crash Cove 6 sections → Roo's Tubes (4) : 2 transitions ajoutées, « Vérifier » OK ; pack 4 →
+Sewer Speedway (6) : 2 retirées, `SplineTransition_Shortcut` (raccourci de l'ancien tracé) écartée sous la carte.
+
+### Sections : transitions ajoutées / supprimées
+
+Section = spline de position entre deux transitions (`CRaceTrackSplineComponentData` : `_respawnPoints` = points de
+réapparition de la section ; `_start` / `_end` inutilisés ; aucune stat TTR pour les splines de position).
+- **Ajout** (fiche de la transition « ✂ Ajouter une transition dans la section suivante », ou point d'une spline de
+  position « ✂ Nouvelle transition ici ») : la section est coupée (un point de chevauchement de chaque côté), la seconde
+  moitié = nouvelle spline de position (`new_position_splines`, copie `add_ai_spline` sans stats), nouvelle transition
+  = copie d'une transition ordinaire du jeu (`new_transitions`, `RaceSystemEditor.add_entity_copy` ; copie d'un
+  téléporteur rendue ordinaire). IA de la section inchangées : la nouvelle transition est « de passage »
+  (IA précédentes = suivantes, comme Coco Park `Spline_Transition_002`) — validé par le jeu d'origine.
+- **Suppression** (« 🗑 Supprimer cette transition », pas la ligne d'arrivée ni une transition à plusieurs splines de
+  position) : sections fusionnées (`joinPaths` : reprise après le point le plus proche), spline suivante supprimée,
+  transition retirée (`deleted_transitions`, `remove_entity`). Les IA qui la traversaient sont refaites sur toute leur
+  portée (`regenSpan` : de leur vraie transition de départ à leur vraie arrivée, à travers les transitions de passage).
+- **Serveur** (`save_track`) : `section_merges` = sections touchées ; leurs points de réapparition sont répartis sur la
+  plus proche (positions du `_Design`, ou celles replacées dans la même sauvegarde ; points hors `_Design` — Sewer
+  Speedway, `RespawnPoint` du `_RaceSystem` — gardent leur section ou suivent la fusion) ; embranchements dont le
+  `_positionPath` est une section touchée rattachés à la plus proche.
+- **Créer le parcours** : champ « Sections » ; si le nombre change, `setSectionCount` puis toutes les IA régénérées.
+- `race_chain` / `raceChain` sautent les transitions de passage (de la spline vers elle-même).
+Testé sur copie (Crash Cove : +1, −1, puis « Créer le parcours » à 6 sections : « Vérifier » sans erreur) ; **non
+validé en jeu**.
+
+### Contrôle « Hauteur des splines » (Vérifier)
+
+Splines de parcours et IA **utilisées par la course** (citées par une transition / un embranchement en place, ou de
+départ) et **modifiées** (différentes du jeu d'origine : les pistes du jeu ont des creux jusqu'à −3,7 m et des sauts
+jusqu'à 47 m, Sewer Speedway). Mesure sur la courbe suivie (`curve_uniform`), par rapport à la route mémorisée
+(« Créer le parcours ») sinon au sol sous la spline (jamais un plafond / surplomb au-dessus). Splines générées :
+parcours sur la route (0 m), IA à +2 m.
+- **Erreur** : plus de 2,5 m sous la route (seulement là où la route mémorisée est connue).
+- **Attention** : plus de 10 m au-dessus (ou rien dessous) sans retomber. Accepté : saut posé avant (A) et après (B)
+  dans la spline, ou court saut (< 150 m) à cheval sur une transition. « Sans sol dessous » : souvent une branche
+  restée sur l'ancien tracé (Mystery Caves de l'utilisateur : `Race_Position_Spline_split_02` + IA, encore reliées).
+- **Correction** « Poser les splines sur la route » (`fix_spline_heights`) : points de contrôle autour des tronçons
+  fautifs remis à la hauteur habituelle de la spline (médiane de ses points bien posés, sinon 0 / 2 m) ; point sans
+  rien dessous (trou de la route) : interpolé entre ses voisins. Sauts gardés.
+Testé : pistes d'origine sans alerte ; copies des maps de l'utilisateur (5 pistes) sans fausse alerte ; sabotage
+(IA −6 m, parcours +20 m) détecté puis corrigé.
+
+### Banc d'essai « Créer le parcours » sur les 21 pistes d'origine (2026-10-27)
+
+Sur copie, chaque piste : parcours et IA recréés depuis les surfaces de route (« Créer le parcours », surfaces vides),
+enregistrés, « Vérifier », puis contrôle avancé hors éditeur (tour comparé au tracé du jeu : longueur, écart, sens,
+morceaux non parcourus, hauteur sur la route, IA sur les surfaces de route) et image vue de dessus. Corrigé :
+- **Réapparitions rangées dans le `_RaceSystem`** (Sewer, Slide, Turbo, Papu, Dingo, Dragon, Cortex) : l'enregistrement
+  plantait (`KeyError entite introuvable`) — `save_track` les écrit maintenant dans le `_RaceSystem`, « Vérifier » les lit.
+- **Surfaces de route auto** : une surface croisée brièvement (pont, bande de bois, booster) compte dès 2 points
+  (échantillons tous les 100 po) ; avant (5 points tous les 300 po) la route était coupée et la boucle trouvée faisait
+  600 m au lieu de 3,7 km (Mystery Caves), 169 m (Inferno Island).
+- **Morceaux de route reliés** (`route_gen.join_pieces`, `join_cuts`) : coupures courtes aux bords irréguliers que
+  `bridge_gaps` ne voyait pas (bouts du squelette pas face à face) ; `join_cuts` refuse s'il y a un mur entre les deux.
+- **Branches de l'ancien tracé** (`detachOldBranches` dans la page) : 2e spline de position d'une section (Mystery Caves
+  `split_02`, raccourcis de Sewer / Turbo / Slide…) détachée des transitions du tour, ses transitions propres écartées
+  sous la carte ; IA régénérées sur le tour seulement (`regenerateAllAi` options `only` / `share`).
+- **Hauteur du tracé** : niveau de route le plus proche du point précédent (pas le plus haut : voûte des tuyaux de
+  Sewer Speedway), repris à n'importe quelle hauteur après une chute de plus de 10 m (Android Alley : tracé resté 40 m
+  trop haut) ; trou franchi sous une butte d'une autre surface : posé dessus (`_lift_onto_ground`, Crash Cove).
+- **Courbe sous les bosses** : entre deux points de contrôle espacés (~60 m), la courbe passait jusqu'à 6 m sous le
+  sommet d'une bosse ; `ai_gen.fit_controls` resserre aussi là où elle s'enfonce de plus de 1,5 m (ou monte de plus
+  de 5 m) — parcours et voies IA.
+- **Boucle la plus longue** (`_longest_cycle`) en plus du choix glouton : un raccourci / une route intérieure est plus
+  court que le vrai tour (Turbo Track 2,3 → 3,3 km sur 3,8 km).
+- Contrôle « Chutes » : erreur à moins d'1 m du plancher (avant : 10 m ; le jeu lui-même n'a que 3,8 m sur Tiny
+  Arena). « Départ et transitions » : IA suivante mesurée au bord de la zone, pas à son centre (voie extérieure d'une
+  plage de 70 m à 38 m du centre, Crash Cove).
+Limites restantes (tracé à faire à la main ou en choisissant les morceaux de route) : circuits à étages superposés
+vue de dessus (Cortex Castle), aller-retour sur la même route séparé par un muret (Tiger Temple), très grands sauts
+(Dingo Canyon, > 40 m : monter « Franchir les trous »), Polar Pass (grands carrefours) ; splines rangées hors du
+`_RaceSystem` (N. Gin Labs, Hot Air Skyway, Oxide Station) : non gérées par l'éditeur.
+
+### « Créer le parcours » : décor géant, route trouée, plancher (2026-10-27)
+
+Map Sneak a Peak importée sur Crash Cove (utilisateur) : « route géante : 4227 m ». La sélection contenait le décor de
+fond `NoCollision_background_t_` (un clic sur la map en mode Décor touche ce maillage qui englobe tout). Corrigé :
+- objet de plus de 3 km dans la sélection : écarté avec une note (erreur claire s'il ne reste que lui) ; source
+  géante ou vide (surfaces du sol, tracé d'origine loin de la map) : route mémorisée / importée essayée ;
+- boucle trouvée bien plus petite que la route choisie (route coupée par des trous > 40 m : petite boucle d'une
+  place, 333 m sur 1,6 km) : second essai en franchissant jusqu'à 80 m, gardé s'il est nettement plus long
+  (5,2 km) ; sinon note « coche les morceaux qui bouchent les trous » ;
+- plancher de chute : seul celui du jeu (ou plus bas) borne la route ; celui posé par « Chutes et réapparitions »
+  d'un ancien parcours (9512, au-dessus de la nouvelle route) ne bloque plus, une note demande de le refaire ;
+- matériaux nommés `NoCollision*` : sans collision par défaut à l'import.
+**Déplacer toute la map en hauteur** (Décor › Finitions) : tous les objets du décor décalés en Z comme un déplacement à
+la main (Ctrl+Z, Enregistrer : collision et plaques de booster suivent, sol gris relu) ; le parcours ne suit pas.
+
+### Sauts et obstacles : parcours et splines IA (2026-10-27)
+
+Crash Cove de l'utilisateur. Problèmes et corrections :
+- **Parcours décalé au-dessus d'un trou** : le pont dessiné dans l'image de la route (`join_pieces`, `bridge_gaps`,
+  `join_cuts`) était un trait entre les deux pixels / bouts de squelette les plus proches, c'est-à-dire un coin
+  quand les bouts de route sont en biais. Le tracé passait par le coin. Maintenant, le pont est l'enveloppe convexe
+  des bords qui se font face (`_face_bridge`, `_end_bridge`), et le tracé passe au milieu (test « trous en biais »).
+- **Splines IA resserrées au-dessus du vide** : aucun sol pour mesurer la largeur. Les points au-dessus d'un trou
+  (`air`) et jusqu'à ~15 m du bord (largeur faussée par le bout coupé) reprennent les largeurs et les bornes de part
+  et d'autre (`_fill_air`). La hauteur au-dessus du trou est celle du tracé.
+- **Parcours et IA à travers les objets solides** : un rocher posé sur la route (la route continue dessous) ne se
+  voyait pas. `ai_gen.Obstacles` reconnaît deux cas :
+  - une face raide (pente > ~60°) traversée à hauteur de kart (60 po) ;
+  - l'intérieur d'un objet : un dessus au-dessus de la route, et une face raide touchée dans les 4 directions à moins
+    de 25 m.
+
+  Les tremplins, plaques turbo, ponts et tunnels ne comptent pas. `avoid_bounds` choisit un seul côté libre par
+  passage le long d'un obstacle (choisi point par point, il alternait et la voie traversait tout droit), puis
+  resserre les bornes, que la pente 0,35 érode. Cela vaut pour les voies IA et la ligne centrale
+  (`route_gen._avoid_obstacles`, note « tracé écarté d'objets solides »). `fit_controls(avoid=)` resserre les points
+  de contrôle là où la courbe touche un obstacle (`Obstacles.crosses`).
+- **Murs de zone devant un saut** : un bord tourné vers le sens de la course, avec la route choisie qui reprend en
+  face à moins de 80 m (jusqu'à 80 m plus haut ou plus bas : réception 43 m sous le tremplin), est un bord de saut
+  (`walls._jump_edge`) et ne reçoit jamais de mur.
+
+Vérifié sur une copie (parcours 5,1 km, 11 points écartés de 2 rochers ; IA sans traversée de rocher ; aucun mur sur
+le tracé ni sur les IA). Reste : une voie frôle le coin d'un bloc sur la lèvre d'une réception. Rien n'est validé en
+jeu.
+
+### Murs invisibles (`walls.py`, mode Décor — non validé en jeu)
+
+Collision seule, rien à l'écran en jeu. Un mur invisible est un **modèle importé ordinaire** (objet de décor :
+déplacer, tourner, échelle X = longueur / Z = hauteur, dupliquer, supprimer, annuler, packs de maps) dont le `.igz`
+installé n'est qu'un triangle d'1 mm sous le sol ; sa forme est dans `out/editor/models/<nom>.wall.json` (registre
+`'invisible': True`, `'wall': 'auto' | 'manual' | 'obj'`). `object_world_array` / aperçu / collision liée lisent cette
+forme (`model_or_wall_mesh`), donc la collision suit l'objet comme pour tout import. Surface 4 (« Sol », celle des murs
+de Crash Cove, Coco Park, Turbo Track).
+- **Depuis un OBJ** : à l'import (colonne « Mur invis. » d'« Importer un dossier » — cochée d'office pour un matériau
+  nommé `invisible` / `nodraw` / `clip` —, choix « mur invisible » dans « Importer un modèle OBJ »), ou après coup par
+  clic droit « Mur invisible » (le `.igz` visible est gardé en `<nom>.visible.igz` pour « Rendre visible en jeu »).
+- **Générés** (« Générer le long de la route… ») : le long des deux bords de la ligne de course enregistrée
+  (`race_path_points`), bord mesuré comme les voies IA (route seule si connue). Au-delà du bord : mur ou talus déjà là
+  (segment à 1,5 m de haut qui touche la collision, ou sol plus haut) → rien ; plus de sol au niveau de la route →
+  mur ; herbe / sable au même niveau → mur seulement avec « hors route ». Jamais sur une autre partie de la route, à
+  l'intérieur d'un virage plus serré que le décalage, ni où la route connue n'est pas sous le tracé (passage sous un
+  pont d'un autre objet). Morceaux de 50 m (réglable), 10 m de haut, à 3 m du bord ; les murs générés précédemment
+  sont remplacés (la collision est d'abord recalculée sans eux), les murs à la main / importés restent.
+- **Autour d'une sélection** (« Murs autour de la sélection… », aussi au clic droit ; `walls.zone`, type `'zone'`) :
+  parties de la map cliquées dans la vue 3D (Maj+clic). Bords = arêtes du dessus (triangles tournés vers le haut)
+  qui n'appartiennent qu'à un triangle, sommets fusionnés à 2 po ; rien vers un autre objet choisi au même niveau
+  (raccord), vers un mur / talus existant, ni dans la bande de la route (`walls.Corridor` : largeur mesurée de chaque
+  côté du tracé, et un mur dont la hauteur croise l'espace d'un kart sur la route dessous ou dessus est refusé) ;
+  mur à 1 m vers l'extérieur ; « vers un autre sol au même niveau » en option. Relancer sur les mêmes objets remplace
+  ces murs (registre `'zone'` = liste des objets). Le test « sur la route » est fait tout le long de chaque bord (tous
+  les ~4 m) : le bout coupé d'une route au bord d'un saut est un seul long bord en travers, dont le milieu tombait
+  hors de la bande (mesurée plus étroite au bout) → mur en travers de la route (Crash Cove de l'utilisateur, corrigé
+  le 2026-10-27).
+- **Relier les murs** (« Relier les murs distants de moins de », 120 m par défaut, 0 = non ; `walls._join`) :
+  1. trous du contour (mur ou talus déjà là, autre sol) d'au plus cette longueur entre deux murs : fermés en suivant
+     le bord ; 2. bouts de murs restants reliés, plus courts raccords d'abord, chaque bout une fois : le long des objets
+     choisis s'ils le permettent (`_mesh_router` : arêtes des faces non horizontales + bords du dessus, recoupées tous
+     les 100 po, sauts d'au plus 250 po entre morceaux sans sommet commun ; hors de la bande de la route rétrécie de
+     120 po), sinon coin là où les deux murs prolongés se croisent, sinon tout droit (jamais sur la route ni par-dessus
+     les objets choisis, pas de demi-tour). Les petites boucles (dessus d'un poteau, ≤ 5 m) servent de points de
+     passage. Cas d'origine : `SneakAPeak_Wall_Barrier` = 69 morceaux (2 bandeaux de panneaux verticaux + poteaux de
+     8 sommets, 40 à 110 m d'écart) → seuls les dessus des poteaux donnaient des murs de 6 m isolés.
+- **À la main** : « Ajouter un mur au centre de la vue » (20 m, face à la caméra).
+Testé sur copie (Roo's Tubes importée de l'utilisateur, Crash Cove d'origine, pack exporté puis importé sur une autre
+piste) et `test_walls.py`. À vérifier en jeu : un modèle d'1 mm n'affiche rien, les karts butent sur la feuille
+(une seule épaisseur, les deux côtés).
+
+### Types de sol : valeur de collision
+
+`server.surface_params` : valeur = rang dans la `CCollisionMaterialHandleList` de `LooseData/CollisionMaterials.igz`
++ décalage **calé sur Sand = 38** (la liste lue n'a plus d'entrée nulle en tête : l'ancien « + 3 » affichait la fiche
+du sol voisin, d'où ralentissement / adhérence 1,0 partout dans le menu du clic droit). Adhérence affichée = min(
+`_traction` de la fiche, `_dynamicFriction` du matériau / 0,5) (glace : frottement 0,05). Herbe (5) : ×0,4 constaté
+en jeu, absent de la fiche (`SURFACE_OBSERVED`).
+
+### Survol d'introduction (`flyby.py`)
+
+Archives propres à chaque piste `<piste>_*flyby*.pak` (Crash Cove : `t111_crash_cove_newflyby.pak` = 4 plans de
+3 à 4 s, `…_newflyby_short02.pak` = 1 plan de 6 s ; le dernier plan de chaque survol finit sur la grille). Caméra
+d'un plan : `cutscene/…/cameras/c_<…>_shotN.igz` — `CCutsceneCamera` (pose de départ, rotation en degrés) +
+`CCameraKeyframeAnimation` : une clé tous les 1/30 s, `_positions` (coordonnées de la piste), `_rotations`
+(roulis, tangage, cap en radians ; tangage négatif = regard vers le bas), `_fovs`. Vérifié : les clés recalculées
+depuis les poses de début / fin d'un plan d'origine retrouvent exactement son orientation.
+Éditeur (mode Course, section « 🎬 Survol d'introduction ») : un plan = pose de début et de fin (caméra + point
+regardé), déplaçables dans la vue 3D ou « Prendre la vue actuelle » ; « Générer depuis le parcours » (travellings le
+long de la route, plan final qui descend vers la grille), « Plan fixe sur la grille » (le survol ne montre plus
+l'ancienne piste), lecture ▶ dans la vue 3D. Enregistrement : `<piste>_flyby.json` + caméras réécrites en place
+(mêmes clés, même minutage) ; installées dans les archives de survol (sauvegardées / restaurées comme les autres).
+**Validé en jeu (2026-10-26).**
 
 ### Téléporteurs (mécanisme de Spyro Circuit)
 
@@ -657,6 +889,14 @@ Tests : `test_collision_edit.py`.
   route le long des splines de position depuis la ligne d'arrivée (`chain_paths` retire leurs chevauchements), écart
   réduit si la route est étroite, caisses de fruits isolées en option. Tests : `test_powerup.py`. **Validé en jeu**
   (2026-10-20) : caisses placées et ajoutées visibles et fonctionnelles sur le circuit importé.
+  **Caisses dans le `_Design`** (Coco Park, Turbo Track, Blizzard Bluff : `_Power_Up` vide, un seul objet sans
+  table de noms) : `server.crate_file` choisit le fichier des caisses (le `_Power_Up` s'il a des noms, sinon le
+  `_Design` s'il porte des caisses « ? » / fruits). Dans le `_Design`, `read_crates(..., crates_only=True)` ne garde
+  que caisses / boosters / TNT / Nitro / fruits, et `write_crates(..., crates_only=True, keep_tilt=...)` repart du
+  fichier **enregistré** (pas de l'original) : grille, réapparitions, arrivées de téléporteur et autres entités
+  restent intactes ; les caisses déjà posées sont ré-inclinées selon le sol actuel. Boosters et extras y sont
+  importés comme dans le `_Power_Up` (manifeste : script turbopad). Testé sur copie (import de pack + caisse
+  déplacée + booster ajouté sur les 3 pistes, contrôle avant installation sans erreur) ; **non validé en jeu**.
 - **Compactage des fichiers IGZ** (`IgzFile.compact`, `server.safe_compact` à l'enregistrement de RaceSystem et
   TTRStats) : les réécritures (listes racine, tables de noms, listes de poignées) abandonnaient l'ancien bloc à chaque
   appel ; après une régénération complète, TTRStats 37 Ko → 2,4 Mo, RaceSystem 103 Ko → 1,7 Mo. Les blocs
