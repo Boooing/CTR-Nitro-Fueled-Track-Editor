@@ -4,6 +4,9 @@
 
 Import your own map (OBJ / COLLADA), turn it into a playable race in a few clicks, and install it in place of an existing track — with AI opponents, item crates, boosters, respawns, a minimap, menu images and even teleporters.
 
+Discord : https://discord.gg/m3Zv6sXEgU
+
+
 > 🇫🇷 Version française plus bas.
 
 ---
