@@ -110,9 +110,27 @@ def main():
         cmd += ['--exclude-module', m]
     cmd.append(os.path.join(HERE, 'app.py'))
     print(' '.join(f'"{c}"' if ' ' in c else c for c in cmd), flush=True)
+
     subprocess.check_call(cmd, cwd=ROOT)
 
-    # 4. AppDir : AppRun -> usr/lib/<slug>/<slug> (dossier PyInstaller), .desktop et icone a la racine
+    # 3b. Supprimer libstdc++ embarquee.
+    # Laisser les distributions Linux fournir leur propre runtime C++.
+    # Cela evite les conflits avec les versions recentes de Mesa / des pilotes GPU sous Arch Linux.
+    bundle = os.path.join(dist, SLUG)
+    removed = []
+
+    for root, dirs, files in os.walk(bundle):
+        for filename in files:
+            if filename == 'libstdc++.so.6' or filename.startswith('libstdc++.so.6.'):
+                path = os.path.join(root, filename)
+                print(f'Removing bundled library: {path}', flush=True)
+                os.remove(path)
+                removed.append(path)
+
+    if not removed:
+        print('WARNING: No bundled libstdc++.so.6 found', flush=True)
+
+    # 4. AppDir : AppRun -> usr/lib/<slug>/<slug> (dossier PyInstaller)
     appdir = os.path.join(BUILD, f'{SLUG}.AppDir')
     if os.path.isdir(appdir):                          # genere par ce script
         shutil.rmtree(appdir)
