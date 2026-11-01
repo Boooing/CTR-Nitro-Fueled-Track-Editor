@@ -1,100 +1,139 @@
-# CTR Track Editor
+# CTR Track Editor & CTR Track Installer
 
-**A track editor for Crash Team Racing Nitro-Fueled (PS4, v1.21 — CUSA13795), played on the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator.**
+**Two tools for Crash Team Racing Nitro-Fueled (PS4, v1.21, CUSA13795), played on the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator, in one repository and sharing the same engine (`ctr_tools`).**
 
-Import your own map (OBJ / COLLADA), turn it into a playable race in a few clicks, and install it in place of an existing track — with AI opponents, item crates, boosters, respawns, a minimap, menu images and even teleporters.
+| Tool | For | Source |
+|---|---|---|
+| **CTR Track Editor** | Map makers | `ctr_tools/editor/` (this page) |
+| **CTR Track Installer** | Players | [`CTR Track Installer/`](CTR%20Track%20Installer) |
 
-Discord : https://discord.gg/m3Zv6sXEgU
+Import your own map (OBJ / COLLADA), turn it into a playable race in a few clicks, and add it to the game as a **brand new track** or in place of an existing one, with AI opponents, item crates, boosters, respawns, a minimap, menu images, lights and even teleporters.
 
+Players who just want to install map packs can use **CTR Track Installer**, a small separate app (its own download; its source is the `CTR Track Installer` folder of this repository).
 
 > 🇫🇷 Version française plus bas.
 
 ---
 
-## What's new V0.2
+## What's new in v0.3
 
-### Invisible walls (Decor mode)
-- **Three ways to make one**:
-  - **From an OBJ**: set its type to *Invisible wall*. It keeps its collision and nothing is drawn in game.
-  - **Generated along the road**: walls where the road edge drops into the void, or optionally where it meets grass or other ground.
-  - **By hand**: “Add a wall at the centre of the view”.
-- **Walls around a selection**: pick one or several parts of the map in the 3D view (also from the right-click menu). Walls follow their edges and are never placed on the race route.
-- **Walls join up**: gaps along an edge are closed, and nearby wall ends are linked along the object itself. A fence becomes one wall from post to post, curves included. The new *Join walls closer than* setting (120 m by default) controls this.
-- **Never in front of a jump**: no wall is placed on a road end at the edge of a gap, even when the landing is much lower.
-- Walls are shown in translucent purple in the editor and can be hidden. They travel with map packs.
+### New tracks and game menu
+- **Create new tracks without replacing existing ones.** They are added to your own category in the game's track select, with their own name, background, thumbnail and in-race icon.
+- **Track / category tab**: create, rename, move and delete categories and tracks (the game's ones too), or restore the original menu.
+
+### CTR Track Installer (new)
+- Standalone app for players: install one or several map packs (.zip exported by the editor) without using the editor.
+- For each map, choose: new category, existing category, or replace a track.
+- Automatic backup and **Restore the original game**, which lists everything that will be removed before doing it.
+- Installed tracks are kept in a shared registry next to the game archives, so installing from the editor or from the installer no longer undoes the other tracks.
+
+### Interface
+- Reworked interface: menu bar (File, Edit, Add, Track, Help), Selection panel on the right, resizable panels, toolbar on the 3D view, status bar with history and shortcuts.
+- Free camera: zoom towards the cursor, fly with right-click + WASD (ZQSD on AZERTY), A / E down / up, Shift to go faster.
+- Camera / Objects toggle: choose whether the arrow keys move the view or the selection.
+- Refresh 3D view button.
 
 ### Create the route
-- **Jumps**: the race line now crosses a gap through the middle of the road, not via the nearest corner. AI lanes keep their spread over the void instead of squeezing into one point.
-- **Solid objects on the road**: the race line and the AI lanes now go around rocks and pillars sitting on the road. Ramps, turbo pads, bridges and tunnels are not treated as obstacles.
-- **More robust**:
-  - Giant background scenery picked by mistake is ignored.
-  - A road cut by gaps of more than 40 m is retried with gaps up to 80 m.
-  - A kill floor left by an older route no longer blocks the new one.
-
-### Intro cameras
-- **Intro flyover**: the cutscene cameras played before the race. You can regenerate them from your route, frame a shot from the current 3D view, or use a fixed shot on the grid, then preview them in the editor.
-
-### Map packs (.zip import / export)
-- **Export** one or several tracks into a single **.zip with no game file inside**: models, images, route, objects, settings, menu name and images, flyover and invisible walls.
-- **Import** a pack: choose which maps to install and **in place of which track**, then install them in one click. The AI splines are kept even if the target track has a different number of sections.
+- **Top-down preview** after the route is generated. Draw on it to fix the route: an open stroke replaces the part between its two ends, a closed stroke replaces the whole lap. Then regenerate from the drawing.
+- **Automatic start line**: an object named Start / Finish, otherwise a checkerboard on the ground, otherwise the current finish line. A "View" button shows it in the 3D view.
+- **Number of sections**: transitions are added or removed and all AI lines are regenerated.
+- More reliable route: holes with nothing below are kept and avoided, roads cut by a ramp are handled, and a thin seam between two road pieces no longer creates a shortcut.
 
 ### Decor
-- **Move the whole map up or down** (Decor › Finishing): every object moves in Z, and collision and booster pads follow.
-- **Ground types**: the right-click menu shows each ground's slowdown and grip again (dirt, grass, ice…).
+- **Lights** (presets, intensity up to 1000) that light the map in game, previewed in the 3D view.
+- **Glowing textures** (right-click › Glowing texture).
+- **Rescale the whole map** and **move the whole map**: route, zones, crates, boosters, grid, flyover and lights follow.
+- **Import a folder of several OBJ / DAE files** and choose which objects to import (different up axes are aligned).
+- The collision preview updates by itself after each change.
+
+### Race
+- **Editable fall zones**: move, resize, delete; generated in 40 m pieces.
+- Respawn points shown in the 3D view.
+- "Spline height" check in Check.
+
+### Minimap and intro
+- Minimap **mirror buttons** (horizontal / vertical) when it shows up flipped in game.
+- Crash Cove and created tracks: the minimap is now stored the right way up by default (no more manual vertical
+  mirror); older minimaps are redone automatically at install.
+- Intro flyover: camera pitch fixed (shots were looking at the sky).
+
+### Fixes
+- Crash when quitting a race from the pause menu on modified maps.
+- Crash when a kart fell next to the road (automatic fall zones).
+- Crash when loading a track after removing its teleporter.
+- Karts falling through the road right after the start on some imported maps.
+- Fallback mode on PCs without WebView2 no longer freezes when choosing the game folder.
+- Crash at the start of loading ANY track after playing a created track ("New map" deleted the animated boat sails
+  and flags of Crash Cove; they are now moved under the map). Tracks and .zip packs made with an older version are
+  repaired automatically at install.
+- Created tracks: textures shared with Crash Cove were missing in the copy.
+- Installer: maps of an opened .zip could stay invisible after scrolling the empty list.
 
 ---
 
 ## Features
 
 ### Build a track from your own map
-- **Import a folder** — `.obj` + `.mtl` or `.dae` (COLLADA) with its textures: one model per material, textures converted for the game (BC1 / BC3, mipmaps), per-material collision, alpha cut-out for foliage, automatic scale suggestion from the road width.
-- **New map** — removes the original track (ground, decor, effects, animated objects, occlusion) while keeping the game logic; everything you imported stays.
-- **Create the route from the road** — the race line is computed from the road geometry: sections, checkpoints, finish line, start grid, respawn points and every AI spline. Handles overpasses (a road crossing itself) and **jumps over gaps**. Pick the road pieces in a list or directly in the 3D view. **Choose the number of sections** (transitions): they are added or removed for you.
-- **Spline height check** — “Check” flags route / AI splines buried under the road or floating in the air outside a jump (a jump from A to B is fine), with a one-click fix.
-- **Add / remove transitions** — cut a section in two at any point (new transition + new position spline), or delete a transition (the two sections merge, their AI splines are rebuilt); respawn points and forks follow.
-- **Lighten the map** — mesh simplification for collision and 512 px textures for background scenery.
+- **Import a folder**: `.obj` + `.mtl` or `.dae` (COLLADA) with textures, one or several files at once. One model per material, textures converted for the game (BC1 / BC3, mipmaps), per-material collision, alpha cut-out for foliage, scale suggested from the road width. You choose which objects to import.
+- **New map**: removes the original track (ground, decor, effects, animated objects, occlusion) while keeping the game logic; everything you imported stays.
+- **Create the route from the road**: the race line is computed from the road geometry: sections, checkpoints, finish line, start grid, respawn points and every AI spline. Handles overpasses (a road crossing itself) and **jumps over gaps** (up to 40 m by default), and goes around rocks and pillars on the road. Pick the road pieces in a list or directly in the 3D view, choose the number of sections, check the result from above and **redraw it with the mouse** if needed. The start line is detected from a Start / Finish object or a checkerboard.
+- **Add / remove transitions**: cut a section in two at any point, or delete a transition (the two sections merge and their AI splines are rebuilt); respawn points and forks follow.
+- **Move / rescale the whole map** in one click, everything follows (route, zones, crates, grid, flyover, lights).
+- **Lighten the map**: mesh simplification for collision and 512 px textures for background scenery.
 
-### Race (Course mode)
-- **AI splines** — edit, duplicate, delete, or regenerate them all from the road width (lanes, randomness, wall clearance), automatically joined at every checkpoint.
-- **Checkpoints / finish line** — move, rotate and resize the trigger zones; link panel for previous / next splines.
-- **Start grid** — 8 slots, snapped to the ground behind the finish line.
-- **Item crates** — `?` crates and Wumpa crates, placed by hand or automatically along the route, tilted to match the slope.
-- **TNT, Nitro, Wumpa fruit, boosters** — objects transplanted from other tracks (turbo pads come with their ground decal).
-- **Falls & respawns** — respawn points every N metres along the road (never above a gap), fall zones, world kill floor.
-- **Teleporters** — the Spyro Circuit "mirror" mechanism: any checkpoint can become a portal that sends karts to an arrival point you place.
-- **Minimap** — generated from the route, correctly oriented.
-- **Track name and menu images** — name in every language, background / thumbnail / emblem images.
-- **Virtual tour** — drive the racing line at kart height in the editor.
-- **Intro flyover** — the cutscene cameras played before the race: regenerate them from your route, set them from the current 3D view, or use a fixed shot on the grid; preview in the editor.
+### Race (Race mode)
+- **AI splines**: edit, duplicate, delete, or regenerate them all from the road width (lanes, randomness, wall clearance), joined at every checkpoint.
+- **Checkpoints / finish line**: move, rotate and resize the trigger zones; link panel for previous / next splines.
+- **Start grid**: 8 slots, snapped to the ground behind the finish line.
+- **Item crates**: `?` crates and Wumpa crates, placed by hand or automatically along the route, tilted to match the slope.
+- **TNT, Nitro, Wumpa fruit, boosters**: objects transplanted from other tracks (turbo pads come with their ground decal).
+- **Falls & respawns**: respawn points every N metres along the road (never above a gap), fall zones you can edit by hand, world kill floor.
+- **Teleporters**: the Spyro Circuit "mirror" mechanism; any checkpoint can become a portal that sends karts to an arrival point you place.
+- **Minimap**: generated from the route, with mirror buttons if the game reads it flipped.
+- **Intro flyover**: the cutscene cameras played before the race; regenerate them from your route, set them from the current 3D view, or use a fixed shot on the grid; preview in the editor.
+- **Virtual tour**: drive the racing line at kart height in the editor.
 
-### Decor (Décor mode)
+### Decor (Decor mode)
 - Move / rotate / scale / duplicate / delete scenery; **collision follows** (Havok compressed-mesh encoder rebuilt from scratch).
-- **Object library** — ~2,800 models from all 47 tracks and arenas, placed with their materials and textures (files copied automatically when needed).
-- **Textures** — swap a material, or use any external image as a texture.
-- **Ground types** — grass, dirt, ice, snow… with the real speed and grip values read from the game; collision on / off per object.
-- **Sky & ambience** — copy the sky, lighting and fog of another track.
-- **Export to Blender** — collision, splines and full decor as OBJ.
+- **Object library**: ~2,800 models from all 47 tracks and arenas, placed with their materials and textures (files copied automatically when needed).
+- **Textures**: swap a material, use any external image, or make it glow.
+- **Ground types**: grass, dirt, ice, snow… with the real speed and grip values read from the game; collision on / off per object.
+- **Invisible walls**: from an OBJ, generated along the road edges or around a selection (joined post to post, never in front of a jump), or added by hand.
+- **Lights**: point lights from presets, lighting the map in game.
+- **Sky & ambience**: day / evening / night, sky, lighting and fog of another track.
+- **Export to Blender**: collision, splines and full decor as OBJ.
+
+### Tracks and game menu
+- **New tracks**: added next to the game's tracks, in your own category, without replacing anything.
+- **Track / category tab**: create, rename, reorder and delete categories and tracks, rename the game's categories, restore the original menu.
+- **Track name and menu images**: name in every language, background / thumbnail / in-race icon.
 
 ### Share your maps
-- **Map packs (.zip)** — export one or several of your tracks into a single zip **without any game file** (OBJ models, your images, route, objects, settings, menu name and images, flyover). Anyone who owns the game imports it from the editor, picks which maps to install and **in place of which track**, and can install them straight into the game. When the target track has a different number of sections, transitions are added or removed so the pack's AI splines are copied as is.
+- **Map packs (.zip)**: export one or several of your tracks into a single zip **without any game file** (OBJ models, your images, route, objects, settings, menu name and images, flyover, invisible walls, lights). Others install it from the editor or with **CTR Track Installer**, as a new track or in place of a track of their choice. When the target track has a different number of sections, transitions are added or removed so the pack's AI splines are copied as is.
 
 ### Safety
-- **Pre-install check** with **one-click fixes** (sky, finish line, grid, AI, crates, minimap…).
-- **Undo / redo** — every edit, plus a save history on disk.
-- **Install / restore** — the game archives are patched in place with a backup; several modded tracks can be installed at the same time; "Restore archives" puts the original game back.
+- **Pre-install check** with **one-click fixes** (sky, finish line, grid, AI, crates, minimap, spline heights…).
+- **Undo / redo**: every edit, plus a save history on disk.
+- **Install / restore**: the game archives are patched in place with a backup; several modded tracks can be installed at the same time; the original game can be restored at any time.
 - Interface in **English, French, Spanish, Italian and German**.
+
+---
+
+## CTR Track Installer
+
+A separate app for players (own download; source in the [`CTR Track Installer`](CTR%20Track%20Installer) folder, which uses the `ctr_tools` engine of this repository). It installs map packs exported by the editor, organises the race menu and restores the original game, using the same engine as the editor. The list of installed tracks (`ctr_installed_tracks.json`, next to the game archives) is shared: the editor and the installer can be used on the same game without undoing each other's tracks.
 
 ---
 
 ## Requirements
 - Your **own legally dumped copy** of CTR Nitro-Fueled for PS4 (CUSA13795, update 1.21) running on shadPS4. No game file is included in this repository.
-- Windows 10/11 (`.exe`) or Linux x86_64 / aarch64 (`.AppImage`). For the source version: Python 3.11+.
+- Windows 10/11 (`.exe`) or Linux x86_64 / aarch64. For the source version: Python 3.11+.
 
 ## Quick start (Windows app)
 1. Run `CTR Track Editor.exe`.
-2. On first launch, choose the game's **`archives`** folder from 1.21 Update (it contains `update.pak` and the track archives such as `t111_crash_cove.pak`). The choice is remembered.
-3. Follow the 6-step guide on the left: *Remove the old track → Import your map → Create the route → Place objects → Check → Install*.
-4. Close shadPS4 before installing, then start a race on the track you replaced.
+2. On first launch, choose the game's **`archives`** folder from the 1.21 update (it contains `update.pak` and the track archives such as `t111_crash_cove.pak`). The choice is remembered.
+3. Open **Edit › Guide: create your track in 6 steps** and follow it: *Remove the old track → Import your map → Create the route → Place objects → Check → Install*.
+4. Close shadPS4 before installing, then start a race on your track.
 
 Your saves are stored in `out/editor` next to the executable.
 
@@ -121,8 +160,7 @@ python3 -m venv .build_venv
 Single-file `CTR_Track_Editor-<arch>.AppImage` with an embedded Qt WebEngine window. Build on the oldest distribution you want to support (e.g. Ubuntu 22.04). Saves and settings are stored next to the `.AppImage` (or in `~/.local/share/ctr-track-editor` if that folder is read-only).
 
 ### Tests
-Most tests take the game's `archives` folder (they read real game files, nothing is modified); a few take a
-file or an extracted folder (see the `Usage` line at the top of each test):
+Most tests take the game's `archives` folder (they read real game files, nothing is modified); a few take a file or an extracted folder (see the `Usage` line at the top of each test):
 ```bash
 python ctr_tools/test_library.py "<game archives folder>"
 python ctr_tools/pak_tool.py extract "<game archives folder>/t111_crash_cove.pak" extracted/t111_crash_cove
@@ -132,15 +170,17 @@ python ctr_tools/test_roundtrip.py extracted          # every .igz re-written by
 ## Project layout
 | Path | Content |
 |---|---|
-| `ctr_tools/editor/` | `server.py` (local HTTP API), `index.html` (three.js editor), `i18n.js` (translations), `app.py` (Windows app), `build_exe.py` |
+| `ctr_tools/editor/` | `server.py` (local HTTP API), `index.html` (three.js editor), `i18n.js` (translations, shared with the installer), `mappack.py` (map packs), `app.py` (desktop app), `build_exe.py`, `build_appimage.py` |
 | `ctr_tools/igz.py` | Reader / writer for Alchemy `.igz` files (fixups, handles, deep clone, cross-file entity import, compaction) |
-| `ctr_tools/pak_tool.py` | `.pak` archives (IGA v13, LZMA): extract, patch in place, backups |
+| `ctr_tools/pak_tool.py`, `game_restore.py` | `.pak` archives (IGA v13, LZMA): extract, patch in place, backups, full restore |
+| `ctr_tools/track_clone.py`, `custom_category.py` | New tracks (renamed copy, hashes rebuilt) and the game's race menu |
 | `ctr_tools/havok*.py`, `cms_codec.py`, `collision*.py` | Havok collision: compressed-mesh decoder / encoder, compound instances |
-| `ctr_tools/route_gen.py`, `ai_gen.py`, `falls.py` | Race line from the road, AI lanes, respawns |
-| `ctr_tools/model_build.py`, `texture_build.py`, `dae_import.py` | Model, material and PS4 texture (tiling, BC1/BC3) generation |
-| `ctr_tools/powerup.py`, `teleport.py`, `minimap.py`, `menu_assets.py`, `library.py` | Crates and objects, teleporters, minimap, menus, object library |
+| `ctr_tools/route_gen.py`, `ai_gen.py`, `falls.py`, `start_finish.py` | Race line from the road, AI lanes, respawns and fall zones, finish line and grid |
+| `ctr_tools/model_build.py`, `texture_build.py`, `dae_import.py` | Model, material and PS4 texture (tiling, BC1/BC3, glow) generation |
+| `ctr_tools/powerup.py`, `teleport.py`, `minimap.py`, `menu_assets.py`, `library.py`, `lights.py`, `walls.py`, `flyby.py` | Crates and objects, teleporters, minimap, menus, object library, lights, invisible walls, intro flyover |
 | `ctr_tools/schema/ctr_meta.json` | Class schema (names, sizes, fields) extracted from the game executable by `extract_meta.py` |
 | `ctr_tools/README.md` | Detailed technical notes (French): file formats, what was validated in game, pitfalls |
+| `CTR Track Installer/` | The installer app: `src/ctr_track_installer.py` (Tkinter), `build.py`, its own README |
 
 ## Disclaimer
 Fan-made, non-commercial modding tool. Not affiliated with or endorsed by Activision, Beenox or Sony. Crash Team Racing and all related assets are the property of their respective owners. Use only with a copy of the game you own.
@@ -153,40 +193,31 @@ Third-party: [three.js](https://threejs.org) (MIT, `ctr_tools/editor/vendor/thre
 
 **Éditeur de pistes pour Crash Team Racing Nitro-Fueled (PS4 v1.21, CUSA13795) sur l'émulateur shadPS4.**
 
-Importe ta propre map (OBJ / COLLADA), transforme-la en course jouable en quelques clics et installe-la à la place d'une piste du jeu : IA, caisses, boosters, réapparitions, mini-carte, images de menu et même téléporteurs.
+Importe ta propre map (OBJ / COLLADA), transforme-la en course jouable en quelques clics et ajoute-la au jeu comme **nouvelle piste** ou à la place d'une piste existante : IA, caisses, boosters, réapparitions, mini-carte, images de menu, lumières et même téléporteurs.
 
-**Nouveautés**
-- **Murs invisibles** (mode Décor) :
-  - **Trois façons d'en créer** : un OBJ dont tu choisis le type *Mur invisible* (collision seule, rien à l'écran en jeu), une génération automatique le long des bords de la route, ou un ajout à la main.
-  - **Autour d'une sélection** : choisis des parties de la map dans la vue 3D, ou passe par le clic droit. Les murs ne sont jamais posés sur le parcours.
-  - **Murs reliés** : les trous le long d'un bord sont fermés, et les bouts proches sont reliés en suivant l'objet (une barrière devient un seul mur de poteau en poteau, virages compris). Le réglage est « Relier les murs », à 120 m par défaut.
-  - **Jamais devant un saut**.
-  - Les murs voyagent avec les packs de maps.
-- **Créer le parcours** :
-  - **Sauts** : le tracé franchit un trou par le milieu de la route, plus par un coin. Les voies IA restent écartées au-dessus du vide.
-  - **Obstacles** : le tracé et les IA **contournent les rochers et piliers posés sur la route**. Les tremplins, plaques turbo, ponts et tunnels ne gênent pas.
-  - **Plus robuste** : le décor de fond géant sélectionné par erreur est ignoré, une route coupée par des trous de plus de 40 m est réessayée jusqu'à 80 m, et un ancien plancher de chute ne bloque plus.
-- **Caméras de début de map** : le survol d'introduction (cinématique d'avant-course) est régénéré d'après ton parcours, cadré depuis la vue 3D, ou remplacé par un plan fixe sur la grille, avec un aperçu dans l'éditeur.
-- **Import / export en .zip (packs de maps)** :
-  - **Export** : une ou plusieurs pistes dans un seul .zip **sans aucun fichier du jeu** (modèles, images, parcours, objets, réglages, nom et images de menu, survol, murs invisibles).
-  - **Import** : tu choisis les maps et la piste qu'elles remplacent, puis tu installes en un clic. Les IA sont gardées même si la piste cible n'a pas le même nombre de sections.
-- **Décor** :
-  - **Déplacer toute la map en hauteur** (Décor › Finitions) : la collision et les plaques de booster suivent.
-  - Le clic droit réaffiche le **ralentissement et l'adhérence** de chaque sol.
+Deux outils dans ce dépôt, avec le même moteur (`ctr_tools`) : **CTR Track Editor** (créer des maps) et **CTR Track Installer** (dossier [`CTR Track Installer`](CTR%20Track%20Installer) : pour les joueurs qui veulent juste installer des packs de maps ; téléchargement à part).
 
-**Fonctionnalités**
-- **Ta map** : import d'un dossier OBJ / DAE + textures (collision et transparence par matériau, échelle proposée), « Nouvelle map » qui retire l'ancienne piste, allègement de la map.
-- **Parcours automatique** depuis la forme de la route : sections, ligne d'arrivée, grille, réapparitions, toutes les splines IA ; routes qui se croisent et **sauts au-dessus des trous** ; choix des morceaux de route dans la vue 3D ; **nombre de sections au choix**.
-- **Contrôle de hauteur des splines** : « Vérifier » signale les splines de parcours / IA enfoncées sous la route ou en l'air hors d'un saut (un saut de A à B est accepté), avec correction en un clic.
-- **Transitions ajoutées / supprimées** : couper une section en deux à n'importe quel point, ou supprimer une transition (les deux sections fusionnent, leurs IA sont refaites) ; réapparitions et embranchements suivent.
-- **Course** : splines IA (édition, génération), zones de transition, grille de départ, caisses `?` et fruits (posées selon la pente), TNT, Nitro, fruits Wumpa, boosters, chutes et réapparitions, **téléporteurs** (le miroir de Spyro Circuit), mini-carte, nom et images de menu, visite virtuelle, **survol
-  d'introduction** (caméras de la cinématique d'avant-course régénérées d'après ton parcours ou cadrées à la main).
-- **Décor** : déplacer / tourner / dupliquer avec la collision qui suit, **bibliothèque de ~2 800 objets** des 47 pistes, textures (y compris images externes), **types de sol** avec vitesse et adhérence réelles, ciel et ambiance d'une autre piste, export Blender.
-- **Partage** : **packs de maps (.zip)** sans aucun fichier du jeu, à réimporter et installer en un clic à la place de
-  la piste de son choix (si la piste cible n'a pas le même nombre de sections, des transitions sont ajoutées / retirées : les IA du pack sont copiées telles quelles).
-- **Sécurité** : vérification avant installation et **corrections en un clic**, annuler / rétablir, installation réversible (sauvegarde des archives), plusieurs pistes installées en même temps.
+### Nouveautés de la v0.3
+- **Nouvelles pistes sans en remplacer** : elles arrivent dans ta propre catégorie du menu du jeu, avec nom, fond, vignette et icône en course. Onglet **Piste / catégorie** pour créer, renommer, déplacer et supprimer catégories et pistes (y compris celles du jeu), ou revenir au menu d'origine.
+- **CTR Track Installer** : installe un ou plusieurs packs .zip sans l'éditeur. Pour chaque map : nouvelle catégorie, catégorie existante ou remplacer une piste. Sauvegarde automatique et **Remettre le jeu d'origine** (avec la liste de ce qui sera supprimé). Registre commun avec l'éditeur : installer une piste ne défait plus les autres.
+- **Nouvelle interface** : barre de menus (Fichier, Édition, Ajouter, Piste, Aide), panneau Sélection à droite, panneaux redimensionnables, barre d'outils sur la vue 3D, barre d'état. Caméra libre (zoom vers le curseur, vol clic droit + ZQSD), bouton Caméra / Objets, bouton Actualiser la vue.
+- **Créer le parcours** : vue de dessus après la génération, **dessin à la souris** pour corriger un morceau ou tout le tour ; **ligne de départ détectée** (objet Start / Finish, sinon damier au sol) ; nombre de sections au choix ; tracé plus fiable (trous sans rien dessous contournés, route coupée par une rampe, plus de raccourci par une fente entre deux morceaux).
+- **Décor** : **lumières** qui éclairent la map en jeu (aperçu dans la vue 3D), **textures lumineuses**, **changer l'échelle / déplacer toute la map** (tout suit), **import d'un dossier de plusieurs OBJ / DAE** avec choix des objets, sol de collision mis à jour tout seul.
+- **Course** : **zones de chute modifiables** (déplacer, redimensionner, supprimer, morceaux de 40 m), points de réapparition affichés, contrôle « Hauteur des splines ».
+- **Mini-carte** : boutons miroir ; Crash Cove et pistes créées dans le bon sens par défaut (plus de miroir vertical à la main, anciennes mini-cartes refaites à l'installation). **Survol d'introduction** : inclinaison des caméras corrigée.
+- **Corrections** : plantage en quittant une course depuis la pause, plantage quand un kart tombait à côté de la route, plantage au chargement après avoir retiré un téléporteur, karts qui traversaient la route au départ, mode secours sans WebView2, **plantage au chargement de n'importe quelle piste après une piste créée** (« Nouvelle map » supprimait les voiles et drapeaux animés des bateaux de Crash Cove : ils sont désormais descendus sous la carte ; pistes et packs .zip d'une ancienne version réparés à l'installation), textures partagées avec Crash Cove manquantes dans les pistes créées, maps d'un .zip invisibles dans l'installateur après un coup de molette.
+
+### Fonctionnalités
+- **Ta map** : import d'un dossier OBJ / DAE + textures (un ou plusieurs fichiers, choix des objets, collision et transparence par matériau, échelle proposée), « Nouvelle map » qui retire l'ancienne piste, déplacer / changer l'échelle de toute la map, allègement.
+- **Parcours automatique** depuis la forme de la route : sections, ligne d'arrivée, grille, réapparitions, toutes les splines IA ; routes qui se croisent, **sauts au-dessus des trous**, obstacles contournés ; vue de dessus et correction au dessin ; départ détecté ; nombre de sections au choix ; transitions ajoutées / supprimées.
+- **Course** : splines IA (édition, génération), zones de transition, grille de départ, caisses `?` et fruits (posées selon la pente), TNT, Nitro, fruits Wumpa, boosters, chutes et réapparitions, zones de chute modifiables, **téléporteurs** (le miroir de Spyro Circuit), mini-carte, survol d'introduction, visite virtuelle.
+- **Décor** : déplacer / tourner / dupliquer avec la collision qui suit, **bibliothèque de ~2 800 objets** des 47 pistes, textures (images externes, textures lumineuses), **types de sol** avec vitesse et adhérence réelles, murs invisibles, lumières, ambiance jour / soir / nuit et ciel d'une autre piste, export Blender.
+- **Pistes et menu** : nouvelles pistes dans ta catégorie, onglet Piste / catégorie, nom et images de menu.
+- **Partage** : **packs de maps (.zip)** sans aucun fichier du jeu, à installer depuis l'éditeur ou avec **CTR Track Installer**.
+- **Sécurité** : vérification avant installation et **corrections en un clic**, annuler / rétablir, installation réversible, plusieurs pistes installées en même temps, retour au jeu d'origine.
 - Interface en **français, anglais, espagnol, italien et allemand**.
 
-**Démarrage** : lance `CTR Track Editor.exe`, choisis le dossier `archives` du jeu, puis suis le guide en 6 étapes. Depuis les sources : `pip install -r requirements.txt` puis `python ctr_tools/editor/server.py` (http://localhost:8765).
+### Démarrage
+Lance `CTR Track Editor.exe`, choisis le dossier `archives` du jeu, puis ouvre **Édition › Guide : créer ta piste en 6 étapes**. Depuis les sources : `pip install -r requirements.txt` puis `python ctr_tools/editor/server.py` (http://localhost:8765). L'installateur pour les joueurs (**CTR Track Installer**) est un téléchargement à part ; ses sources sont dans le dossier `CTR Track Installer` de ce dépôt (`python "CTR Track Installer/src/ctr_track_installer.py"`).
 
 Outil de fan, non commercial, sans lien avec Activision, Beenox ou Sony. Aucun fichier du jeu n'est inclus : il faut ta propre copie du jeu.
