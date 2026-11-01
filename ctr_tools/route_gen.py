@@ -273,23 +273,43 @@ def join_cuts(mask, max_gap_px, blocked=None):
     return mask | added, added, n
 
 
+RAMP_SLOPE = 0.47     # pente qu'un kart monte (~25 deg) : une rampe posee dans la coupure n'est pas un mur
+
+
 def _wall_between(ground, zmap, lo, cell, rise=150.0, top=1500.0):
-    """-> blocked(p, q) pour join_cuts : un sol plus de `rise` po au-dessus de la ligne droite entre les deux bouts
-    (hauteur de la route a chaque bout) = mur, separation, rocher : les deux routes ne sont pas relies."""
+    """-> blocked(p, q) pour join_cuts : un sol plus de `rise` po au-dessus du chemin entre les deux bouts = mur,
+    separation, rocher : les deux routes ne sont pas reliees. Le chemin suit le sol en continuite depuis le premier
+    bout (on monte une pente de RAMP_SLOPE au plus, on redescend librement ; rien dessous : ligne droite) : une
+    rampe / une marche posee dans la coupure (T901 Boo Lake : « StepJA », 2,1 m au-dessus de la ligne droite) se
+    franchit, un mur (sol qui monte d'un coup) bloque toujours."""
     def z_at(p):
         win = zmap[max(0, p[0] - 4):p[0] + 5, max(0, p[1] - 4):p[1] + 5]
         ok = win[np.isfinite(win)]
         return float(ok.max()) if len(ok) else None
 
     def blocked(p, q):
+        # mur = bloque dans les deux sens ; une rampe ne se suit souvent que depuis son bas (T901 : sens unique)
+        return one_way(p, q) and one_way(q, p)
+
+    def one_way(p, q):
         za, zb = z_at(p), z_at(q)
         if za is None or zb is None:
             return True
-        for u in np.linspace(0, 1, 24):
+        n = 24
+        # rampe seulement entre deux bouts de meme niveau (T901 : 1,7 m d'ecart) ; sinon ligne droite comme avant
+        # (Polar Pass : bouts 54 m l'un au-dessus de l'autre = falaise, pas une coupure a relier)
+        follow = abs(za - zb) <= 2 * rise
+        climb = max(30.0, RAMP_SLOPE * math.hypot(q[0] - p[0], q[1] - p[1]) * cell / (n - 1)) if follow else 0.0
+        level = za
+        for u in np.linspace(0, 1, n):
             y, x = p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u
             wx, wy = lo[0] + (x + 0.5) * cell, lo[1] + (y + 0.5) * cell
             zi = za + (zb - za) * u
-            if any(zi + rise < h <= zi + top for h in ground.heights(wx, wy)):
+            hs = ground.heights(wx, wy)
+            reach = [h for h in hs if level - 3 * climb <= h <= level + climb] if follow else []
+            level = max(reach) if reach else zi             # sol suivi (le plus haut atteignable) ; vide : ligne droite
+            ref = max(zi, level)
+            if any(ref + rise < h <= ref + top for h in hs):
                 return True
         return False
     return blocked
@@ -303,9 +323,11 @@ def _inner(dm, p, r=6):
     return (max(0, y - r) + k[0], max(0, x - r) + k[1])
 
 
-def fill_small_holes(m, keep_ratio=0.25):
+def fill_small_holes(m, keep_ratio=0.25, is_void=None):
     """Bouche les trous (zones hors route entourees de route) plus petits que keep_ratio x le plus grand :
-    obstacles, rochers, piliers au milieu de la route. Le grand trou (l'interieur du circuit) reste."""
+    obstacles, rochers, piliers au milieu de la route. Le grand trou (l'interieur du circuit) reste. is_void(cells)
+    -> True : vrai vide (eau, chute : rien de solide au niveau de la route) garde aussi, le trace le contourne
+    (T901 Boo Lake : trou au milieu de l'ilot, traverse en ligne droite)."""
     H, W = m.shape
     lab = np.zeros(m.shape, np.int32)
     holes, cur = [], 0
@@ -332,10 +354,33 @@ def fill_small_holes(m, keep_ratio=0.25):
     big = max(len(h) for h in holes)
     out = m.copy()
     for h in holes:
-        if len(h) < keep_ratio * big:
+        if len(h) < keep_ratio * big and not (is_void is not None and is_void(h)):
             ys, xs = zip(*h)
             out[list(ys), list(xs)] = True
     return out
+
+
+def _void_test(ground, road, zmap, lo, cell, min_cells=500, solid_ratio=0.3):
+    """-> is_void(cells) pour fill_small_holes : trou d'au moins min_cells pixels ou moins de solid_ratio des points
+    ont la moindre surface de collision de 100 m sous la route a 38 m au-dessus (vrai vide : T901 Boo Lake, rien du
+    tout dans le trou de l'ilot). Rocher, pilier, herbe ou terrain un peu plus bas (pistes du jeu) : le trou reste
+    bouche comme avant (un seuil a 4 m sous la route changeait 13 pistes du jeu). min_cells = 500 pixels (~1100 m²,
+    trou de l'ilot T901 : 2676) : un petit vide garde (Tiger Temple, 101) faisait une petite boucle qui piegeait le
+    trace (37 % -> 10 % du parcours du jeu)."""
+    def is_void(cells):
+        if len(cells) < min_cells:
+            return False
+        ys, xs = np.array(cells).T
+        y0, y1, x0, x1 = max(0, ys.min() - 3), ys.max() + 4, max(0, xs.min() - 3), xs.max() + 4
+        z = zmap[y0:y1, x0:x1][road[y0:y1, x0:x1] & np.isfinite(zmap[y0:y1, x0:x1])]
+        if not len(z):
+            return False
+        zr = float(np.median(z))
+        pick = np.linspace(0, len(cells) - 1, min(80, len(cells))).astype(int)
+        solid = sum(1 for i in pick if any(zr - 4000 <= h <= zr + 1500 for h in
+                                            ground.heights(lo[0] + (xs[i] + 0.5) * cell, lo[1] + (ys[i] + 0.5) * cell)))
+        return solid < solid_ratio * len(pick)
+    return is_void
 
 
 def _end_direction(s, e, back=12):
@@ -385,17 +430,20 @@ def bridge_gaps(mask, max_gap_px, max_angle=35.0):
     reach = 1.1 * max_gap_px + 3 + 2 * float(np.median(dm[skel])) if skel.any() else max_gap_px
     img = Image.fromarray(np.zeros(mask.shape, np.uint8))
     draw = ImageDraw.Draw(img)
+    seam_img = Image.fromarray(np.zeros(mask.shape, np.uint8))
+    seam_draw = ImageDraw.Draw(seam_img)
     cos_max = math.cos(math.radians(max_angle))
-    n, done = 0, set()
-    edge = np.argwhere(mask & ~_erode(mask))
+    # toutes les paires de bouts qui se font face ; la plus proche d'abord, chaque bout relie une seule fois. Une
+    # fente (un ou deux pixels de vide entre deux morceaux de route jointifs, T901) est une couture, pas un saut :
+    # sans elle, le bout de route le plus proche suivant etait relie a la place (route coupee en travers)
+    pairs = []
     for i, (e, d) in enumerate(ends):
-        best = None
         for j, (t, dt) in enumerate(ends):
-            if j == i or (min(i, j), max(i, j)) in done:
+            if j <= i:
                 continue
             v = np.subtract(t, e).astype(float)
             dist = float(np.linalg.norm(v))
-            if not 3 < dist <= reach:
+            if not 1 < dist <= reach:
                 continue
             u = v / dist
             if u @ d < cos_max or -u @ dt < cos_max:    # chacun doit pointer vers l'autre
@@ -403,21 +451,50 @@ def bridge_gaps(mask, max_gap_px, max_angle=35.0):
             k = max(2, int(dist))
             ys = np.round(np.linspace(e[0], t[0], k)).astype(int)
             xs = np.round(np.linspace(e[1], t[1], k)).astype(int)
-            out = ~mask[ys, xs]
-            if out.sum() < 2 or out.sum() > 1.1 * max_gap_px + 3:   # pas de vide traverse, ou trou trop long
+            gap = int((~mask[ys, xs]).sum())
+            if gap > 1.1 * max_gap_px + 3:               # trou trop long
                 continue
-            if best is None or dist < best[0]:
-                best = (dist, j, t)
-        if best is None:
+            pairs.append((dist, gap < 3, i, j))
+    # un saut relie deux bouts que la route ne relie autrement que par le reste du tour ; deux bouts deja relies par
+    # un court chemin de route (T901 : bout d'une diagonale et route voisine, 300 px par la boucle en V) : le pont
+    # serait un raccourci, et refermerait le vide entre les deux (bouche ensuite comme un petit trou)
+    near = max(60, int(0.3 * skel.sum()))
+    reach_cache = {}
+
+    def road_reach(p):
+        if p not in reach_cache:
+            seen, q = {p: 0}, deque([p])
+            H, W = mask.shape
+            while q:
+                cur = q.popleft()
+                if seen[cur] >= near:
+                    continue
+                for dy, dx in OFFS:
+                    r = (cur[0] + dy, cur[1] + dx)
+                    if 0 <= r[0] < H and 0 <= r[1] < W and mask[r] and r not in seen:
+                        seen[r] = seen[cur] + 1
+                        q.append(r)
+            reach_cache[p] = seen
+        return reach_cache[p]
+    n, used = 0, set()
+    edge = np.argwhere(mask & ~_erode(mask))
+    for dist, seam, i, j in sorted(pairs):
+        if i in used or j in used:
             continue
-        dist, j, t = best
-        done.add((min(i, j), max(i, j)))
+        if not seam and ends[j][0] in road_reach(ends[i][0]):
+            continue
+        used |= {i, j}
+        e, t = ends[i][0], ends[j][0]
         w = max(3, int(2 * min(dm[e], dm[t])))
+        if seam:
+            seam_draw.line([(e[1], e[0]), (t[1], t[0])], fill=255, width=w)
+            continue
         draw.line([(e[1], e[0]), (t[1], t[0])], fill=255, width=w)
         _end_bridge(draw, edge, dm, e, t)
         n += 1
-    bridge = (np.asarray(img) > 0) & ~mask
-    return mask | bridge, bridge, n
+    seam = np.asarray(seam_img) > 0
+    bridge = (np.asarray(img) > 0) & ~mask & ~seam
+    return mask | bridge | seam, bridge, n
 
 
 def depth(m):
@@ -805,12 +882,95 @@ def check_extent(tris, cell=CELL):
                          f're-importe-la a l\'echelle proposee')
 
 
-def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start_z=None, max_gap=0.0, min_z=None):
+def _guide_path(guide, raw, dmap, lo, cell, start_xy, heading, snap=8 * 39.37):
+    """Trace dessine par l'utilisateur (vue de dessus de l'editeur, boucle fermee [[x, y]]) -> boucle lissee : chaque
+    point sur la route est ramene vers le milieu de la route (au plus `snap` po, le long de la normale) ; ceux hors de
+    la route (au-dessus d'un trou) restent ou ils sont. Depart = point le plus proche de la ligne d'arrivee, sens de
+    course = heading."""
+    G = np.asarray(guide, np.float64)[:, :2]
+    if len(G) < 8:
+        raise ValueError('dessin trop court : trace tout le tour (ou un morceau a corriger) sur l\'apercu')
+    G, _ = _resample_closed(G, cell)
+    G = _smooth_closed(G, 2)
+    H, W = raw.shape
+    pix = lambda p: (int((p[1] - lo[1]) / cell), int((p[0] - lo[0]) / cell))
+    inside = lambda iy, ix: 0 <= iy < H and 0 <= ix < W
+    t = np.roll(G, -1, axis=0) - np.roll(G, 1, axis=0)
+    t /= np.maximum(np.linalg.norm(t, axis=1), 1e-9)[:, None]
+    out = G.copy()
+    offs = np.arange(-snap, snap + cell, cell)
+    for i, (p, d) in enumerate(zip(G, t)):
+        iy, ix = pix(p)
+        if not (inside(iy, ix) and raw[iy, ix]):
+            continue
+        nrm = np.array([-d[1], d[0]])
+        best, best_d = 0.0, dmap[iy, ix]
+        for side in (1, -1):                       # vers chaque bord, tant qu'on reste sur la route
+            for o in offs[offs > 0]:
+                q = p + nrm * o * side
+                jy, jx = pix(q)
+                if not (inside(jy, jx) and raw[jy, jx]):
+                    break
+                if dmap[jy, jx] > best_d:
+                    best, best_d = o * side, dmap[jy, jx]
+        out[i] = p + nrm * best
+    P = _smooth_closed(out, max(2, int(round(600 / cell))))
+    k = int(np.argmin(np.linalg.norm(P - np.asarray(start_xy[:2], np.float64), axis=1)))
+    P = np.roll(P, -k, axis=0)
+    ahead = P[min(len(P) - 1, max(1, int(round(1500 / cell))))] - P[0]
+    if ahead @ np.array([math.cos(heading), math.sin(heading)]) < 0:
+        P = np.roll(P[::-1], 1, axis=0)
+    return P
+
+
+def preview_png(raw, lo, cell, pts, air, max_px=900):
+    """Vue de dessus pour l'editeur (nord en haut) : route en gris, parcours en jaune (rouge au-dessus d'un trou),
+    depart en vert. -> {png (base64), x0, y1, px (po par pixel), w, h} : pixel (u, v) = monde
+    (x0 + (u + 0.5) * px, y1 - (v + 0.5) * px)."""
+    import base64
+    import io
+    from PIL import Image, ImageDraw
+    H, W = raw.shape
+    f = max(1, int(math.ceil(max(H, W) / max_px)))           # pixels de route par pixel d'image
+    m = raw[:H - H % f or H, :W - W % f or W]
+    if f > 1:
+        m = m.reshape(m.shape[0] // f, f, m.shape[1] // f, f).any((1, 3))
+    m = m[::-1]                                              # nord en haut
+    h, w = m.shape
+    img = Image.new('RGB', (w, h), (22, 25, 30))
+    img.paste(Image.new('RGB', (w, h), (92, 98, 110)), mask=Image.fromarray((m * 255).astype(np.uint8)))
+    px = cell * f
+    y1 = lo[1] + h * px
+    uv = lambda p: ((p[0] - lo[0]) / px - 0.5, (y1 - p[1]) / px - 0.5)
+    d = ImageDraw.Draw(img)
+    n = len(pts)
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        d.line([uv(a), uv(b)], fill=(255, 80, 80) if air[i] or air[(i + 1) % n] else (242, 177, 52), width=3)
+    for i in range(0, n, max(1, n // 24)):                   # sens de course
+        a, b = np.array(uv(pts[i])), np.array(uv(pts[(i + 2) % n]))
+        v = b - a
+        if np.linalg.norm(v) < 1e-6:
+            continue
+        v /= np.linalg.norm(v)
+        c, nrm = a + v * 4, np.array([-v[1], v[0]])
+        d.polygon([tuple(c + v * 6), tuple(c - v * 3 + nrm * 5), tuple(c - v * 3 - nrm * 5)], fill=(255, 220, 120))
+    s = uv(pts[0])
+    d.ellipse([s[0] - 7, s[1] - 7, s[0] + 7, s[1] + 7], fill=(95, 207, 128), outline=(255, 255, 255), width=2)
+    buf = io.BytesIO()
+    img.save(buf, 'PNG')
+    return {'png': base64.b64encode(buf.getvalue()).decode(), 'x0': float(lo[0]), 'y1': float(y1), 'px': float(px),
+            'w': w, 'h': h}
+
+
+def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start_z=None, max_gap=0.0, min_z=None,
+              guide=None):
     """Boucle centrale de la route (voir l'en-tete du module). `ground` : GroundQuery pour poser le trace sur
     la route ; start_z : hauteur du sol au depart (sinon hauteur max de la route a cet endroit). max_gap (po) :
     trous franchis (saut au-dessus d'un vide, morceaux de route separes) : le trace continue en ligne droite
     jusqu'au morceau suivant, hauteur interpolee entre le tremplin et la reception ; 0 = aucun. min_z : plancher de
-    chute du monde (les niveaux de route dessous sont ignores)."""
+    chute du monde (les niveaux de route dessous sont ignores). guide : trace dessine sur l'apercu ([[x, y]], boucle) :
+    remplace la recherche de la ligne centrale (voir _guide_path) ; hors de la route = au-dessus d'un trou."""
     check_extent(tris, cell)
     progress.step('image de la route', 0.05)
     mask, zmap, lo, cell = rasterize(tris, cell)
@@ -827,27 +987,45 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
             bridge |= joined
     road = largest_component(closed)
     dmap = depth(road)                                  # largeur reelle (avant bouchage des obstacles)
-    mask = fill_small_holes(road)
-    progress.step('ligne centrale', 0.45)
-    skel = prune(thin(mask))
-    progress.step('parcours de la boucle', 0.8)
-    if not skel.any():
-        raise ValueError('la route ne forme pas de boucle fermee (rien ne reste apres ebarbage)')
     start_px = ((start_xy[1] - lo[1]) / cell, (start_xy[0] - lo[0]) / cell)
-    paths = [p for p in walk_graph(skel, dmap, start_px, heading) or [] if len(p) >= 30]   # carrefours, ponts
-    if not paths:
-        paths = [walk_loop(skel, dmap, start_px, heading)]     # boucle simple (aucun carrefour)
-    if len(paths[0]) < 30:
-        raise ValueError('boucle trop courte : le circuit est-il bien ferme ?')
-    # candidates (choix glouton, boucle la plus longue) : la plus longue une fois lissee (le vrai tour, pas un raccourci)
-    best = None
-    for path in paths:
-        P = np.array([[lo[0] + (x + 0.5) * cell, lo[1] + (y + 0.5) * cell] for y, x in path])
-        P = _smooth_closed(P, max(2, int(round(600 / cell))))
-        P, total = _resample_closed(P, step)
-        if best is None or total > best[1]:
-            best = (P, total)
-    P, total = best
+
+    def centre_paths(mask):
+        progress.step('ligne centrale', 0.45)
+        skel = prune(thin(mask))
+        progress.step('parcours de la boucle', 0.8)
+        if not skel.any():
+            raise ValueError('la route ne forme pas de boucle fermee (rien ne reste apres ebarbage)')
+        paths = [p for p in walk_graph(skel, dmap, start_px, heading) or [] if len(p) >= 30]   # carrefours, ponts
+        if not paths:
+            paths = [walk_loop(skel, dmap, start_px, heading)]     # boucle simple (aucun carrefour)
+        if len(paths[0]) < 30:
+            raise ValueError('boucle trop courte : le circuit est-il bien ferme ?')
+        return paths
+    if guide is not None:                                # trace dessine sur l'apercu de dessus
+        progress.step('trace dessine', 0.45)
+        P, total = _resample_closed(_guide_path(guide, raw, dmap, lo, cell, start_xy, heading), step)
+    else:
+        # grands vides gardes (le trace les contourne) ; si la boucle ne se referme plus ainsi (Tiny Arena), tous les
+        # trous bouches comme avant
+        mask = fill_small_holes(road)
+        void_mask = fill_small_holes(road, is_void=_void_test(ground, road, zmap, lo, cell)) if ground is not None else mask
+        paths = None
+        if not np.array_equal(void_mask, mask):
+            try:
+                paths, mask = centre_paths(void_mask), void_mask
+            except ValueError:
+                paths = None
+        if paths is None:
+            paths = centre_paths(mask)
+        # candidates (choix glouton, boucle la plus longue) : la plus longue une fois lissee (le vrai tour, pas un raccourci)
+        best = None
+        for path in paths:
+            P = np.array([[lo[0] + (x + 0.5) * cell, lo[1] + (y + 0.5) * cell] for y, x in path])
+            P = _smooth_closed(P, max(2, int(round(600 / cell))))
+            P, total = _resample_closed(P, step)
+            if best is None or total > best[1]:
+                best = (P, total)
+        P, total = best
     # hauteur : on suit la route en continuite depuis le depart (niveau le plus proche du point precedent),
     # pour ne pas monter sur une passerelle ou une arche qui passe au-dessus
     def zmap_at(x, y):
@@ -862,6 +1040,8 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
     road_q = GroundQuery(tris, np.zeros(len(tris), int))
     z_prev = start_z if start_z is not None else (zmap_at(*P[0]) if zmap_at(*P[0]) is not None else 0.0)
     near_bridge = _dilate(_dilate(bridge)) & ~raw if bridge.any() else bridge
+    if guide is not None:                                # dessin : tout ce qui n'est pas sur la route = au-dessus d'un trou
+        near_bridge = ~_dilate(raw)
     on_bridge = lambda x, y: bool(near_bridge[min(max(int((y - lo[1]) / cell), 0), raw.shape[0] - 1),
                                               min(max(int((x - lo[0]) / cell), 0), raw.shape[1] - 1)])
     pts, air, guess = [], [], set()                    # guess : hauteur reprise du point precedent (rien trouve)
@@ -891,10 +1071,19 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
     _interpolate_air(pts)
     if ground is not None:
         _lift_onto_ground(pts, [a or i in guess for i, a in enumerate(air)], ground)
-    widths = [float(dmap[int((y - lo[1]) / cell), int((x - lo[0]) / cell)]) * cell for x, y, _ in pts]
+    H, W = dmap.shape
+    widths = [float(dmap[min(max(int((y - lo[1]) / cell), 0), H - 1), min(max(int((x - lo[0]) / cell), 0), W - 1)]) * cell
+              for x, y, _ in pts]
+    if guide is not None:
+        # largeur au-dessus d'un trou (0) : celle du bord de route le plus proche le long du trace
+        known = [i for i, w in enumerate(widths) if w > 0]
+        if known:
+            widths = [w if w > 0 else widths[min(known, key=lambda k: min(abs(k - i), len(pts) - abs(k - i)))]
+                      for i, w in enumerate(widths)]
+        n_jumps = sum(1 for i in range(len(air)) if air[i] and not air[i - 1])
     moved = _avoid_obstacles(pts, air, widths, ground) if ground is not None else 0
     return {'points': pts, 'half_widths': widths, 'length': float(total), 'air': air, 'jumps': n_jumps,
-            'obstacles': moved}
+            'obstacles': moved, 'preview': preview_png(raw, lo, cell, pts, air)}
 
 
 def _avoid_obstacles(pts, air, half_widths, ground):

@@ -30,8 +30,9 @@ REFERENCE = {'texture_size': (300.0, 300.0), 'top_left': (6000.0, -22000.0), 'bo
              'markers': {'MinimapTopLeft': (-23000.0, 23000.0), 'MinimapBottomRight': (13739.400390625, -24640.140625)}}
 CONTENT = (476, 64, 794, 734)             # zone dessinee de l'image d'origine (px) : on y place le nouveau trace
 # reglage fin du DESSIN seul (px) par rapport a la zone suivie par les pastilles : le calage mesure est precis a
-# ~3 px pres ; en jeu (Mario Circuit 3) les pastilles etaient un tout petit peu trop haut -> dessin remonte de 4 px
-NUDGE_DEFAULT = (0, -4)
+# ~3 px pres ; en jeu (Mario Circuit 3) les pastilles etaient un tout petit peu trop haut -> dessin remonte de 4 px,
+# puis 35 px a la demande de l'utilisateur (apres essais sur sa T111)
+NUDGE_DEFAULT = (0, -35)
 ROAD = (221, 221, 221, 255)
 EDGE = (236, 236, 236, 255)
 
@@ -200,14 +201,23 @@ def detect_orientation(original_rgba, points, all_scores=False):
 
 
 def build(minimap_data, texture_template, path, road_tris=None, finish=None, road_width=None, nudge=NUDGE_DEFAULT,
-          orientation=(0, False)):
+          orientation=(0, False), mirror=(False, False)):
     """-> (octets _Minimap, octets texture, image RGBA, coins). path : trace de course (points monde).
     nudge : decalage (px) du dessin seul, les coins (zone suivie par les pastilles) ne bougent pas.
-    orientation : op d'affichage de la piste (detect_orientation) ; l'image renvoyee est celle VUE en jeu."""
+    orientation : op d'affichage de la piste (detect_orientation) ; l'image renvoyee est celle VUE en jeu.
+    mirror : (horizontal, vertical) correction du sens de LECTURE par le jeu, choisie a la main : l'image ENREGISTREE
+    est retournee (toute l'image), l'apercu renvoye reste celui attendu en jeu (T111 : apercu juste, image lue en
+    miroir haut / bas en jeu, comme les images du menu stockees de bas en haut)."""
     k, cw, cp = layout(path if road_tris is None or not len(road_tris) else np.asarray(road_tris).reshape(-1, 3))
     info = texture_build.texture_info(texture_template)
     rgba = draw(info['width'], road_tris, path, finish, k, cw, cp + np.asarray(nudge, np.float64), road_width)
     stored = inverse_op(rgba, tuple(orientation)) if tuple(orientation) != (0, False) else rgba
+    if mirror[0]:
+        stored = stored[:, ::-1]
+    if mirror[1]:
+        stored = stored[::-1]
     tex = texture_build.build_bc3_image(texture_template, np.ascontiguousarray(stored))
     setup, corners = write_setup(minimap_data, k, cw, cp)
+    if any(mirror):
+        corners = dict(corners, stored=np.ascontiguousarray(stored))   # apercu de l'image enregistree (editeur)
     return setup, tex, rgba, corners

@@ -4,8 +4,8 @@ Archives propres a chaque piste : <piste>_*flyby*.pak (ex. t111_crash_cove_newfl
 ..._newflyby_short02.pak, 1 plan de 6 s). Chaque plan a une camera cutscene/.../cameras/c_<...>_shotN.igz :
   * CCutsceneCamera : pose de depart (_position, _rotation en DEGRES) ;
   * CCameraKeyframeAnimation : une cle tous les 1/30 s — _times (igFloatList), _positions (igVec3fList, coordonnees
-    du jeu, celles de la piste), _rotations (igVec3fList : roulis X, tangage Y, cap Z en RADIANS ; tangage negatif =
-    regard vers le bas), _fovs (radians).
+    du jeu, celles de la piste), _rotations (igVec3fList : roulis X, tangage Y, cap Z en RADIANS ; tangage POSITIF =
+    regard vers le BAS, verifie en jeu : un tangage negatif faisait regarder le ciel), _fovs (radians).
 Une map importee n'est plus aux coordonnees de l'originale : le survol filmait le vide. Ici un plan est decrit par
 deux poses (debut / fin : position de la camera + point regarde) ; les cles sont recalculees (mouvement adouci,
 roulis nul) sans changer leur nombre ni leur minutage : la structure de la cinematique reste celle du jeu."""
@@ -48,14 +48,15 @@ def read_camera(data):
 
 
 def look_rotation(pos, target):
-    """[roulis, tangage, cap] (radians) d'une camera en pos qui regarde target."""
+    """[roulis, tangage, cap] (radians) d'une camera en pos qui regarde target (tangage positif = vers le bas)."""
     d = np.asarray(target, float) - np.asarray(pos, float)
-    return [0.0, math.atan2(d[2], math.hypot(d[0], d[1])), math.atan2(d[1], d[0])]
+    return [0.0, math.atan2(-d[2], math.hypot(d[0], d[1])), math.atan2(d[1], d[0])]
 
 
 def direction(rot):
+    """Direction regardee (vecteur unitaire, Z en haut) d'une rotation du jeu."""
     _, pitch, yaw = rot
-    return np.array([math.cos(yaw) * math.cos(pitch), math.sin(yaw) * math.cos(pitch), math.sin(pitch)])
+    return np.array([math.cos(yaw) * math.cos(pitch), math.sin(yaw) * math.cos(pitch), -math.sin(pitch)])
 
 
 def model_of(cam):

@@ -7,7 +7,8 @@ Rappels (fichiers de Crash Cove) :
   * point de reapparition = CPlayerStartEntity du _Design (« Respawn_waypointNNN »), position +0x20, cap dans sa
     transformation ; chaque spline de position liste les siens (CRaceTrackSplineComponentData._respawnPoints) ;
   * zone de chute = CEntity « Respawn_Trigger_* » : boite CTriggerVolumeBoxComponentData (dimensions completes,
-    centree sur l'entite) + CRespawnTriggerComponentData._respawnPoints (tag EntityTags::PlayerStart puis 3 points) ;
+    centree sur l'entite) + CRespawnTriggerComponentData._respawnPoints (points de reapparition seuls ; un tag
+    EntityTags::PlayerStart en tete, vu dans l'ancienne version du fichier, fait planter le jeu a l'entree) ;
   * plancher du monde = CWorldEntityData._killz (fichier principal de la piste) : en dessous, le kart est « tombe ».
 """
 import math
@@ -100,11 +101,15 @@ def before(points, s, count=3):
     return order[:count]
 
 
-def find_fall_zones(path, ground, road=None, step=5 * M, reach=40 * M, drop=6 * M, max_half=60 * M, killz=None):
+def find_fall_zones(path, ground, road=None, step=5 * M, reach=40 * M, drop=6 * M, max_half=60 * M, killz=None,
+                    zone_len=40 * M):
     """Zones ou un kart qui quitte la route tombe : a cote de la route (de son bord jusqu'a `reach`), pas de sol a
     moins de `drop` sous la route (vide, trou, eau sans collision). ground / road : GroundQuery (sol complet / route
     seule). -> [{'center', 'dims', 's', 'side', 'samples'}] (boites alignees sur les axes, sommet 4 m sous la route,
-    profondeur 20 m). Les morceaux du parcours lui-meme (route qui passe dessous) ne sont jamais pris."""
+    profondeur 20 m). Les morceaux du parcours lui-meme (route qui passe dessous) ne sont jamais pris.
+    Un long bord sans sol est coupe en zones d'au plus `zone_len` le long du parcours : une seule grande boite (T901
+    Boo Lake : 590 x 505 m) renvoyait le kart aux points d'avant le DEBUT du bord, loin de l'endroit de la chute.
+    T901 : 10 zones (pire 316 m du point le plus proche) -> 40 m : 136 zones, pire 95 m (30 m : 187 zones)."""
     P = np.asarray(path, np.float64)
     S = arc(P)
     idx = [0]
@@ -139,6 +144,18 @@ def find_fall_zones(path, ground, road=None, step=5 * M, reach=40 * M, drop=6 * 
                 if z is None or z < p[2] - drop:
                     holes.append((j, side, x, y, p[2]))
     zones = []
+
+    def add(run, side):
+        A = np.array([[r[2], r[3]] for r in run])
+        ztop = min(r[4] for r in run) - 4 * M
+        lo, hi = A.min(0) - 3 * M, A.max(0) + 3 * M
+        depth = 20 * M if killz is None else min(20 * M, max(4 * M, ztop - killz))
+        box = {'center': [float((lo[0] + hi[0]) / 2), float((lo[1] + hi[1]) / 2), float(ztop - depth / 2)],
+               'dims': [float(hi[0] - lo[0]), float(hi[1] - lo[1]), float(depth)],
+               's': float(S[idx[run[0][0]]]), 'side': side, 'samples': len(run)}
+        if not _crosses_route(box, P):
+            zones.append(box)
+
     for side in (-1, 1):
         pts = sorted((h for h in holes if h[1] == side), key=lambda h: h[0])
         run = []
@@ -147,15 +164,20 @@ def find_fall_zones(path, ground, road=None, step=5 * M, reach=40 * M, drop=6 * 
                 run.append(h)
                 continue
             if len(run) >= 2:
-                A = np.array([[r[2], r[3]] for r in run])
-                ztop = min(r[4] for r in run) - 4 * M
-                lo, hi = A.min(0) - 3 * M, A.max(0) + 3 * M
-                depth = 20 * M if killz is None else min(20 * M, max(4 * M, ztop - killz))
-                box = {'center': [float((lo[0] + hi[0]) / 2), float((lo[1] + hi[1]) / 2), float(ztop - depth / 2)],
-                       'dims': [float(hi[0] - lo[0]), float(hi[1] - lo[1]), float(depth)],
-                       's': float(S[idx[run[0][0]]]), 'side': side, 'samples': len(run)}
-                if not _crosses_route(box, P):
-                    zones.append(box)
+                # morceaux d'au plus zone_len le long du parcours (un echantillon du parcours = une ligne de points)
+                pieces, cur = [], []
+                for r in run:
+                    if cur and S[idx[r[0]]] - S[idx[cur[0][0]]] > zone_len:
+                        pieces.append(cur)
+                        cur = []
+                    cur.append(r)
+                if cur:
+                    if pieces and len({c[0] for c in cur}) < 2:
+                        pieces[-1] += cur                  # bout trop court : avec le morceau d'avant
+                    else:
+                        pieces.append(cur)
+                for piece in pieces:
+                    add(piece, side)
             run = [h] if h is not None else []
     return sorted(zones, key=lambda z: z['s'])
 

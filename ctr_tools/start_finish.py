@@ -103,13 +103,19 @@ def _entity_by_name(z, name):
     return next((o for n, o in z.root_objects() if n == name), None)
 
 
+def _is_entity(z, o):
+    """Seules les entites ont leur position a +0x20 (une camera CAirArcadeCamera y a sa rotation et le pointeur de
+    son nom : l'ecraser fait planter le jeu en quittant la course, T901/T111/T113)."""
+    return z.objects.get(o, '').endswith('Entity')
+
+
 def read_entity_poses(data, names):
     """{nom : {pos, yaw}} d'entites (position +0x20, cap = transformation +0x68 si elle existe)."""
     z = IgzFile(data)
     out = {}
     for name in names:
         o = _entity_by_name(z, name)
-        if o is None:
+        if o is None or not _is_entity(z, o):
             continue
         tr = z.deref(o + 0x30)
         out[name] = {'pos': list(z.vec3(o + 0x20)),
@@ -128,8 +134,32 @@ def write_entity_poses(data, poses):
     return z.to_bytes()
 
 
+def repair_cameras(data, original):
+    """Repare les cameras <nom>_camera (objets non-entites) dont les octets +0x20..+0x2C ont ete ecrases par une
+    ancienne version de l'editeur (« position » ecrite comme pour une entite) : octets repris du fichier d'origine.
+    -> (octets, [noms repares])."""
+    z, o = IgzFile(data), IgzFile(original)
+    orig = {n: x for n, x in o.root_objects() if n}
+    fixed = []
+    for n, x in z.root_objects():
+        y = orig.get(n)
+        if not n or not n.endswith('_camera') or _is_entity(z, x) or y is None or o.objects.get(y) != z.objects.get(x):
+            continue
+        if z._pointers_in(x + 0x20, 12) or o._pointers_in(y + 0x20, 12) or any(
+                f.is_str(a + d) for f, a in ((z, x), (o, y)) for d in (0x20, 0x28)):
+            continue
+        (zb, zo), (ob, oo) = z._loc(x), o._loc(y)
+        if zb[zo + 0x20:zo + 0x2C] != ob[oo + 0x20:oo + 0x2C]:
+            zb[zo + 0x20:zo + 0x2C] = ob[oo + 0x20:oo + 0x2C]
+            fixed.append(n)
+    return (z.to_bytes(), fixed) if fixed else (data, [])
+
+
 def set_entity_pose(z, o, p):
-    """Position (+0x20) et cap (transformation +0x68, si elle existe) de l'entite o du fichier z."""
+    """Position (+0x20) et cap (transformation +0x68, si elle existe) de l'entite o du fichier z (rien pour un objet
+    qui n'est pas une entite)."""
+    if not _is_entity(z, o):
+        return
     struct.pack_into('<3f', *z._loc(o + 0x20), *[float(c) for c in p['pos']])
     tr = z.deref(o + 0x30)
     if tr is not None:

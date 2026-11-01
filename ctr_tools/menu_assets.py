@@ -22,6 +22,31 @@ IMAGES = {'background': ('Fond de l\'écran de choix de course', 'RaceSelect!oct
           'outline': ('Tracé de la piste (menu)', 'RaceSelect!octane_ui_raceselect_minimap_{}')}
 
 
+# Pistes creees (track_clone) : fond et vignette a elles, comme les pistes ajoutees par les mises a jour du jeu
+# (Hyper Spaceway) : textures dans update2, listees dans les paquets des domaines du menu, et materiaux
+# « LevelIcon_<X> », « LevelImage_<X> », « LevelBackground_<X> » dans levelselect_materials (vises par le zoneInfo,
+# COctaneLevelSelectData). Embleme de l'intro et trace du menu : ceux de la source (autres fichiers, partages).
+MENU_MATERIALS = 'materialinstances/ui/levelselect_materials.igz'
+MENU_PKGS = ('packages/generated/ui/domains/juicedomain_startscreen_pkg.igz',
+             'packages/generated/ui/domains/juicedomain_onlinemenus_pkg.igz')
+MENU_TEXTURE_PAKS = ('juicedomain_onlinemenus.pak', 'juicedomain_startscreen.pak', 'juicedomain_permanent.pak')
+OWN_IMAGES = ('background', 'icon')
+
+
+def own_slug(track):
+    """'T901_Custom_Map' -> 't901custommap' (textures d'une piste creee : numero compris, uniques)."""
+    return track.lower().replace('_', '')
+
+
+def own_texture_name(name, track):
+    """Nom de texture de la source -> celui de la piste creee (« ..._ico_crashcove`tga,101 » -> « ..._ico_t901custommap`tga,101 »)."""
+    return re.sub(r'_[a-z0-9]+(`tga)', lambda m: '_' + own_slug(track) + m.group(1), name, count=1)
+
+
+def own_image_file(track, key):
+    return f'textures/GuiStandard_diffuse,textures@!ui!Octane!{IMAGES[key][1].format(own_slug(track))}`tga,101.igz'
+
+
 def slug(track):
     """'T111_Crash_Cove' -> 'crashcove' (nom des textures d'interface)."""
     return re.sub(r'^T\d+_', '', track).replace('_', '').lower()

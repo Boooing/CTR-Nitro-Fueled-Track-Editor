@@ -329,6 +329,18 @@ du sol voisin, d'où ralentissement / adhérence 1,0 partout dans le menu du cli
 `_traction` de la fiche, `_dynamicFriction` du matériau / 0,5) (glace : frottement 0,05). Herbe (5) : ×0,4 constaté
 en jeu, absent de la fiche (`SURFACE_OBSERVED`).
 
+**Parois roulables** (« AlwaysFloor », 2026-10-28, NON validé en jeu) : bit `_alwaysActAsFloor` (0x800 de
+`_surfaceFlags`) : une pente raide compte comme du sol, pas comme un mur. Valeurs : 42 MetalAlwaysFloor, 41 Rock, 43
+Water, 50 Snow, 35 WoodWet (menu clic droit, étiquette « paroi = sol »). Dans les collisions jouées (update2), elles
+sont posées sur les tuyaux et demi-tubes : Hyper Spaceway (2 727 triangles > 60°), Deep Sea Driving (2 826), Sewer
+Speedway (518, jusqu'à 75–90° ; les IA restent surtout sous 45°), Android Alley. Rien n'est à l'envers (> 100°) :
+une boucle complète n'est jamais utilisée par le jeu (gravité du monde vers le bas), elle reste à essayer.
+Piège : la collision des archives de piste (`t153…pak`) et celle de `update2.pak` ne numérotent pas les matériaux de
+la même façon (Hot Air Skyway : 43 dans la piste = 34 HotAirBalloon dans update2). Toujours lire la version jouée.
+Autres pistes du moteur, non utilisées par CTR : `CVehicleEpicJumpComponentData` (saut guidé par une spline),
+`CVehicleBoostData._gravityMultiplier`. Réglages globaux : `CGlobalKartData._maxAirTimeDuration` 2,5 s, paliers
+de boost de saut `CKartAirTimeBoostData` (systemData.igz).
+
 ### Survol d'introduction (`flyby.py`)
 
 Archives propres à chaque piste `<piste>_*flyby*.pak` (Crash Cove : `t111_crash_cove_newflyby.pak` = 4 plans de
@@ -842,6 +854,11 @@ Tests : `test_collision_edit.py`.
   paramètres différents : la correspondance n'est mesurée que pour Crash Cove. **Validé en jeu** (2026-10-21) : les
   pastilles suivent le tracé, à peine trop haut → dessin remonté de 4 px par défaut (`NUDGE_DEFAULT`, dessin seul,
   les coins ne bougent pas) et flèches de réglage fin (2 px, mémorisé dans `<Piste>_minimap.json`, sans historique).
+  **Sens de l'image** (2026-11-01) : Crash Cove et les pistes créées (texture `..._race_crashcove`,
+  `minimap_crash_cove_family`) sont rangées retournées haut / bas par défaut (le jeu les relit à l'envers, comme les
+  images du menu ; avant : « Miroir vertical » à la main sur chaque piste). Réglage version 2 (`v` dans
+  `<Piste>_minimap.json`) : un ancien réglage perd son miroir vertical (il valait ce retournement) et la mini-carte
+  est refaite à l'installation (`minimap_outdated`).
 - **Vérification avant installation** (bouton « Vérifier », et automatiquement avant « Installer dans le jeu » ;
   `/api/check`, `preinstall_check`) sur les versions enregistrées : ligne d'arrivée présente ; chaque transition à
   moins de 38 m de sa spline de position suivante et dans son sens, avec des IA suivantes proches ; grille dans le

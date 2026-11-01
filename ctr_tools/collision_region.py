@@ -209,11 +209,16 @@ class GroundEditor:
         return mi
 
     def surface_under(self, lo, hi, default=38):
-        """Surface la plus frequente des primitives du sol sous une emprise (boite monde, pouces)."""
+        """Surface la plus frequente des primitives du sol sous une emprise (boite monde, pouces). Les primitives
+        supprimees (suppression differee) ne comptent pas : apres « Nouvelle map » (sol d'origine retire), les modeles
+        importes en surface « auto » heritaient du sol de Crash Cove dessous — sur la mer, 16 « reapparition » : les
+        karts traversaient la route de T901 (Boo Lake) des le depart."""
         vals = collections.Counter()
         cx, cy = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
         rad = max(hi[0] - lo[0], hi[1] - lo[1]) / 2 + 200
         for mi, pi, vs in self.prims_world():
+            if pi in self.meshes[mi].get('deleted', ()):
+                continue
             px = sum(v[0] for v in vs) / len(vs)
             py = sum(v[1] for v in vs) / len(vs)
             if abs(px - cx) <= rad and abs(py - cy) <= rad and min(v[2] for v in vs) <= hi[2] + 200:

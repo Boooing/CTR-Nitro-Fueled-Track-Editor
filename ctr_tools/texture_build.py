@@ -250,6 +250,38 @@ def build_flat_normal(template):
     return z.to_bytes()
 
 
+EMISSIVE_NONE = 'ColorMapHalfRes,textures@!default_e`png,111'      # emission noire (materiaux du jeu sans emission)
+
+
+def set_emissive(material, on, color_ns):
+    """Materiau « Standard » lumineux (on) ou non : comme les lampes du jeu (Electron Avenue light_ball, lampadaires
+    d'Android Alley...), booleen standard__hasEmissiveMap a 1 et texture d'emission (emplacement « ColorMapHalfRes »)
+    = la texture couleur du materiau (color_ns) ; sinon emission noire du jeu et booleen a 0."""
+    from model_build import tdep_entries
+    z = IgzFile(material)
+    hf = next(fo for fo, (n, _) in z.fields_of('igGraphicsTexture').items() if n == '_imageHandle')
+    ns = color_ns if on else EMISSIVE_NONE
+    # emplacement d'emission : texture « ColorMapHalfRes » ; deja lumineux, la 4e texture (ordre du shader Standard :
+    # couleur, normales, composite, emission, hauteur) qui vise la texture couleur
+    texs = [(o, z.named_handle(z.u32(o + hf))) for o, t in sorted(z.objects.items()) if t == 'igGraphicsTexture']
+    slots = [(o, h) for o, h in texs if h and h[1].startswith('ColorMapHalfRes,')]
+    if not slots and len(texs) >= 4 and texs[3][1] and texs[3][1][1] == color_ns:
+        slots = [texs[3]]
+    for o, h in slots:
+        struct.pack_into('<I', *z._loc(o + hf), 0x80000000 | z.ext_index(h[0], ns))
+    done = len(slots)
+    for o, t in list(z.objects.items()):
+        if t == 'igShaderConstantValueBool':
+            c = z.deref(o + 0x10)
+            if c in z.objects and z.dump_object(c).get('_name') == 'standard__hasEmissiveMap':
+                struct.pack_into('<B', *z._loc(o + 0x18), 1 if on else 0)
+    if not done:
+        raise ValueError('materiau sans emplacement d\'emission (pas un materiau « Standard »)')
+    if ns not in {d for d, _ in tdep_entries(z)}:
+        z.add_tdep([(ns, f'textures:/{ns}.igz')])
+    return z.to_bytes()
+
+
 def retarget_material(template, replace):
     """Materiau (materialinstances) avec des textures remplacees : replace = {ancien espace de noms : nouveau}.
     Change les entrees EXNM ('image', espace) et les dependances TDEP correspondantes (liste triee comme le jeu)."""
