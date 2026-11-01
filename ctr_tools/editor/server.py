@@ -4,6 +4,7 @@ Usage : python ctr_tools/editor/server.py [--archives "<dossier archives du jeu>
 (sans --archives : dossier memorise dans ctr_editor_config.json, sinon la page le demande a l'ouverture)
 Puis ouvrir http://localhost:8765
 
+
 API :
   GET  /api/tracks                 pistes disponibles (archives tNNN_*.pak)
   GET  /api/track?name=T111_Crash_Cove
@@ -56,6 +57,10 @@ import minimap  # noqa: E402
 import preview  # noqa: E402
 import route_gen  # noqa: E402
 import flyby  # noqa: E402
+import lights  # noqa: E402
+import custom_category  # noqa: E402
+import menu_assets  # noqa: E402
+import track_clone  # noqa: E402
 import mappack  # noqa: E402
 mappack.bind(sys.modules[__name__])                    # ce module, meme lance en script (__main__)
 import start_finish  # noqa: E402
@@ -201,7 +206,58 @@ def load_track(track):
             'transitions': transitions, 'forks': rs['fork_checkers'], 'player_starts': rs['player_starts'],
             'starting_splines': starting, 'start_grid': grid, 'player_start': player_start, 'crates': crates,
             'teleporters': teleporters_of(track, ed), 'flyby': flyby_info(track), 'original_start': original_start(track),
-            'collision': load_collision(track)}
+            'collision': load_collision(track), 'fall_zones': read_fall_zones(track)}
+
+
+# -- zones de chute (CEntity + CTriggerVolumeBoxComponentData + CRespawnTriggerComponentData du _Design) -----------
+# Visibles et modifiables dans l'editeur (mode Course) : un raccourci pris au-dessus d'une zone « sans sol a cote de
+# la route » faisait reapparaitre le kart (T901 Boo Lake). Boite alignee sur les axes, centree sur l'entite,
+# _dimensions = tailles completes. Supprimer = ecarter sous la carte (FAR_BELOW), comme les zones auto en trop.
+def read_fall_zones(track):
+    """[{name, pos, dims, points}] des zones de chute en place (pas celles ecartees sous la carte)."""
+    try:
+        dz = IgzFile(base_file(track, start_finish.design_file(track))[0])
+    except KeyError:
+        return []
+    out = []
+    for name, ent in dz.root_objects():
+        if not name or dz.objects.get(ent) not in DESIGN_ENTITY_TYPES:
+            continue
+        rt = _component(dz, ent, 'CRespawnTriggerComponentData')
+        box = _component(dz, ent, 'CTriggerVolumeBoxComponentData') if rt is not None else None
+        if box is None:
+            continue
+        pos = [round(v, 1) for v in dz.vec3(ent + 0x20)]
+        if pos[2] < FAR_BELOW / 2:
+            continue
+        lst = dz.deref(rt + _field(dz, 'CRespawnTriggerComponentData', '_respawnPoints'))
+        points = [h[0] for h in dz.handle_list(lst) if h]               # (nom, espace)
+        out.append({'name': name, 'pos': pos, 'dims': [round(v, 1) for v in dz.vec3(dz.find_field(box, '_dimensions')[0])],
+                    'points': points})
+    return out
+
+
+def write_fall_zones(track, zones):
+    """Zones modifiees dans l'editeur : [{name, pos, dims, deleted}] -> _Design enregistre. -> lignes du rapport."""
+    logical = start_finish.design_file(track)
+    dz = IgzFile(base_file(track, logical)[0])
+    roots = {n: o for n, o in dz.root_objects() if n}
+    moved = removed = 0
+    for z in zones:
+        ent = roots.get(z.get('name'))
+        box = _component(dz, ent, 'CTriggerVolumeBoxComponentData') if ent is not None else None
+        if box is None:
+            continue
+        if z.get('deleted'):
+            p = list(dz.vec3(ent + 0x20))
+            struct.pack_into('<3f', *dz._loc(ent + 0x20), p[0], p[1], FAR_BELOW)
+            removed += 1
+            continue
+        struct.pack_into('<3f', *dz._loc(ent + 0x20), *[float(c) for c in z['pos']])
+        struct.pack_into('<3f', *dz._loc(dz.find_field(box, '_dimensions')[0]), *[max(100.0, float(c)) for c in z['dims']])
+        moved += 1
+    open(saved_path(logical), 'wb').write(dz.to_bytes())
+    return [f'zones de chute : {moved} placée(s)' + (f', {removed} supprimée(s)' if removed else '')]
 
 
 # -- teleporteurs (mecanisme de Spyro Circuit, voir teleport.py) ---------------------------------
@@ -303,8 +359,12 @@ def teleport_install_files(track):
     if not os.path.exists(p):
         return [], {}
     ed = RaceSystemEditor(open(p, 'rb').read(), track)
+    # un teleporteur retire laisse ses dependances (TDEP : script, effet) dans le RaceSystem : sans ces fichiers,
+    # le jeu refuse de charger le RaceSystem (« Required file ... failed to load », plantage au chargement : T902)
+    tdep = ed.igz.fixups.get('TDEP', (0, b''))[1]
     if not teleport.read_teleporters(ed.igz, {n: o for n, o in ed.by_name.items()
-                                              if ed.igz.objects.get(o) in DESIGN_ENTITY_TYPES}):
+                                              if ed.igz.objects.get(o) in DESIGN_ENTITY_TYPES}) \
+            and b'common_teleport_entity' not in tdep:
         return [], {}
     copies = {}
     for _, lg in teleport.FILES:
@@ -397,13 +457,15 @@ def flyby_auto(req):
 
 
 def flyby_install_files(track):
-    """{archive: {camera: octets}} des plans enregistres (archives de survol de la piste, et mises a jour qui les
-    contiendraient)."""
+    """{archive: {camera: octets}} des plans modifies (archives de survol de la piste, et mises a jour qui les
+    contiendraient). Cameras recalculees a chaque installation depuis les poses memorisees : les fichiers ecrits
+    avant la correction du sens du tangage (camera qui regardait le ciel) sont refaits justes sans rien rouvrir."""
     out = defaultdict(dict)
+    models = load_flyby(track)
     for s in flyby_shots(track):
-        p = saved_path(s['key'])
-        if s['key'] in load_flyby(track) and os.path.exists(p):
-            data = open(p, 'rb').read()
+        if s['key'] in models:
+            data = flyby.write_camera(pak_tool.read_latest(ARCHIVES, s['key'], s['pak'])[0], models[s['key']])
+            open(saved_path(s['key']), 'wb').write(data)
             for arc in pak_tool.archives_with(ARCHIVES, s['key'], s['pak']):
                 out[arc][s['key']] = data
     return out
@@ -538,12 +600,16 @@ def route_layout(req):
         z0 = g0[0] if g0 else None
     note = None
     max_gap = max(0.0, float(req.get('max_jump', 40))) * 39.37     # trous franchis (sauts), en m
+    guide = req.get('guide')                            # trace dessine sur l'apercu de dessus (editeur)
     try:
         if bad:
             raise bad
         with progress.span(0.15, 0.9):
-            loop = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=max_gap, min_z=kz)
+            loop = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=max_gap, min_z=kz,
+                                       guide=guide)
     except ValueError as e:
+        if guide:
+            raise
         # selection qui n'est pas la route (ex. « START_LINE2 », le decor de la ligne de depart, ou les surfaces du
         # sol d'une map importee) : essai avec la route importee (materiau « road »)
         found = None
@@ -566,7 +632,7 @@ def route_layout(req):
     # boucle qui ne couvre qu'une petite partie de la route (route coupee par des trous : petite boucle d'une place
     # ou d'un rond-point, 333 m sur une route de 1,6 km) : second essai en franchissant des trous plus grands
     ext = lambda P: float((np.asarray(P)[..., :2].reshape(-1, 2).max(0) - np.asarray(P)[..., :2].reshape(-1, 2).min(0)).max())
-    if ext(loop['points']) < 0.5 * ext(tris) and max_gap < 80 * 39.37:
+    if ext(loop['points']) < 0.5 * ext(tris) and max_gap < 80 * 39.37 and not guide:
         try:
             with progress.span(0.9, 0.97, 'boucle trop petite : essai en franchissant des trous jusqu\'à 80 m'):
                 wide = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=80 * 39.37, min_z=kz)
@@ -577,7 +643,7 @@ def route_layout(req):
                 loop = wide
         except ValueError:
             pass
-    if ext(loop['points']) < 0.5 * ext(tris):
+    if ext(loop['points']) < 0.5 * ext(tris) and not guide:
         note = (note + ' ; ' if note else '') + (f"ATTENTION : le tour trouvé ({loop['length'] / 39.37:.0f} m) ne couvre qu'une "
                                                  f"petite partie de la route choisie ({ext(tris) / 39.37:.0f} m d'un bout à l'autre) : "
                                                  f"coche aussi les morceaux qui bouchent ses trous (pont, autre matériau) ou augmente "
@@ -606,7 +672,138 @@ def route_layout(req):
         json.dump(src, open(road_source_path(track), 'w'), indent=1)
     return {'loop': loop['points'], 'length': round(loop['length']), 'sections': lay['sections'], 'note': note,
             'transitions': lay['transitions'], 'respawns': respawns, 'design_moves': design_moves,
-            'race_moves': race_moves, 'jumps': loop.get('jumps', 0)}
+            'race_moves': race_moves, 'jumps': loop.get('jumps', 0), 'preview': loop.get('preview')}
+
+
+# -- point de depart du parcours : objet « Start / Finish », sinon damier, sinon ligne d'arrivee actuelle -----------
+START_NAME_RE = re.compile(r'start|finish|goal|d[ée]part|arriv', re.I)
+START_MAX_SIZE = 80 * 39.37              # po : une ligne de depart en damier ; au-dela, c'est la route entiere
+START_NAMED_MAX = 150 * 39.37            # po : objet nomme Start / Finish (ligne + arche, tribunes : Boo Lake 93 m)
+_checker_cache, _model_groups_cache = {}, {}
+
+
+def checker_score(rgba):
+    """0..1 : l'image est-elle un damier ? Binarisee a la mediane ; pour chaque taille de case s, deux cases voisines
+    (s a droite, s en bas) doivent etre opposees et deux cases en diagonale identiques. Rayures, bruit, aplat ~0,5."""
+    g = np.asarray(rgba, np.float32)[..., :3].mean(axis=2)
+    H, W = g.shape
+
+    def score(g):
+        if g.size < 64 or np.percentile(g, 95) - np.percentile(g, 5) < 80:
+            return 0.0
+        b = g > np.median(g)
+        if not 0.25 < b.mean() < 0.75:
+            return 0.0
+        best = 0.0
+        for s in range(1, min(b.shape) // 2):
+            h = (b[:, :-s] != b[:, s:]).mean()
+            v = (b[:-s, :] != b[s:, :]).mean()
+            d = (b[:-s, :-s] == b[s:, s:]).mean()
+            best = max(best, min(h, v, d))
+        return best
+    # image entiere, moitie et quarts : damier dans une partie de la texture (bande d'un atlas)
+    parts = [g, g[:H // 2], g[H // 2:], g[:, :W // 2], g[:, W // 2:],
+             g[:H // 4], g[H // 4:H // 2], g[H // 2:3 * H // 4], g[3 * H // 4:]]
+    return float(max(score(p) for p in parts))
+
+
+def _texture_checker(track, ns):
+    if ns not in _checker_cache:
+        try:
+            rgba, _ = preview.decode_texture(preview_read(track, f'textures/{ns}.igz'), 128)
+            _checker_cache[ns] = checker_score(rgba)
+        except Exception:  # noqa: BLE001 - texture illisible : pas un damier
+            _checker_cache[ns] = 0.0
+    return _checker_cache[ns]
+
+
+def _model_groups(track, logical):
+    """(positions (n, 3), indices, [(debut, nb, ns)]) d'un modele, par texture."""
+    if logical not in _model_groups_cache:
+        try:
+            pv = preview.model_preview(model_bytes(track, logical), lambda lg: preview_read(track, lg))
+            _model_groups_cache[logical] = (np.asarray(pv['positions'], np.float64).reshape(-1, 3),
+                                            np.asarray(pv['indices'], np.int64),
+                                            [(s, n, t[0]) for s, n, t in pv['groups'] if t])
+        except Exception:  # noqa: BLE001 - modele illisible
+            _model_groups_cache[logical] = (np.zeros((0, 3)), np.zeros(0, np.int64), [])
+    return _model_groups_cache[logical]
+
+
+def _footprint_pose(T, yaw0):
+    """Triangles monde (n, 3, 3) d'une ligne de depart -> (point [x, y, z], cap, taille). La bande est en travers de la
+    route : cap perpendiculaire a sa plus grande longueur, du cote de yaw0 (ligne actuelle) ; forme ronde : yaw0."""
+    V = np.asarray(T, np.float64).reshape(-1, 3)
+    xy = V[:, :2]
+    c = (xy.min(0) + xy.max(0)) / 2
+    w, vec = np.linalg.eigh(np.cov((xy - xy.mean(0)).T) if len(xy) > 2 else np.eye(2))
+    proj = (xy - c) @ vec
+    span = proj.max(0) - proj.min(0)
+    long_axis = vec[:, int(np.argmax(span))]
+    yaw = yaw0
+    if span.max() > 1.5 * max(span.min(), 1.0):
+        yaw = math.atan2(long_axis[1], long_axis[0]) + math.pi / 2
+        if math.cos(yaw - yaw0) < 0:
+            yaw += math.pi
+    yaw = math.atan2(math.sin(yaw), math.cos(yaw))
+    return [float(c[0]), float(c[1]), float(V[:, 2].min())], yaw, float(span.max())
+
+
+def route_start_guess(track):
+    """Depart propose pour « Creer le parcours » : objet du decor nomme Start / Finish (depart, arrivee, goal) ; sinon
+    objet importe (modele, bibliotheque) dont une texture est un damier ; sinon rien (ligne d'arrivee actuelle).
+    -> {source: 'name' | 'checker' | None, object, file, pos [x, y, z + 660 : comme une ligne d'arrivee], yaw, size_m}."""
+    try:
+        _, tr = race_path_points(track)
+        fin = next((t for t in tr['transitions'] if t['increment_lap']), None)
+    except Exception:  # noqa: BLE001 - pas de parcours : cap 0
+        fin = None
+    yaw0 = float((fin or {}).get('yaw') or 0.0)
+    objs = [(art, o) for art in art_files(track) for o in DecorFile(base_file(track, art)[0]).objects()]
+    out = lambda src, art, o, T: (lambda p, y, s: {'source': src, 'object': o['name'], 'file': art,
+                                                    'pos': [p[0], p[1], p[2] + 660.0], 'yaw': y,
+                                                    'size_m': round(s / 39.37, 1)})(*_footprint_pose(T, yaw0))
+    size = lambda T: float((T.reshape(-1, 3)[:, :2].max(0) - T.reshape(-1, 3)[:, :2].min(0)).max()) if len(T) else 0.0
+
+    def checker_tris(o, flat=True):
+        """Triangles monde des textures en damier de l'objet ; flat : seulement s'ils sont surtout a plat (ligne sur la
+        route, pas un drapeau ni un panneau vertical)."""
+        P, I, groups = _model_groups(track, model_logical_path(o['model']))
+        tris = [I[s:s + n] for s, n, ns in groups if _texture_checker(track, ns) > 0.8]
+        if not tris:
+            return None
+        M = np.asarray(object_matrix(o['pos'], o['euler'], o['scale']), np.float64)
+        idx = np.concatenate(tris)
+        T = (P @ M[:3, :3].T + M[:3, 3])[idx[:len(idx) // 3 * 3]].reshape(-1, 3, 3)
+        if not len(T):
+            return None
+        n = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+        area = np.linalg.norm(n, axis=1)
+        flat_share = float(area[np.abs(n[:, 2]) > 0.7 * np.maximum(area, 1e-9)].sum() / max(area.sum(), 1e-9))
+        return T if (flat_share > 0.5 or not flat) else None
+
+    found = []
+    for art, o in objs:
+        if START_NAME_RE.search(o['name'] or '') or START_NAME_RE.search(re.split(r'[\\/]', o['model'] or '')[-1]):
+            T = object_world_array(track, o)
+            if len(T) and size(T) < START_NAMED_MAX:
+                Tc = checker_tris(o)                      # ligne en damier de l'objet : elle seule
+                found.append((size(T), art, o, Tc if Tc is not None else T))
+    if found:
+        _, art, o, T = min(found, key=lambda f: f[0])
+        return out('name', art, o, T)
+    links = load_links(track)
+    for art, o in objs:
+        lk = links.get(art, {}).get(str(o['id']))
+        if not (isinstance(lk, dict) and ('custom' in lk or 'library' in lk)):
+            continue                                      # objets importes seulement (le decor du jeu est deja juste)
+        T = checker_tris(o)
+        if T is not None and 0 < size(T) < START_MAX_SIZE:
+            found.append((size(T), art, o, T))
+    if found:
+        _, art, o, T = min(found, key=lambda f: f[0])
+        return out('checker', art, o, T)
+    return {'source': None}
 
 
 def old_route_moves(track):
@@ -1216,6 +1413,8 @@ def save_track(req):
             report.append(f"_Design : {len(design_poses)} entite(s) placee(s) (reapparitions, zones)")
         if out is not data:
             open(saved_path(logical), 'wb').write(out)
+    if req.get('fall_zones') is not None:                 # zones de chute deplacees / redimensionnees / supprimees
+        report += write_fall_zones(track, req['fall_zones'])
     if req.get('player_start'):
         logical = start_finish.main_map_file(track)
         data = base_file(track, logical)[0]
@@ -1223,6 +1422,9 @@ def save_track(req):
         if cur and any(abs(a - b) > 1e-3 for a, b in zip(ps['pos'] + [ps['yaw']], cur['pos'] + [cur['yaw']])):
             open(saved_path(logical), 'wb').write(start_finish.write_player_start(data, ps['pos'], ps['yaw']))
             report.append('repere de depart deplace')
+    if req.get('killz') is not None:                     # map mise a l'echelle : plancher du monde suivi
+        set_world_killz(track, req['killz'])
+        report.append(f"plancher de chute : z = {float(req['killz']):.0f}")
 
     # caisses d'objets : fichier reconstruit depuis l'original (positions, ajouts, suppressions)
     progress.step('caisses et boosters', 0.4)
@@ -1336,12 +1538,25 @@ def template_object(track, art):
     return _template_cache[(track, art)]
 
 
+def original_bounds(track):
+    """Emprise de la piste d'origine (boite de la collision du jeu, pouces) : [[min x, y, z], [max x, y, z]].
+    Quitter une course depuis la pause plantait (liberation d'un objet deja decharge, thread de streaming) quand
+    les karts avaient roule HORS de cette emprise (map importee placee ailleurs) : la course doit y tenir."""
+    try:
+        cf = CollisionFile(pak_tool.read_latest(ARCHIVES, collision_file(track), track_pak(track))[0])
+        lo, hi = cf._floats(cf.compound + 0x80, 3), cf._floats(cf.compound + 0x90, 3)
+        return [[v * HAVOK_TO_GAME for v in lo], [v * HAVOK_TO_GAME for v in hi]]
+    except Exception:  # noqa: BLE001 - piste sans collision lisible
+        return None
+
+
 def load_decor(track):
     files = []
     reg = custom_models(track)
     labels = {m['id']: m['label'] for m in material_catalog(track)} if reg else {}
     links = load_links(track)
     alpha = {i['material_id']: bool(i.get('alpha')) for i in custom_textures(track).values()}
+    glow = {i['material_id']: bool(i.get('glow')) for i in custom_textures(track).values()}
     for logical in art_files(track):
         data, src = base_file(track, logical)
         objs = DecorFile(data).objects()
@@ -1352,6 +1567,7 @@ def load_decor(track):
                 o['custom_material'] = labels.get(info.get('material'), 'roche du gabarit')
                 o['surface'] = lk.get('surface', 'auto') if isinstance(lk, dict) else 'auto'
                 o['alpha'] = alpha.get(info.get('material'))
+                o['glow'] = glow.get(info.get('material'))           # None : texture du jeu (non modifiable)
                 if info.get('invisible'):                # mur invisible : 'auto' | 'manual' | 'obj'
                     o['invisible'] = info.get('wall', 'obj')
                     o['alpha'] = None
@@ -1361,7 +1577,10 @@ def load_decor(track):
         files.append({'file': logical, 'label': os.path.basename(logical)[len(track) + 1:-4],
                       'source': os.path.basename(src), 'saved': src.startswith(OUT_DIR), 'objects': objs})
     groups = move_away_files(track)
-    return {'track': track, 'files': files, 'newmap': newmap_settings(track),
+    return {'track': track, 'files': files, 'newmap': newmap_settings(track), 'lights': read_lights(track),
+            'orig_bounds': original_bounds(track),
+            'light_presets': {k: {'label': p[0], 'color': p[1], 'intensity': p[2], 'radius': p[3], 'from': p[4]}
+                              for k, p in lights.PRESETS.items()},
             'added': added_groups(track, {f['file']: f['objects'] for f in files}),
             'move_away_groups': [{'key': k, 'label': l, 'files': [os.path.basename(p)[len(track) + 1:-4] for p in groups.get(k, [])]}
                                  for k, l, _ in MOVE_AWAY_GROUPS if groups.get(k)]}
@@ -1432,7 +1651,11 @@ MOVE_AWAY_GROUPS = [
 ]
 OCCLUSION_TYPES = ('COcclusionTrigger', 'COcclusionBox')
 MOVE_AWAY_DZ = FAR_BELOW
-MOVE_AWAY_KEEP = re.compile(r'crate|power_?up', re.I)   # generateur de caisses (fichier _VFX de Crash Cove) : reste
+# generateur de caisses (Crate_Spawner, PowerUpCrate_gen du fichier _VFX de Crash Cove) : reste. Seulement dans les
+# fichiers d'effets : ailleurs une « caisse » est du decor (Chicken_Crate de Crash Cove, MetalCrate de Dragon Mines,
+# restee sous la route de T901 une fois le sol retire)
+MOVE_AWAY_KEEP = re.compile(r'crate|power_?up', re.I)
+MOVE_AWAY_KEEP_FILE = re.compile(r'_vfx(_[^/]*)?\.igz$', re.I)
 
 
 def move_away_files(track, keys=None):
@@ -1469,6 +1692,22 @@ def _logical_case(track, p):
     return e.logical_name if e else p
 
 
+def sink_leftover_crates(logical, data):
+    """Fichier descendu par une ancienne « Nouvelle map » : les entites « caisse » de decor gardees en place a tort
+    (Chicken_Crate de Crash Cove, sous la route de T901) descendues a leur tour. Fichiers d'effets : inchanges."""
+    if MOVE_AWAY_KEEP_FILE.search(logical):
+        return data
+    z = IgzFile(data)
+    n = 0
+    for name, o in z.root_objects():
+        if (z.objects.get(o) or '').endswith('Entity') and MOVE_AWAY_KEEP.search(name or ''):
+            x, y, zz = z.vec3(o + 0x20)
+            if zz > MOVE_AWAY_DZ / 2:
+                struct.pack_into('<3f', *z._loc(o + 0x20), x, y, zz + MOVE_AWAY_DZ)
+                n += 1
+    return z.to_bytes() if n else data
+
+
 def write_moved_away(track, keys):
     """Fichiers des groupes coches : toutes les entites racine descendues de MOVE_AWAY_DZ (copie enregistree) ;
     groupes decoches : copie enregistree retiree (l'original revient a l'installation)."""
@@ -1489,7 +1728,8 @@ def rebuild_map_file(track, logical, moved):
     main = logical.lower() == lighting_file(track).lower()
     amb = ambiance_values(track) if main else None
     sky = ambiance_sky(track) if main else None
-    if not moved and not amb and not sky:
+    added = read_lights(track) if main else []
+    if not moved and not amb and not sky and not added:
         if os.path.exists(path):
             os.remove(path)
             return f'{os.path.basename(logical)} : remis a sa place'
@@ -1498,6 +1738,7 @@ def rebuild_map_file(track, logical, moved):
     msg = []
     if moved:
         n = 0
+        keep = MOVE_AWAY_KEEP if MOVE_AWAY_KEEP_FILE.search(logical) else None
         for name, o in z.root_objects():
             t = z.objects.get(o) or ''
             if t in OCCLUSION_TYPES:                   # position : champ _position du declencheur, +0x68 de la boite
@@ -1505,7 +1746,7 @@ def rebuild_map_file(track, logical, moved):
                 x, y, zz = z.vec3(off)
                 struct.pack_into('<3f', *z._loc(off), x, y, zz + MOVE_AWAY_DZ)
                 n += 1
-            elif t.endswith('Entity') and not MOVE_AWAY_KEEP.search(name or ''):
+            elif t.endswith('Entity') and not (keep and keep.search(name or '')):
                 x, y, zz = z.vec3(o + 0x20)
                 struct.pack_into('<3f', *z._loc(o + 0x20), x, y, zz + MOVE_AWAY_DZ)
                 n += 1
@@ -1514,6 +1755,9 @@ def rebuild_map_file(track, logical, moved):
         msg.append(f"ciel et éclairage de {sky['label']} ({apply_sky(z, sky)} réglages)")
     if amb:
         msg.append(f'ambiance : {apply_ambiance(z, amb)} reglage(s)')
+    if added:                                          # apres la descente : les lumieres ajoutees restent en place
+        donor = IgzFile(pak_tool.read_latest(ARCHIVES, lights.DONOR_FILE, track_pak(lights.DONOR_TRACK))[0])
+        msg.append(f'{lights.add_lights(z, donor, added)} lumière(s) ajoutée(s)')
     z.save(path)
     return f'{os.path.basename(logical)} : ' + ', '.join(msg)
 
@@ -1761,6 +2005,27 @@ def set_ambiance(req):
     return {'report': [rep or 'éclairage d\'origine']}
 
 
+def lights_path(track):
+    return os.path.join(OUT_DIR, f'{track}_lights.json')
+
+
+def read_lights(track):
+    """Lumieres ponctuelles ajoutees (lights.py) : [{pos, color, intensity, radius, preset?}]."""
+    p = lights_path(track)
+    return lights.clean(json.load(open(p))) if os.path.exists(p) else []
+
+
+def write_lights(track, items):
+    """Enregistre les lumieres ajoutees puis reconstruit le _Lighting principal. -> rapport."""
+    items = lights.clean(items)
+    if items:
+        json.dump(items, open(lights_path(track), 'w'), indent=1)
+    elif os.path.exists(lights_path(track)):
+        os.remove(lights_path(track))
+    moved = 'lighting' in (newmap_settings(track).get('move_away') or [])
+    return rebuild_map_file(track, lighting_file(track), moved) or 'éclairage d\'origine'
+
+
 def moved_away_logicals(track):
     """Fichiers « descendus » enregistres (a installer / suivre dans l'historique)."""
     return [_logical_case(track, p) for files in move_away_files(track).values() for p in files
@@ -1880,22 +2145,29 @@ def write_art(track, logical, df, restore_originals=False):
     oobjs = {o['id']: o for o in orig.objects()}
     cur = df.objects()
     cids = {o['id'] for o in cur}
-    holders = []
+    holders, sunk = [], set()
     if logical in (newmap_settings(track).get('strip_art') or []):
+        # entites animees / scriptees (CGameEntity, CEntity : voiles et drapeaux des bateaux de Crash Cove avec leur
+        # script d'animation, son « bolte ») : descendues sous la carte, PAS supprimees (supprimees : plantage au
+        # debut du chargement de la piste suivante, liste parent / enfants du jeu corrompue)
         # nouvelle map : tous les objets d'origine retires, SAUF l'entite qui active le maillage de sol ou vont les
         # triangles des modeles importes (sans elle le jeu ne charge pas ce maillage : on passe au travers)
         owner = ground_owner(track)
         keep = {i for i, o in oobjs.items() if owner and (logical, o['name']) == owner}
-        cids = (cids - set(oobjs)) | keep
+        sunk = {r for r in orig.roots if z.objects.get(r) in ('CGameEntity', 'CEntity')} - keep
+        cids = (cids - set(oobjs)) | keep | sunk
         cur = [o for o in cur if o['id'] not in oobjs or o['id'] in keep] + \
               [oobjs[i] for i in keep if i not in {o['id'] for o in cur}]
         # entites sans modele qui en regroupent d'autres (prefabriques : Roo's Tubes « C3_Sea_KelpBunch01 » ->
         # igPrefabComponentData -> liste d'entites) : retirees aussi, sinon leurs enfants restaient atteignables
-        holders = [r for r in orig.roots if z.objects.get(r) in ENTITY_TYPES and r not in oobjs]
+        holders = [r for r in orig.roots if z.objects.get(r) in ENTITY_TYPES and r not in oobjs and r not in sunk]
     elif restore_originals:                            # fin du mode « nouvelle map » : les objets d'origine reviennent
         cur = cur + [o for i, o in oobjs.items() if i not in cids]
         cids |= set(oobjs)
     orig.delete_many([i for i in oobjs if i not in cids] + holders)
+    for r in sunk:
+        x, y, zz = z.vec3(r + 0x20)
+        struct.pack_into('<3f', *z._loc(r + 0x20), x, y, zz + MOVE_AWAY_DZ)
     for o in cur:
         if o['id'] in oobjs:
             a = oobjs[o['id']]
@@ -1991,9 +2263,21 @@ def texture_png(track, ns, max_size=256):
 
 def save_decor(req):
     """req = {track, files: {logique: {moves: {id: {pos, euler, scale}}, duplicates: [{src, pos, euler, scale}],
-    deleted: [id]}}}. Les ids sont ceux de la version chargee (sauvee ou originale)."""
+    deleted: [id]}}, ops: [modifications du clic droit gardees en attente : {op: 'surface', objects, surface} |
+    {op: 'invisible', model, invisible}]}. Les ids sont ceux de la version chargee (sauvee ou originale) ; la
+    collision n'est recalculee qu'une fois, a la fin."""
     track, report = req['track'], []
     os.makedirs(OUT_DIR, exist_ok=True)
+    if req.get('lights') is not None:                # lumieres ajoutees (lampadaires...) : fichier _Lighting
+        report.append('lumières : ' + write_lights(track, req['lights']))
+    for op in req.get('ops') or []:                  # avant les suppressions / copies : ids encore valables
+        sub = dict(op, track=track)
+        if op.get('op') == 'surface':
+            report += set_surface(sub, sync=False)['report']
+        elif op.get('op') == 'invisible':
+            report += set_invisible(sub, sync=False)['report']
+        else:
+            raise ValueError(f"modification inconnue : {op.get('op')}")
     for logical, ed in progress.items(req.get('files', {}).items(), 'écriture du décor ({i} / {n})', 0.0, 0.25):
         if logical not in art_files(track):
             raise ValueError(f'{logical} n\'est pas un fichier de decor de {track}')
@@ -2003,7 +2287,10 @@ def save_decor(req):
         links = load_links(track)
         file_links = links.setdefault(logical, {})
         for sid, m in ed.get('moves', {}).items():
-            df.set_transform(int(sid), m.get('pos'), m.get('euler'), m.get('scale'))
+            # objet sans transformation (position seule) : rotation / echelle neutres envoyees quand meme (pack de
+            # maps : decor d'origine deplace par « Deplacer / Changer l'echelle de toute la map ») -> ignorees
+            has_tr = df.igz.deref(int(sid) + 0x30) is not None
+            df.set_transform(int(sid), m.get('pos'), m.get('euler') if has_tr else None, m.get('scale') if has_tr else None)
         specs, used = [], set(df.names.values())
         for d in ed.get('duplicates', []):
             src = int(d['src'])
@@ -2022,6 +2309,8 @@ def save_decor(req):
         write_art(track, logical, df)
         report.append(f'{os.path.basename(logical)} : {len(ed.get("moves", {}))} modifies, '
                       f'{len(ed.get("duplicates", []))} dupliques, {len(ed.get("deleted", []))} supprimes')
+    if not req.get('files') and not req.get('ops'):    # lumieres seules : decor et collision inchanges
+        return {'report': report, 'boosts_changed': False}
     with progress.span(0.25, 0.95):
         report.append(sync_collision(track))
     progress.step('boosters', 0.95)
@@ -2107,6 +2396,7 @@ def _tracked_files(track):
             (f'{track}_minimap.json', os.path.join(OUT_DIR, f'{track}_minimap.json')),
             (f'{track}_light.json', light_path(track)),
             (f'{track}_menu.json', menu_settings_path(track)),
+            (f'{track}_lights.json', lights_path(track)),
             (f'{track}_ambiance.json', ambiance_path(track))]
     reg = custom_models(track)
     out += [('models/' + os.path.basename(k), custom_model_path(k)) for k in reg]
@@ -2462,7 +2752,7 @@ def wall_add(req):
     return {'ids': ids, 'file': art, 'report': [f'{name} : {length / 39.37:.0f} × {height / 39.37:.0f} m', sync_collision(track)]}
 
 
-def set_invisible(req):
+def set_invisible(req, sync=True):
     """Modele importe <-> mur invisible : req = {track, model (chemin du decor ou logique), invisible (bool)}.
     Tous les objets de ce modele changent. Rendu invisible : le .igz visible est garde a cote (<nom>.visible.igz)
     pour le retour ; un mur cree invisible redevient visible avec la texture du gabarit (UV projetees)."""
@@ -2511,7 +2801,7 @@ def set_invisible(req):
         msg = f'{name} : de nouveau visible en jeu'
     _forget_model(logical)
     save_custom_models(track, reg)
-    return {'report': [msg, sync_collision(track)]}
+    return {'report': [msg, sync_collision(track)] if sync else [msg]}
 
 
 def model_bytes(track, logical):
@@ -2663,6 +2953,20 @@ def _write_texture_files(track, name, image, alpha, size=1024):
     if not os.path.exists(custom_file_path(normal_logical)):
         open(custom_file_path(normal_logical), 'wb').write(texture_build.build_flat_normal(
             read_game_file(track, TEX_TEMPLATE_NORMAL)))
+    mat_name, mat = _texture_material(track, color_ns, alpha)
+    if (custom_textures(track).get(name) or {}).get('glow'):   # refaite (transparence, taille) : reste lumineuse
+        mat = texture_build.set_emissive(mat, True, color_ns)
+    open(custom_file_path(mat_logical), 'wb').write(mat)
+    for cache in (_texture_png_cache, _preview_cache):
+        cache.clear()
+    return ({'texture': [color_logical, normal_logical], 'material_instances': [mat_logical]}, mat_name, mat_ns, mat_dep)
+
+
+def _texture_material(track, color_ns, alpha):
+    """Materiau d'une image importee : roche du gabarit (feuilles a decoupe alpha si transparence) visant la
+    texture couleur color_ns et les normales plates. -> (nom du materiau, octets)."""
+    tmpl_mat = read_game_file(track, MAT_TEMPLATE_ALPHA if alpha else MAT_TEMPLATE)
+    old = {ns.split(',')[0]: ns for n_, ns in IgzFile(tmpl_mat).ext_names if n_ == 'image'}
     mat_name = model_materials(read_game_file(track, TEMPLATE))[0][1]       # 'rockGroundSide'
     mat = texture_build.retarget_material(tmpl_mat, {old['ColorMap']: color_ns, old['NormalMap']: FLAT_NORMAL_NS})
     if alpha:                                          # meme nom que le materiau roche (handle des modeles)
@@ -2672,10 +2976,7 @@ def _write_texture_files(track, name, image, alpha, size=1024):
         entries[0] = (mat_name, fnv1a_lower(mat_name))
         z._write_names(entries)
         mat = z.to_bytes()
-    open(custom_file_path(mat_logical), 'wb').write(mat)
-    for cache in (_texture_png_cache, _preview_cache):
-        cache.clear()
-    return ({'texture': [color_logical, normal_logical], 'material_instances': [mat_logical]}, mat_name, mat_ns, mat_dep)
+    return mat_name, mat
 
 
 def alpha_texture_list(track):
@@ -2716,11 +3017,16 @@ def set_alpha_textures(track, wanted):
 # Ralentissement : CCollisionMaterialSurfaceInfo._speedMultiplier (Grass 0,4, DirtSlowSlower 0,34 ; Dirt et SandWet
 # 1,0 : verifie en jeu, ils ne ralentissent pas) ; affiche dans le menu d'apres le fichier du jeu (surface_params).
 SURFACES = [
-    (38, 'Sable (route de Crash Cove)', True), (40, 'Sable mouillé', True), (4, 'Sol (défaut)', True),
+    (38, 'Sable', True), (40, 'Sable mouillé', True), (4, 'Sol (défaut)', True),
     (5, 'Herbe', True), (53, 'Terre lente', False), (6, 'Roche', True), (13, 'Bois', True),
     (11, 'Eau peu profonde', True), (12, 'Eau profonde', True), (39, 'Verre', True), (22, 'Turbo (accélère)', True),
     (16, 'Réapparition (on y tombe)', True), (7, 'Terre', False), (46, 'Asphalte', False), (29, 'Sable sombre', False),
-    (8, 'Neige', False), (10, 'Glace', False), (18, 'Boue', False), (9, 'Métal', False)]
+    (8, 'Neige', False), (10, 'Glace', False), (18, 'Boue', False), (9, 'Métal', False),
+    # « AlwaysFloor » (_alwaysActAsFloor) : une paroi raide compte comme du sol, pas comme un mur (tuyaux de Sewer
+    # Speedway, Deep Sea Driving, Hyper Spaceway : jusqu'a ~90 deg). Jamais a l'envers dans le jeu : boucle non validee.
+    # Menu allege a la demande de l'utilisateur : seul le metal (42) est propose ; 41 roche, 43 eau, 50 neige, 35 bois
+    # mouille sont les autres parois roulables du jeu.
+    (42, 'Driving wall', False)]
 _surface_params = {}
 SURFACE_OBSERVED = {5: {'speed': 0.4}}   # constate en jeu, absent de la fiche (herbe : ralentissement du hors-piste)
 
@@ -2749,16 +3055,17 @@ def surface_params():
                 fr = m.get('_dynamicFriction')
                 grip = min(v for v in (s.get('_traction'), fr / 0.5 if isinstance(fr, (int, float)) else None, 1.0)
                            if isinstance(v, (int, float)))
-                _surface_params[idx + off] = {'speed': s.get('_speedMultiplier'), 'traction': round(grip, 3)}
+                _surface_params[idx + off] = {'speed': s.get('_speedMultiplier'), 'traction': round(grip, 3),
+                                              'floor': bool((s.get('_surfaceFlags') or 0) & 0x800)}   # _alwaysActAsFloor
         for v, p in SURFACE_OBSERVED.items():
             if v in _surface_params and (_surface_params[v].get('speed') or 1.0) >= 0.99:
                 _surface_params[v] = {**_surface_params[v], **p}
     return _surface_params
 
 
-def set_surface(req):
+def set_surface(req, sync=True):
     """Type de sol des objets importes : req = {track, objects: [{file, id}], surface: 'auto' | 'none' | valeur}.
-    Memorise dans les liens du decor, puis collision recalculee."""
+    Memorise dans les liens du decor, puis collision recalculee (sync=False : par l'enregistrement du decor)."""
     track, surf = req['track'], req.get('surface')
     if surf not in ('auto', 'none'):
         surf = int(surf)
@@ -2774,6 +3081,8 @@ def set_surface(req):
         raise ValueError('aucun modèle importé dans la sélection (le sol des objets d\'origine ne se change pas ici)')
     save_links(track, links)
     label = {'auto': 'comme le sol dessous', 'none': 'sans collision'}.get(surf) or next(l for s, l, _ in SURFACES if s == surf)
+    if not sync:
+        return {'report': [f'{n} objet(s) : {label}'], 'surface': surf}
     with progress.span(0.05, 1.0):
         rep = sync_collision(track)
     return {'report': [f'{n} objet(s) : {label}', rep], 'surface': surf}
@@ -2788,6 +3097,36 @@ def set_object_alpha(req):
     if name is None:
         raise ValueError('ce modèle n\'utilise pas une image importée (texture du jeu : transparence non modifiable)')
     return set_alpha_textures(track, {name: bool(req.get('alpha'))})
+
+
+def set_object_glow(req):
+    """Texture lumineuse (emission, comme les lampes du jeu) d'un modele importe : req = {track, model, glow}. Le
+    materiau de l'image importee est refait sur place : tous les modeles qui utilisent cette image brillent."""
+    track = req['track']
+    logical = req['model'] if req['model'].startswith('models/') else model_logical_path(req['model'])
+    mat = (custom_models(track).get(logical) or {}).get('material')
+    reg = custom_textures(track)
+    name = next((n for n, i in reg.items() if i['material_id'] == mat), None)
+    if name is None:
+        raise ValueError('ce modèle n\'utilise pas une image importée (texture du jeu : non modifiable)')
+    info, on = reg[name], bool(req.get('glow'))
+    mat_logical = info['files']['material_instances'][0]
+    color_ns = info['files']['texture'][0][len('textures/'):-len('.igz')]
+    p = custom_file_path(mat_logical)
+    if os.path.exists(p) and os.path.getsize(p):
+        data = open(p, 'rb').read()                    # lu AVANT d'ouvrir en ecriture (qui vide le fichier)
+    else:                                              # absent ou vide (ancienne erreur) : refait comme a l'import
+        data = _texture_material(track, color_ns, bool(info.get('alpha')))[1]
+    data = texture_build.set_emissive(data, on, color_ns)
+    open(p, 'wb').write(data)
+    if on:
+        info['glow'] = True
+    else:
+        info.pop('glow', None)
+    json.dump(reg, open(custom_textures_path(track), 'w'), indent=1)
+    users = sum(1 for i in custom_models(track).values() if i.get('material') == mat)
+    return {'report': [f'image « {name} » ' + ('lumineuse' if on else 'non lumineuse')
+                       + f' ({users} modèle(s) l\'utilisent)'], 'texture': name}
 
 
 def set_custom_material(req):
@@ -3179,13 +3518,115 @@ def _load_source(folder, name):
         st = os.stat(path)
         key = (path, st.st_size, st.st_mtime_ns)
         if key not in _dae_cache:
-            _dae_cache.clear()
+            if len(_dae_cache) >= 8:                   # plusieurs .dae importes ensemble : gardes tous
+                _dae_cache.pop(next(iter(_dae_cache)))
             _dae_cache[key] = dae_import.dae_to_obj(path)
         text, mtl, up = _dae_cache[key]
         return text, mtl, obj_summary(text), up
     text = open(path, encoding='utf-8', errors='replace').read()
     summ, mtl = _folder_materials(folder, text)
     return text, mtl, summ, 'y'
+
+
+def _obj_objects(text):
+    """[(objet `o`/`g`, triangles)] d'un OBJ, dans l'ordre du fichier (objets sans face ignores)."""
+    counts, obj = {}, ''
+    for line in text.splitlines():
+        if line.startswith(('o ', 'g ')):
+            obj = line[2:].strip()
+        elif line.startswith('f '):
+            counts[obj] = counts.get(obj, 0) + len(line.split()) - 3
+    return list(counts.items())
+
+
+# axe vertical d'un fichier -> celui de la scene fusionnee (y : (x, -z, y) dans le jeu ; z : tel quel)
+_UP_CONVERT = {('z', 'y'): lambda x, y, z: (x, z, -y), ('y', 'z'): lambda x, y, z: (x, -z, y)}
+
+
+def _filter_obj(text, keep, base, rename_obj=None, rename_mtl=None, conv=None):
+    """OBJ reduit aux faces des objets gardes (keep(objet)), sommets / UV / normales inutiles retires, indices a
+    partir de base = (sommets, UV, normales) deja ecrits ; objets / materiaux renommes, axe vertical converti.
+    -> (texte, nombres ecrits (sommets, UV, normales))."""
+    src, faces, obj, mtl = ([], [], []), [], '', ''
+    for line in text.splitlines():
+        p = line.split()
+        if not p:
+            continue
+        k = {'v': 0, 'vt': 1, 'vn': 2}.get(p[0])
+        if k is not None:
+            src[k].append(p[1:4] if k != 1 else p[1:3])
+        elif p[0] in ('o', 'g'):
+            obj = ' '.join(p[1:])
+        elif p[0] == 'usemtl':
+            mtl = ' '.join(p[1:])
+        elif p[0] == 'f' and keep(obj):
+            cs = []
+            for c in p[1:]:
+                idx = (c.split('/') + ['', ''])[:3]
+                cs.append(tuple((int(s) - 1 if int(s) > 0 else len(src[j]) + int(s)) if s else None for j, s in enumerate(idx)))
+            faces.append((obj, mtl, cs))
+    remap = ({}, {}, {})
+    for _, _, cs in faces:
+        for c in cs:
+            for j in range(3):
+                if c[j] is not None and c[j] not in remap[j]:
+                    remap[j][c[j]] = len(remap[j])
+    out = []
+    for j, tag in enumerate(('v', 'vt', 'vn')):
+        for i in remap[j]:                             # ordre d'apparition dans les faces
+            vals = src[j][i]
+            if conv and j != 1:
+                vals = ['%.6f' % c for c in conv(*map(float, vals))]
+            out.append(f'{tag} {" ".join(vals)}')
+    cur = None
+    for obj, mtl, cs in faces:
+        if (obj, mtl) != cur:
+            out.append(f'o {rename_obj(obj) if rename_obj else obj}')
+            out.append(f'usemtl {(rename_mtl or {}).get(mtl, mtl)}')
+            cur = (obj, mtl)
+        out.append('f ' + ' '.join('/'.join('' if c[j] is None else str(base[j] + remap[j][c[j]] + 1) for j in range(3)).rstrip('/')
+                                   for c in cs))
+    return '\n'.join(out) + '\n', tuple(len(r) for r in remap)
+
+
+def _load_sources(folder, names, objects=None):
+    """Un ou plusieurs .obj / .dae du dossier fusionnes en une scene : (texte OBJ, materiaux, resume, axe vertical,
+    elements [{file, name, triangles}] de ces fichiers). objects = None (tout) ou ['fichier|objet', ...] a garder.
+    Plusieurs fichiers : objets prefixes du nom du fichier, materiaux homonymes differents renommes, axe vertical du
+    premier fichier (les autres convertis) ; memes echelle et placement pour tous (ils restent alignes)."""
+    names = list(dict.fromkeys(names))
+    if objects is not None and not objects:
+        raise ValueError('aucun élément choisi')
+    keep_set = None if objects is None else set(objects)
+    srcs = [(name,) + _load_source(folder, name) for name in names]
+    if len(srcs) == 1 and keep_set is None:            # un fichier entier : tel quel
+        name, text, mtl, summ, up = srcs[0]
+        return text, mtl, summ, up, [{'file': name, 'name': o, 'triangles': n} for o, n in _obj_objects(text)]
+    up0, multi = srcs[0][4], len(srcs) > 1
+    parts, mtl_all, elements, base = [], {}, [], (0, 0, 0)
+    for name, text, mtl, _, up in srcs:
+        stem = _clean_name(os.path.splitext(name)[0])
+        elements += [{'file': name, 'name': o, 'triangles': n} for o, n in _obj_objects(text)]
+        ren = {}
+        for m, info in mtl.items():
+            new = m if m not in mtl_all or mtl_all[m] == info else f'{m}__{stem}'
+            ren[m], mtl_all[new] = new, info
+        keep = (lambda o: True) if keep_set is None else (lambda o, name=name: f'{name}|{o}' in keep_set)
+        part, n = _filter_obj(text, keep, base, (lambda o, s=stem: f'{s}_{o}') if multi else None, ren,
+                              _UP_CONVERT.get((up, up0)))
+        parts.append(part)
+        base = tuple(b + k for b, k in zip(base, n))
+    text = ''.join(parts)
+    summ = obj_summary(text)
+    if not summ['triangles']:
+        raise ValueError('aucun triangle dans les éléments choisis')
+    return text, mtl_all, summ, up0, elements
+
+
+def _chosen_files(req, objs):
+    """Fichiers choisis : req['files'] (plusieurs), sinon req['obj'], sinon le premier du dossier."""
+    files = [f for f in (req.get('files') or ([req['obj']] if req.get('obj') else [])) if f in objs]
+    return files or objs[:1]
 
 
 ROAD_WIDTH_TARGET = 30.0       # m : largeur de route visee (Crash Cove : ~48 m au plus large, routes CTR 20-40 m)
@@ -3248,16 +3689,18 @@ def _road_scale_calc(text, up):
 
 
 def folder_scan(req):
-    """req = {folder (relatif au projet ou absolu), obj (facultatif)} -> fichiers .obj / .dae du dossier et, pour
-    celui choisi, ses materiaux : texture trouvee, triangles, collision proposee ; taille brute, echelle et axe
-    proposes."""
+    """req = {folder (relatif au projet ou absolu), files (facultatif : un ou plusieurs .obj / .dae ; ancien : obj),
+    objects (facultatif : ['fichier|objet'] a garder)} -> fichiers .obj / .dae du dossier, elements (objets) des
+    fichiers choisis et, pour la selection, ses materiaux : texture trouvee, triangles, collision proposee ;
+    taille brute, echelle et axe proposes."""
     folder = _folder(req)
     objs = sorted(f for f in os.listdir(folder) if f.lower().endswith(MODEL_EXT))
     if not objs:
         raise ValueError(f'aucun fichier .obj ou .dae dans {folder}')
-    obj = req.get('obj') if req.get('obj') in objs else objs[0]
+    files = _chosen_files(req, objs)
+    obj = ', '.join(files)
     progress.step(f'lecture de {obj}', 0.02)
-    text, mtl, summ, up = _load_source(folder, obj)
+    text, mtl, summ, up, elements = _load_sources(folder, files, req.get('objects'))
     progress.step('taille des matériaux', 0.3)
     # decor de fond (montagnes, nuages, sol a perte de vue : bien plus grand que la route) : sans collision par
     # defaut — ses triangles de plusieurs km faisaient exploser la collision (4 millions de morceaux, non encodable)
@@ -3279,7 +3722,8 @@ def folder_scan(req):
                      'alpha': bool(tex) and texture_build.image_has_alpha(open(tex, 'rb').read())})
     images = sum(1 for f in os.listdir(folder) if f.lower().endswith(IMAGE_EXT))
     progress.step('largeur de la route (échelle proposée)', 0.75)
-    return {'folder': folder, 'objs': objs, 'obj': obj, 'materials': mats, 'vertices': summ['vertices'],
+    return {'folder': folder, 'objs': objs, 'obj': obj, 'files': files, 'elements': elements,
+            'objects': req.get('objects'), 'materials': mats, 'vertices': summ['vertices'],
             'triangles': sum(summ['triangles'].values()), 'bounds': summ['bounds'], 'images': images,
             'up': up, **_scale_info(text, summ['bounds'], up)}
 
@@ -3312,18 +3756,20 @@ def _check_import_scale(text, req):
 
 
 def import_folder(req):
-    """Import d'un dossier en une fois : req = {track, folder, obj, scale, up, placement, pos, file,
+    """Import d'un dossier en une fois : req = {track, folder, files (un ou plusieurs .obj / .dae ; ancien : obj),
+    objects (facultatif : ['fichier|objet'] a garder), scale, up, placement, pos, file,
     materials: {materiau OBJ: {'collision': bool, 'surface': 'auto' | int}}}. Chaque materiau recoit sa texture
-    (map_Kd du .mtl, convertie ; a defaut une couleur unie Kd), puis l'OBJ est importe (un modele par objet /
+    (map_Kd du .mtl, convertie ; a defaut une couleur unie Kd), puis la scene est importee (un modele par objet /
     materiau) avec ces textures et la collision choisie."""
     from PIL import Image
     track = req['track']
     folder = _folder(req)
-    obj = req.get('obj')
-    if not obj or not os.path.isfile(os.path.join(folder, obj)) or not obj.lower().endswith(MODEL_EXT):
+    wanted = req.get('files') or ([req['obj']] if req.get('obj') else [])
+    if not wanted or any(not os.path.isfile(os.path.join(folder, f)) or not f.lower().endswith(MODEL_EXT) for f in wanted):
         raise ValueError('fichier .obj / .dae introuvable dans le dossier')
-    progress.step(f'lecture de {obj}', 0.01)
-    text, mtl, summ, _ = _load_source(folder, obj)
+    obj = wanted[0] if len(wanted) == 1 else os.path.basename(os.path.normpath(folder)) + '.obj'
+    progress.step(f'lecture de {", ".join(wanted)}', 0.01)
+    text, mtl, summ, _, _ = _load_sources(folder, wanted, req.get('objects'))
     _check_import_scale(text, req)
     choice = req.get('materials') or {}
     mapping, made, reused, plain = {}, 0, 0, 0
@@ -4071,6 +4517,8 @@ def menu_image_logical(track, key):
     nom le plus proche parmi les textures de ce type des archives de menu ; sinon le nom deduit de la piste."""
     import difflib
     import menu_assets
+    if key in menu_assets.OWN_IMAGES and menu_image_source(track):
+        return menu_assets.own_image_file(track, key)            # piste creee : ses textures (custom_category)
     if (track, key) not in _menu_image_cache:
         want = menu_assets.image_file(track, key)
         _menu_archives_index()
@@ -4110,19 +4558,92 @@ def _menu_archives_index():
 def menu_archives(track, logical):
     """Archives qui contiennent ce fichier (toutes sont patchees a l'installation) : [chemins], la plus
     prioritaire d'abord (update2, update, puis les autres)."""
+    if _own_menu_image(track, logical):
+        return [os.path.join(ARCHIVES, custom_category.ARCHIVE)]    # mise dans update2 a chaque reecriture
     _menu_archives_index()
     order = lambda p: (p not in pak_tool.UPDATE_ARCHIVES, pak_tool.UPDATE_ARCHIVES.index(p) if p in pak_tool.UPDATE_ARCHIVES else 0, p)
     return [os.path.join(ARCHIVES, p) for p in sorted(_menu_arc_cache, key=order) if logical.lower() in _menu_arc_cache[p]]
 
 
+def _own_menu_image(track, logical):
+    """Cle ('background' / 'icon') si logical est une image a elle d'une piste creee, sinon None."""
+    if not menu_image_source(track):
+        return None
+    return next((k for k in menu_assets.OWN_IMAGES if menu_assets.own_image_file(track, k).lower() == logical.lower()), None)
+
+
 def _menu_original(track, logical):
-    """(octets d'origine, nom logique avec la casse de l'archive) ou (None, None)."""
+    """(octets d'origine, nom logique avec la casse de l'archive) ou (None, None). Image a elle d'une piste creee :
+    l'origine est l'image du jeu de sa source (copiee telle quelle dans update2 tant qu'elle n'est pas modifiee)."""
+    k = _own_menu_image(track, logical)
+    if k:
+        src = menu_image_source(track)
+        data, _ = _menu_original(src, menu_image_logical(src, k))
+        return (data, menu_assets.own_image_file(track, k)) if data is not None else (None, None)
     arcs = menu_archives(track, logical)
     if not arcs:
         return None, None
     base = next((a for a in arcs if os.path.basename(a) not in pak_tool.UPDATE_ARCHIVES), arcs[0])
-    data, _ = pak_tool.read_latest(ARCHIVES, logical, os.path.basename(base))
+    try:
+        data, _ = pak_tool.read_latest(ARCHIVES, logical, os.path.basename(base))
+    except KeyError:                     # piste creee (track_clone) : son nom n'existe que dans l'update2 installe
+        data, _ = pak_tool.read_latest(ARCHIVES, logical, os.path.basename(base), original=False)
     return data, _archive_case(os.path.basename(arcs[0]), logical)
+
+
+def menu_image_source(track):
+    """Piste dont une piste CREEE (onglet Menu) affiche les images de menu : sa source enregistree a la copie
+    (custom_category, 'source' : Crash Cove), sinon None. Le zoneinfo copie garde LevelIcon_CrashCove etc."""
+    for t in (custom_category.read_state(ARCHIVES) or {}).get('tracks', []):
+        if t['id'] == track:
+            return t.get('images_from') or t.get('source') or NEW_TRACK_SOURCE
+    return None
+
+
+def own_race_icon_files(track):
+    """Piste creee : l'icone de la piste en course (<Piste>_Minimap_materials::<Piste>_Icon, visee par le zoneInfo)
+    utilise la vignette du menu de la source ; elle vise ici la vignette a elle (update2, custom_category), comme les
+    pistes ajoutees par les mises a jour (Hyper Spaceway : sa vignette dans son manifeste).
+    Mini-carte : meme principe. L'image refaite par l'editeur part sous un nom PROPRE a la piste
+    (« ..._minimaps_race_t901custommap ») au lieu de celui de la source (« ..._crashcove ») : deux pistes creees jouees
+    a la suite avaient le meme fichier avec deux contenus (le jeu garde un nom = un contenu).
+    -> ({nom logique: octets} pour l'archive de la piste, entrees du manifeste, {nom logique d'origine a ne PAS
+    remplacer})."""
+    if not menu_image_source(track):
+        return {}, [], set()
+    logical = f'materialinstances/ui/{track.lower()}_minimap_materials.igz'
+    try:
+        z = IgzFile(pak_tool.read_latest(ARCHIVES, logical, track_pak(track))[0])
+    except KeyError:
+        return {}, [], set()
+    fo = next(o for o, (n, _) in z.fields_of('igGraphicsTexture').items() if n == '_imageHandle')
+    files, entries, drop = {}, [], set()
+    try:
+        mm_logical = minimap_texture_logical(track)
+    except StopIteration:
+        mm_logical = None
+    mm_saved = saved_path(mm_logical) if mm_logical else None
+    for o, t in list(z.objects.items()):
+        h = z.named_handle(z.u32(o + fo)) if t == 'igGraphicsTexture' else None
+        if not h:
+            continue
+        if '_raceselect_ico_' in h[1]:
+            tex = menu_assets.own_texture_name(h[1], track)
+            entries.append(('texture', menu_assets.own_image_file(track, 'icon')))
+        elif '!minimaps!octane_ui_minimaps_race_' in h[1].lower() and mm_saved and os.path.exists(mm_saved):
+            tex = menu_assets.own_texture_name(h[1], track)
+            own = f'textures/{tex}.igz'
+            files[own] = open(mm_saved, 'rb').read()
+            entries.append(('texture', own))
+            drop.add(mm_logical.lower())
+        else:
+            continue
+        struct.pack_into('<I', *z._loc(o + fo), 0x80000000 | z.ext_index(h[0], tex))
+        z.add_tdep([(tex, 'textures:/' + tex + '.igz')])
+    if not entries:
+        return {}, [], set()
+    files[_archive_case(track_pak(track), logical)] = z.to_bytes()
+    return files, entries, drop
 
 
 def menu_info(track):
@@ -4140,7 +4661,11 @@ def menu_info(track):
         names[lg] = {'label': label, 'original': menu_assets.read_name(orig),
                      'name': menu_assets.read_name(open(p, 'rb').read() if os.path.exists(p) else orig)}
     for k, (label, _) in menu_assets.IMAGES.items():
-        orig, logical = _menu_original(track, files[f'image_{k}'])
+        # piste creee : fond et vignette a elle (copies installees par custom_category) ; embleme de l'intro et
+        # trace = ceux de sa source, partages (lecture seule ici : les modifier changerait aussi Crash Cove)
+        source = menu_image_source(track) if k not in menu_assets.OWN_IMAGES else None
+        orig, logical = _menu_original(track, files[f'image_{k}']) if not source else \
+            _menu_original(source, menu_image_logical(source, k))
         if orig is None:
             continue
         p = saved_path(logical)
@@ -4150,9 +4675,10 @@ def menu_info(track):
         buf = io.BytesIO()
         Image.fromarray(rgba[::-1]).save(buf, 'PNG')         # textures d'interface stockees de bas en haut (apply_menu)
         images[k] = {'label': label, 'size': [info['width'], info['height']], 'custom': os.path.exists(p),
+                     'shared': source,
                      'preview': 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()}
     v = menu_video(track)
-    return {'names': names, 'images': images, 'slug': menu_assets.slug(track),
+    return {'names': names, 'images': images, 'slug': menu_assets.slug(track), 'image_source': menu_image_source(track),
             'hide_video': hide_menu_video(track),
             'video': os.path.basename(v) if os.path.exists(v) or os.path.exists(v + VIDEO_OFF) else None}
 
@@ -4273,6 +4799,34 @@ def world_killz(track, original=False):
     return struct.unpack_from('<f', *z._loc(w + 0x40))[0] if w is not None else KILL_Z
 
 
+def scene_points(req):
+    """Entites de la scene que l'editeur de course ne charge pas, pour « Changer l'echelle de la map » :
+    req = {track, names (points de reapparition des splines de position)} -> {poses: {nom: {pos, yaw}} (points,
+    zones de chute auto ; _Design ou _RaceSystem), killz}. Pas les cameras <nom>_camera : ce ne sont pas des
+    entites, leur « position » +0x20 ecrasait le pointeur de leur nom (plantage en quittant la course)."""
+    track = req['track']
+    names = set(req.get('names') or [])
+    poses = {}
+    for logical in (race_file(track), start_finish.design_file(track)):
+        try:
+            data = base_file(track, logical)[0]
+        except KeyError:
+            continue
+        roots = [n for n, _ in IgzFile(data).root_objects() if n]
+        want = [n for n in roots if n in names or (n.startswith(FALL_AUTO) and n[len(FALL_AUTO):].isdigit())]
+        poses.update(start_finish.read_entity_poses(data, want))
+    return {'poses': poses, 'killz': world_killz(track)}
+
+
+def set_world_killz(track, killz):
+    """Plancher du monde (CWorldEntityData._killz) de la version enregistree."""
+    logical = start_finish.main_map_file(track)
+    z = IgzFile(base_file(track, logical)[0])
+    w = next(o for o, t in z.objects.items() if t == 'CWorldEntityData')
+    struct.pack_into('<f', *z._loc(w + _field(z, 'CWorldEntityData', '_killz')), float(killz))
+    open(saved_path(logical), 'wb').write(z.to_bytes())
+
+
 def _component(z, ent, type_name):
     """Composant d'une entite (table de composants de ses donnees) ou None."""
     data = z.deref(ent + 0x40)
@@ -4286,6 +4840,31 @@ def _component(z, ent, type_name):
 
 def _field(z, type_name, name):
     return next(o for o, (n, _) in z.fields_of(type_name).items() if n == name)
+
+
+def _respawns_off_gaps(points, P, starts, end, ground, lift=50.0, reach_m=20):
+    """Point de reapparition au-dessus d'une coupure plus etroite que l'ecart des points du trace (les deux voisins
+    ont du sol : non marque « air ») : decale le long du trace, d'abord vers l'avant, jusqu'a avoir du sol juste
+    dessous (T901 Boo Lake : Respawn_waypoint_auto038 entre deux morceaux de route, « sans sol dessous »)."""
+    import falls
+    S = falls.arc(P)
+
+    def grounded(pos):
+        h = ground.top(pos[0], pos[1], pos[2] + 300)
+        return h is not None and pos[2] - h <= AIR + lift
+
+    out = []
+    for sec, pos, yaw, s in points:
+        if not grounded(pos):
+            for d in [k * sign for k in range(1, reach_m + 1) for sign in (1, -1)]:
+                s2 = min(max(s + d * 39.37, starts[0]), end)
+                pos2, yaw2 = falls.pose_at(P, S, s2, lift)
+                if grounded(pos2):
+                    sec = max(k for k in range(len(starts)) if starts[k] <= s2)
+                    pos, yaw, s = pos2, yaw2, s2
+                    break
+        out.append((sec, pos, yaw, s))
+    return sorted(out, key=lambda o: o[3])
 
 
 def auto_falls(req):
@@ -4338,6 +4917,7 @@ def auto_falls(req):
     if not pool:
         raise ValueError('aucun point de reapparition dans le _Design')
     points = falls.respawn_layout(P, starts, end, float(req.get('spacing', 50)) * 39.37, minimum=len(base), air=air)
+    points = _respawns_off_gaps(points, P, starts, end, ground)
     template = next((n for n in pool if f'{n}_camera' not in roots), pool[0])
     zones = falls.find_fall_zones(P, ground, road_ground(track), killz=killz) if req.get('zones', True) else []
     zautos = sorted(n for n in roots if n.startswith(FALL_AUTO) and n[len(FALL_AUTO):].isdigit())
@@ -4374,7 +4954,9 @@ def auto_falls(req):
         _set_pose(dz, roots[name], pos, yaw)
     # 3) zones de chute
     ns = f'{track}_Design'
-    tag = next(((n, s) for n, s in dz.ext_names if s == 'EntityTags' and n == 'PlayerStart'), ('PlayerStart', 'EntityTags'))
+    # liste = points de reapparition SEULS, comme Respawn_Trigger_Bridge de Crash Cove (version de la mise a jour) :
+    # un « EntityTags::PlayerStart » en tete (ancienne version) faisait planter le jeu des qu'un kart entrait dans la
+    # zone (T901 Boo Lake : tomber a cote de la route = plantage, joueur et IA)
     for name, zone in zip(zautos, zones):
         ent = roots[name]
         struct.pack_into('<3f', *dz._loc(ent + 0x20), *zone['center'])
@@ -4382,7 +4964,7 @@ def auto_falls(req):
         dz.set_field(box, '_dimensions', zone['dims'])
         rt = _component(dz, ent, 'CRespawnTriggerComponentData')
         lst = dz.deref(rt + _field(dz, 'CRespawnTriggerComponentData', '_respawnPoints'))
-        dz.set_handle_list(lst, [tag] + [(used[i], ns) for i in falls.before(points, zone['s'])])
+        dz.set_handle_list(lst, [(used[i], ns) for i in falls.before(points, zone['s'])])
     for name in zautos[len(zones):]:
         p = list(dz.vec3(roots[name] + 0x20))
         struct.pack_into('<3f', *dz._loc(roots[name] + 0x20), p[0], p[1], FAR_BELOW)
@@ -4421,8 +5003,11 @@ def minimap_orientation(track):
     """(op, sure) : sens d'affichage de l'image de mini-carte de la piste, retrouve sur son image et son trace
     d'origine (minimap.choose_orientation). Crash Cove (reference) : normal."""
     if track not in _minimap_orient_cache:
-        if track == 'T111_Crash_Cove':
-            _minimap_orient_cache[track] = ((0, False), True)
+        if minimap_crash_cove_family(track):
+            # Crash Cove et ses copies (pistes creees) : image lue retournee haut / bas en jeu (comme les images du menu ;
+            # verifie sur la T111 de l'utilisateur, corrigee a la main par « Miroir vertical » sur chaque piste). Trace
+            # ovale presque symetrique : la detection hesitait (retournee 0,53 / normale 0,47) et retombait sur normal
+            _minimap_orient_cache[track] = ((0, True), True)
         else:
             tp = track_pak(track)
             try:
@@ -4437,17 +5022,51 @@ def minimap_orientation(track):
     return _minimap_orient_cache[track]
 
 
-def generate_minimap(track, move=None):
+MINIMAP_META_VERSION = 2       # 2 : Crash Cove et ses copies retournees par defaut (avant : « Miroir vertical » a la main)
+
+
+def minimap_crash_cove_family(track):
+    """Piste dont la mini-carte est celle de Crash Cove (Crash Cove, pistes creees : texture ..._race_crashcove)."""
+    try:
+        return 'race_crashcove' in minimap_texture_logical(track).lower()
+    except StopIteration:
+        return False
+
+
+def minimap_meta(track):
+    """Reglage memorise de la mini-carte ({} si jamais generee). Ancienne version sur Crash Cove / pistes creees : le
+    miroir vertical a la main valait le retournement desormais par defaut -> miroir vertical retire."""
+    p = os.path.join(OUT_DIR, f'{track}_minimap.json')
+    meta = json.load(open(p)) if os.path.exists(p) else {}
+    if meta and meta.get('v', 1) < MINIMAP_META_VERSION and minimap_crash_cove_family(track):
+        meta['mirror_v'] = False
+    return meta
+
+
+def minimap_outdated(track):
+    """Mini-carte generee par une ancienne version sur Crash Cove / piste creee (image a l'envers en jeu sans le miroir
+    vertical a la main) : a refaire."""
+    p = os.path.join(OUT_DIR, f'{track}_minimap.json')
+    if not os.path.exists(p) or json.load(open(p)).get('v', 1) >= MINIMAP_META_VERSION:
+        return False
+    return minimap_crash_cove_family(track)
+
+
+def generate_minimap(track, move=None, flip=None):
     """Mini-carte refaite d'apres le parcours ENREGISTRE (route importee si connue, sinon trace epais) : image +
     coins du script, toujours depuis les fichiers d'origine. move = [du, dv] : reglage fin du dessin (px, cumule et
-    memorise dans <Piste>_minimap.json). -> rapport + apercu PNG (data URL) + reglage."""
+    memorise dans <Piste>_minimap.json) ; flip = 'h' / 'v' : inverse le miroir horizontal / vertical du dessin
+    (memorise aussi). -> rapport + apercu PNG (data URL) + reglage."""
     import base64
     from PIL import Image
     meta_p = os.path.join(OUT_DIR, f'{track}_minimap.json')
-    meta = json.load(open(meta_p)) if os.path.exists(meta_p) else {}
+    meta = minimap_meta(track)
     nudge = list(meta.get('nudge', minimap.NUDGE_DEFAULT))
+    mirror = [bool(meta.get('mirror_h')), bool(meta.get('mirror_v'))]
     if move:
         nudge = [nudge[0] + int(move[0]), nudge[1] + int(move[1])]
+    if flip in ('h', 'v'):
+        mirror['hv'.index(flip)] = not mirror['hv'.index(flip)]
     path, tr = race_path_points(track)
     if len(path) < 10:
         raise ValueError('pas de parcours enregistre (cree le parcours et enregistre d\'abord)')
@@ -4463,21 +5082,31 @@ def generate_minimap(track, move=None):
     setup, tex, rgba, corners = minimap.build(
         pak_tool.read_latest(ARCHIVES, mm, track_pak(track))[0],
         pak_tool.read_latest(ARCHIVES, tex_logical, track_pak(track))[0],
-        path, tris, (fin['position'], fin['yaw'] or 0.0) if fin else None, 1000.0, nudge, orient)
+        path, tris, (fin['position'], fin['yaw'] or 0.0) if fin else None, 1000.0, nudge, orient, tuple(mirror))
     os.makedirs(OUT_DIR, exist_ok=True)
     open(saved_path(mm), 'wb').write(setup)
     open(saved_path(tex_logical), 'wb').write(tex)
-    json.dump({'path_key': minimap_path_key(track), 'nudge': nudge}, open(meta_p, 'w'))
+    json.dump({'path_key': minimap_path_key(track), 'nudge': nudge, 'mirror_h': mirror[0], 'mirror_v': mirror[1],
+               'v': MINIMAP_META_VERSION}, open(meta_p, 'w'))
     buf = io.BytesIO()
     Image.fromarray(rgba).save(buf, 'PNG')
-    return {'report': [f"mini-carte : {'route importée' if tris is not None else 'tracé'} dessinée, coins "
+    stored_png = None
+    if corners.get('stored') is not None:                 # miroir : image telle qu'enregistree (le jeu la relit retournee)
+        sb = io.BytesIO()
+        Image.fromarray(corners['stored']).save(sb, 'PNG')
+        stored_png = 'data:image/png;base64,' + base64.b64encode(sb.getvalue()).decode()
+    return {'stored_preview': stored_png,
+            'report': [f"mini-carte : {'route importée' if tris is not None else 'tracé'} dessinée, coins "
                        f"({corners['top_left'][0]:.0f}, {corners['top_left'][1]:.0f}) / "
                        f"({corners['bottom_right'][0]:.0f}, {corners['bottom_right'][1]:.0f}), réglage du dessin "
                        f"{nudge[0]:+d} / {nudge[1]:+d} px"
                        + ('' if orient == (0, False) else f", image rangée dans le sens d'affichage de la piste "
                           f"({'retournée' if orient == (0, True) else f'orientation {orient}'})")
-                       + ('' if sure else " ; ATTENTION : sens d'affichage de cette piste incertain, à vérifier en jeu")],
-            'preview': 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode(), 'nudge': nudge}
+                       + ('' if sure else " ; ATTENTION : sens d'affichage de cette piste incertain, à vérifier en jeu")
+                       + (f", miroir {' et '.join(n for n, m in zip(('horizontal', 'vertical'), mirror) if m)}"
+                          if any(mirror) else '')],
+            'preview': 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode(), 'nudge': nudge,
+            'mirror': mirror}
 
 
 def minimap_path_key(track):
@@ -4513,6 +5142,7 @@ SPLINE_UNDER = -100.0       # plus de 2,5 m sous la surface : sous la route
 SPLINE_HIGH = 400.0         # plus de 10 m au-dessus (ou rien dessous) : en l'air
 SPLINE_JUMP_END = 6000.0    # en l'air jusqu'au bout de la spline : saut qui passe une transition s'il fait < 150 m
 SPLINE_LIFT = {'position_paths': 0.0, 'ai_paths': 80.0}
+LIP_DIST = 400.0            # ~10 m : sous la route a moins de 10 m d'un vide (le long de la courbe) = bord d'une chute
 
 
 def _surface_under(road, ground, p):
@@ -4552,6 +5182,11 @@ def spline_height_issues(cp, road, ground):
     # traversent de 3 a 4 m, et un plafond au-dessus n'est pas la route)
     on_road = [road is not None and bool(road.heights(p[0], p[1])) for p in P]
     for i0, i1 in runs(lambda k: on_road[k] and d[k] is not None and d[k] < SPLINE_UNDER):
+        # bord d'une chute (route qui s'arrete juste apres / avant : rien dessous) : la courbe entre le point sur la
+        # route du haut et celui de la reception plonge un peu avant le bord (T901 Boo Lake : chute de 27 m, courbe
+        # 6 m sous le bout de la route du haut) ; le kart suit la route et tombe au bord, comme un saut
+        if any(not on_road[k] for k in range(n) if L[i0] - LIP_DIST <= L[k] <= L[i1] + LIP_DIST):
+            continue
         out['under'].append((i0, i1, -min(d[i0:i1 + 1]) / 39.37))
     for i0, i1 in runs(lambda k: d[k] is None or d[k] > SPLINE_HIGH):
         start, end = i0 == 0, i1 == n - 1
@@ -5015,10 +5650,25 @@ def _archive_case(pak, logical):
     return e.logical_name if e else logical
 
 
+def _scripted_missing(track, logical, data):
+    """Fichier _Art enregistre auquel il manque des entites animees / scriptees (CGameEntity, CEntity) de l'original."""
+    z = IgzFile(data)
+    orig = IgzFile(pak_tool.read_latest(ARCHIVES, logical, track_pak(track))[0])
+    want = {n for n, o in orig.root_objects() if orig.objects.get(o) in ('CGameEntity', 'CEntity')}
+    return bool(want - {n for n, _ in z.root_objects()})
+
+
 def install_plan(track):
     """{archive: {fichier: octets}} de tout ce que la piste installe (fichiers enregistres, ajouts, manifeste,
     menu). Rien n'est ecrit."""
     per_archive = defaultdict(dict)
+    moved = set(moved_away_logicals(track))
+    stripped = set(newmap_settings(track).get('strip_art') or [])
+    if minimap_outdated(track):
+        try:
+            generate_minimap(track)                     # ancienne mini-carte de Crash Cove / piste creee : a l'endroit
+        except Exception:  # noqa: BLE001 - parcours absent : l'ancienne image reste
+            traceback.print_exc()
     for logical in (race_file(track), ttr_file(track), collision_file(track), start_finish.design_file(track),
                     start_finish.main_map_file(track), powerup.powerup_file(track)) + tuple(art_files(track)) \
             + tuple(dict.fromkeys(moved_away_logicals(track) + [lighting_file(track)])) + tuple(minimap_logicals(track)):
@@ -5026,6 +5676,20 @@ def install_plan(track):
         if not os.path.exists(p):
             continue
         data = open(p, 'rb').read()
+        if logical in (race_file(track), start_finish.design_file(track)):
+            # cameras <nom>_camera abimees par une ancienne version (« Changer l'echelle », « Deplacer toute la
+            # map ») : pointeur de nom ecrase -> plantage du jeu en quittant la course
+            try:
+                data = start_finish.repair_cameras(data, pak_tool.read_latest(ARCHIVES, logical, track_pak(track))[0])[0]
+            except KeyError:
+                pass
+        if logical in moved:
+            data = sink_leftover_crates(logical, data)
+        if logical in stripped and _scripted_missing(track, logical, data):
+            # « Nouvelle map » d'une ancienne version : entites animees supprimees (plantage au chargement de la
+            # piste suivante) -> fichier refait (elles reviennent, descendues sous la carte)
+            write_art(track, logical, DecorFile(data))
+            data = open(p, 'rb').read()
         for arc in pak_tool.archives_with(ARCHIVES, logical, track_pak(track)):
             per_archive[arc][logical] = data
     # modeles importes : NOUVEAUX fichiers, ajoutes a l'archive de la piste (seulement s'ils sont utilises)
@@ -5079,6 +5743,14 @@ def install_plan(track):
     # survol d'introduction : cameras reecrites, dans les archives de survol de la piste
     for arc, files in flyby_install_files(track).items():
         per_archive[arc].update(files)
+    # piste creee : son icone en course vise sa vignette a elle, sa mini-carte part sous un nom a elle (le fichier au
+    # nom de la source garde son contenu d'origine)
+    ri_files, ri_entries, ri_drop = own_race_icon_files(track)
+    for arc in per_archive:
+        for lg in [x for x in per_archive[arc] if x.lower() in ri_drop]:
+            del per_archive[arc][lg]
+    per_archive[os.path.join(ARCHIVES, track_pak(track))].update(ri_files)
+    entries += [e for e in ri_entries if e not in entries]
     # ...et declares dans le manifeste de streaming, sinon le jeu ne les charge pas (invisibles)
     if entries:
         man = pkg_manifest.manifest_logical(track)
@@ -5097,44 +5769,108 @@ def install_plan(track):
 # Plusieurs pistes installees : des archives sont PARTAGEES (update / update2, chunkinfos pour les noms,
 # juicedomain_* pour les images de menu). Une archive est toujours remise a l'origine avant une installation : sans
 # precaution, installer Roo's Tubes effacait de ces archives ce que Crash Cove y avait mis (piste et nom d'origine
-# revenus). Chaque archive reecrite recoit donc aussi les fichiers des autres pistes installees.
+# revenus). Une archive partagee reecrite garde donc tout ce qui y est installe, sauf les fichiers de la piste
+# (re)installee ; les archives propres a la piste (la sienne, ses survols) sont entierement refaites. Les fichiers
+# gardes sont relus dans l'archive telle qu'installee : l'editeur et l'installateur (CTR Track Installer, autre dossier
+# de travail) ne s'effacent pas l'un l'autre.
+# Registre commun (a cote des archives) : pistes installees, par qui, et leurs fichiers par archive.
+APP_NAME = 'editor'                                     # 'installer' pour CTR Track Installer
+REGISTRY = 'ctr_installed_tracks.json'
+
+
 def installed_path():
     return os.path.join(OUT_DIR, 'installed_tracks.json')
 
 
+def registry_path():
+    return os.path.join(ARCHIVES, REGISTRY)
+
+
+def read_registry():
+    """{piste: {by, date, archives: {archive: [fichiers]}, ...}} (title, pack : installateur)."""
+    try:
+        return json.load(open(registry_path(), encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_registry(reg):
+    if reg:
+        json.dump(reg, open(registry_path(), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+    elif os.path.exists(registry_path()):
+        os.remove(registry_path())
+
+
+def set_registry_info(track, **info):
+    """Informations en plus sur une piste installee (installateur : titre de la map, pack d'origine)."""
+    reg = read_registry()
+    if track in reg:
+        reg[track].update(info)
+        _write_registry(reg)
+
+
 def installed_tracks():
-    """Pistes installees : celles memorisees, plus celles dont l'archive propre porte une installation (avant
-    l'existence de cette liste)."""
+    """Pistes installees : registre commun, liste de ce dossier de travail (avant le registre), et celles dont
+    l'archive propre porte une installation."""
     p = installed_path()
     out = set(json.load(open(p))) if os.path.exists(p) else set()
+    out |= set(read_registry())
     out |= {t for t in list_tracks() if os.path.exists(pak_tool.backup_path(os.path.join(ARCHIVES, track_pak(t))))}
     return out
 
 
-def _set_installed(track, on):
+def _set_installed(track, on, per_archive=None):
     cur = set(json.load(open(installed_path()))) if os.path.exists(installed_path()) else set()
     cur = (cur | {track}) if on else (cur - {track})
     os.makedirs(OUT_DIR, exist_ok=True)
     json.dump(sorted(cur), open(installed_path(), 'w'))
+    reg = read_registry()
+    if on:
+        old = reg.get(track, {})
+        reg[track] = {**{k: v for k, v in old.items() if k not in ('archives', 'by', 'date')},
+                      'by': APP_NAME, 'date': time.strftime('%Y-%m-%d %H:%M'),
+                      'archives': {os.path.basename(a): sorted(f) for a, f in (per_archive or {}).items() if f}}
+    else:
+        reg.pop(track, None)
+    _write_registry(reg)
 
 
-def _others_for(archives, track, report):
-    """{archive: {fichier: octets}} des AUTRES pistes installees, pour ces archives."""
-    out = defaultdict(dict)
-    for t in sorted(installed_tracks() - {track}):
+def own_archives(track):
+    """Archives propres a la piste (personne d'autre n'y installe) : la sienne et ses survols."""
+    return {os.path.join(ARCHIVES, track_pak(track))} | \
+        {os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)}
+
+
+def _others_for(archives, track, report, plan=None):
+    """{archive: {fichier: octets}} a garder dans ces archives quand `track` y est (re)installee ou retiree : tout ce
+    qui y est installe sauf ses fichiers (registre + plan d'installation) et ceux du menu (refaits a part)."""
+    if plan is None:
         try:
-            plan = install_plan(t)
-        except Exception as e:  # noqa: BLE001 - piste illisible : signalee, l'installation continue
-            report.append(f'{t} : fichiers non repris ({e})')
+            plan = install_plan(track)
+        except Exception:  # noqa: BLE001 - rien d'enregistre : ses fichiers sont ceux du registre
+            plan = {}
+    mine_reg = read_registry().get(track, {}).get('archives', {})
+    # menu refait par custom_category.extra_files, sauf les images propres modifiees des pistes creees (gardees,
+    # comme custom_category._apply)
+    edited = {menu_assets.own_image_file(t['id'], k).lower() for t in (custom_category.read_state(ARCHIVES) or {}).get('tracks', [])
+              for k in menu_assets.OWN_IMAGES}
+    menu = {k.lower() for k in custom_category._ours(ARCHIVES)} - edited
+    own = {os.path.normcase(a) for a in own_archives(track)}
+    out = defaultdict(dict)
+    for arc in archives:
+        if os.path.normcase(arc) in own:
             continue
-        for arc in archives:
-            if plan.get(arc):
-                out[arc].update(plan[arc])
-                report.append(f'{os.path.basename(arc)} : {len(plan[arc])} fichier(s) de {t} gardé(s)')
+        mine = {n.lower() for n in mine_reg.get(os.path.basename(arc), [])} | {n.lower() for n in plan.get(arc, {})}
+        keep = {n: d for n, d in custom_category._installed_files(arc).items() if n.lower() not in mine | menu}
+        if keep:
+            out[arc] = keep
+            report.append(f'{os.path.basename(arc)} : {len(keep)} fichier(s) d\'autres pistes gardé(s)')
     return out
 
 
 def _rewrite(arc, reps):
+    # categorie « Custom » du menu (custom_category.py), si elle est active : gardee a chaque reecriture d'update2
+    reps = {**custom_category.extra_files(ARCHIVES, arc), **reps}
     if os.path.exists(pak_tool.backup_path(arc)):
         pak_tool.uninstall(arc)
     if reps:
@@ -5146,14 +5882,28 @@ def install_track(track):
     per_archive = install_plan(track)
     if not per_archive:
         raise RuntimeError('rien a installer : enregistrer d\'abord')
-    kept = []
+    # diagnostic : « install_skip » (motifs, ctr_editor_config.json) = fichiers NON installes (ceux du jeu restent)
+    skip = [re.compile(p, re.I) for p in (load_config().get('install_skip') or [])]
+    skipped = []
+    for arc in list(per_archive):
+        for lg in [x for x in per_archive[arc] if any(r.search(x) for r in skip)]:
+            del per_archive[arc][lg]
+            skipped.append(lg)
+    kept = [f'DIAGNOSTIC : {len(skipped)} fichier(s) non installé(s) ({", ".join(sorted({os.path.basename(s) for s in skipped})[:6])})'] \
+        if skipped else []
+    # diagnostic : « install_override » {motif: fichier} = version de test installee a la place
+    for pat, src in (load_config().get('install_override') or {}).items():
+        for arc in per_archive:
+            for lg in [x for x in per_archive[arc] if re.search(pat, x, re.I)]:
+                per_archive[arc][lg] = open(src, 'rb').read()
+                kept.append(f'DIAGNOSTIC : {os.path.basename(lg)} remplacé par {os.path.basename(src)}')
     progress.step('autres pistes installées', 0.03)
     # archives de menu modifiees par une installation precedente et plus concernees : remises a l'origine (avec les
     # fichiers des autres pistes qui s'y trouvaient)
     # (idem pour les archives de survol quand les plans d'origine sont revenus)
     stale = [a for a in menu_track_archives(track) + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)]
              if a not in per_archive and os.path.exists(pak_tool.backup_path(a))]
-    others = _others_for(list(per_archive) + stale, track, kept)
+    others = _others_for(list(per_archive) + stale, track, kept, plan=per_archive)
     for arc in stale:
         _rewrite(arc, others.get(arc, {}))
     video = set_menu_video(track, hide_menu_video(track))
@@ -5164,10 +5914,22 @@ def install_track(track):
         _rewrite(arc, {**others.get(arc, {}), **reps})          # la piste installee l'emporte sur un meme fichier
         done.append(os.path.basename(arc))
         files.update(os.path.basename(k) for k in reps)
-    _set_installed(track, True)
+    _set_installed(track, True, per_archive)
     if video:
         files.add(video)
     return {'installed_in': done, 'files': sorted(files), 'kept': kept}
+
+
+def restore_game_all():
+    """Retour au jeu d'origine (game_restore.py) : tout ce qui a ete installe ou cree est retire ; la liste locale
+    des pistes installees est videe. -> {report}."""
+    import game_restore
+    _release_archives()
+    report = game_restore.restore_game(ARCHIVES, progress=lambda f, t: progress.step(t, f))
+    if os.path.exists(installed_path()):
+        os.remove(installed_path())
+    clear_caches()
+    return {'report': report}
 
 
 def menu_track_archives(track):
@@ -5183,14 +5945,110 @@ def uninstall_track(track):
     arcs = [os.path.join(ARCHIVES, n) for n in pak_tool.UPDATE_ARCHIVES + (track_pak(track),)] + menu_track_archives(track) \
         + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)]
     arcs = [a for a in arcs if os.path.exists(pak_tool.backup_path(a))]
+    others = _others_for(arcs, track, kept)                 # avant de l'oublier : ses fichiers sont dans le registre
     _set_installed(track, False)
-    others = _others_for(arcs, track, kept)
     for arc in arcs:
         _rewrite(arc, others.get(arc, {}))
         done.append(os.path.basename(arc))
     if set_menu_video(track, False):
         done.append(os.path.basename(menu_video(track)))
     return {'restored': done, 'kept': kept}
+
+
+# -- onglet « Menu » : categories du menu du jeu et nouvelles pistes (custom_category.py, track_clone.py) ----------
+NEW_TRACK_SOURCE = 'T111_Crash_Cove'
+
+
+def _zone_display(zone, lang, created):
+    """Nom affiche d'une zone : piste creee -> son nom ; piste du jeu -> son .lng (version installee)."""
+    t = created.get(zone.lower())
+    if t:
+        return t.get('display') or t['id']
+    tid = zone.lower().rsplit('/', 1)[-1]
+    logical = f'maps/octane/{tid}/{tid}_zoneinfo_{lang}.lng'
+    for pak in pak_tool.UPDATE_ARCHIVES + ('chunkinfos.pak', tid + '.pak'):
+        p = os.path.join(ARCHIVES, pak)
+        if not os.path.exists(p):
+            continue
+        a, idx, lock = pak_tool.cached_archive(p)
+        e = idx.get(logical)
+        if e is not None:
+            with lock:
+                return menu_assets.read_name(a.read(e))
+    return tid
+
+
+def menu_layout_info():
+    """GET /api/menu_layout : {groups: [{id, key, title, game_title, levels: [{zone, name, track}]}], tracks}."""
+    st = custom_category.read_state(ARCHIVES) or {}
+    lang = custom_category.UI_LANG.get(settings().get('lang') or 'en', 'en')
+    titles = custom_category.game_titles(ARCHIVES, lang)
+    created = {track_clone.zone_name(t['id']): t for t in st.get('tracks', [])}
+    groups = []
+    for g in custom_category.current_layout(ARCHIVES, st):
+        groups.append({'id': g.get('id'), 'key': g.get('key'), 'title': g.get('title'),
+                       'game_title': titles.get(g['id']) if g.get('id') else None,
+                       'levels': [{'zone': lv, 'name': _zone_display(lv, lang, created),
+                                   'track': created[lv.lower()]['id'] if lv.lower() in created else None}
+                                  for lv in g['levels']]})
+    return {'groups': groups, 'tracks': st.get('tracks', []), 'source': NEW_TRACK_SOURCE}
+
+
+def _release_archives():
+    """Ferme les archives ouvertes par le serveur (Windows refuse de remplacer / supprimer un fichier ouvert)."""
+    with pak_tool._cache_lock:
+        for hit in pak_tool._cache.values():
+            hit[1].f.close()
+    for hit in pak_tool._orig_cache.values():
+        hit[1].f.close()
+    clear_caches()
+
+
+def menu_layout_save(req):
+    progress.step('menu du jeu (update2.pak)', 0.1)
+    _release_archives()
+    custom_category.set_layout(ARCHIVES, req['groups'])
+    clear_caches()
+    return menu_layout_info()
+
+
+def menu_track_create(req):
+    """Nouvelle piste : copie de Crash Cove (d'origine) renommee, rangee dans le groupe choisi, puis videe comme
+    « Nouvelle map » (sol, decor, decor anime, effets, lumieres, sons, occultation) et installee : prete pour
+    l'import d'une map."""
+    name = (req.get('name') or '').strip() or 'Custom Track'
+    with progress.span(0.0, 0.6, 'copie de Crash Cove (≈ 360 Mo)'):
+        new, written, _ = track_clone.create(ARCHIVES, NEW_TRACK_SOURCE, display=name,
+                                             progress=lambda f: progress.step(None, f))
+    with progress.span(0.6, 0.75, 'enregistrement dans le menu du jeu'):
+        _release_archives()
+        custom_category.add_track(ARCHIVES, new, NEW_TRACK_SOURCE, name, written, req.get('group'))
+        clear_caches()
+    report = [f'{new} : {", ".join(written)}']
+    if req.get('blank', True):
+        reset_track(new, 'all')                         # restes d'une ancienne piste de meme numero
+        with progress.span(0.75, 0.9, 'map vierge (nouvelle map)'):
+            r = with_history(new, 'nouvelle map', lambda: apply_newmap(
+                {'track': new, 'strip_ground': True, 'strip_art': art_files(new),
+                 'move_away': [g[0] for g in MOVE_AWAY_GROUPS]}))
+        report += [x for x in r.get('report', []) if x]
+        with progress.span(0.9, 1.0, 'installation dans le jeu'):
+            install_track(new)
+    return {'track': new, 'report': report, 'menu': menu_layout_info(), 'tracks': list_tracks()}
+
+
+def menu_track_delete(req):
+    """Supprime une piste CREEE (jamais une piste du jeu) : archives .pak, enregistrement, sauvegardes de l'editeur."""
+    track = req['track']
+    st = custom_category.read_state(ARCHIVES) or {}
+    if track not in {t['id'] for t in st.get('tracks', [])}:
+        raise ValueError(f'{track} : pas une piste créée par l\'éditeur')
+    removed = reset_track(track, 'all')['removed']           # lit encore l'archive de la piste : avant de l'effacer
+    _release_archives()
+    _set_installed(track, False)
+    custom_category.remove_track(ARCHIVES, track, delete_paks=True)
+    clear_caches()
+    return {'removed': removed, 'menu': menu_layout_info(), 'tracks': list_tracks()}
 
 
 def reset_track(track, what='all'):
@@ -5205,6 +6063,9 @@ def reset_track(track, what='all'):
     if what in ('all', 'decor') and os.path.exists(newmap_path(track)):
         os.remove(newmap_path(track))
         removed.append(os.path.basename(newmap_path(track)))
+    if what in ('all', 'decor') and os.path.exists(lights_path(track)):
+        os.remove(lights_path(track))
+        removed.append(os.path.basename(lights_path(track)))
     if what in ('all', 'decor'):
         for logical in custom_models(track):
             if os.path.exists(custom_model_path(logical)):
@@ -5277,8 +6138,12 @@ class Handler(BaseHTTPRequestHandler):
                         shutil.copyfileobj(f, self.wfile)
             elif u.path == '/api/tracks':
                 self._send(200, list_tracks())
+            elif u.path == '/api/menu_layout':                # onglet Menu : categories et pistes creees
+                self._send(200, menu_layout_info())
             elif u.path == '/api/track':
                 self._send(200, load_track(parse_qs(u.query)['name'][0]))
+            elif u.path == '/api/collision':                 # sol gris seul (relu apres un enregistrement)
+                self._send(200, load_collision(parse_qs(u.query)['track'][0]))
             elif u.path == '/api/decor':
                 self._send(200, load_decor(parse_qs(u.query)['name'][0]))
             elif u.path == '/api/decor_collision':
@@ -5299,6 +6164,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, library_catalog())
             elif u.path == '/api/route_objects':
                 self._send(200, route_objects(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/route_start':               # depart propose : objet Start / Finish, sinon damier
+                self._send(200, route_start_guess(parse_qs(u.query)['track'][0]))
             else:
                 self._send(404, {'error': 'introuvable'})
         except Exception as e:  # noqa: BLE001
@@ -5324,7 +6191,9 @@ class Handler(BaseHTTPRequestHandler):
                        '/api/place_library': "Ajout d'un objet de la bibliothèque", '/api/fix': 'Corrections',
                        '/api/walls_auto': 'Murs invisibles', '/api/wall_add': 'Mur invisible',
                        '/api/walls_zone': 'Murs invisibles autour de la sélection',
-                       '/api/set_invisible': 'Mur invisible'}
+                       '/api/set_invisible': 'Mur invisible', '/api/menu_layout_save': 'Menu du jeu',
+                       '/api/menu_track_create': 'Nouvelle piste',
+                       '/api/menu_track_delete': 'Suppression de la piste'}
 
     def do_POST(self):
         try:
@@ -5357,7 +6226,8 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/alpha_textures': lambda: alpha_texture_list(req['track']),
                       '/api/set_alpha_textures': lambda: with_history(req['track'], 'transparence des textures',
                                                                       lambda: set_alpha_textures(req['track'], req.get('wanted'))),
-                      '/api/minimap': lambda: (generate_minimap(req['track'], req['move']) if req.get('move')        # reglage fin : sans historique
+                      '/api/minimap': lambda: (generate_minimap(req['track'], req.get('move'), req.get('flip'))
+                                               if req.get('move') or req.get('flip')        # reglage fin / miroir : sans historique
                                                  else with_history(req['track'], 'mini-carte', lambda: generate_minimap(req['track']))),
                       '/api/folder_scan': lambda: folder_scan(req),
                       '/api/light_info': lambda: light_info(req['track']),
@@ -5367,6 +6237,7 @@ class Handler(BaseHTTPRequestHandler):
                                                              for s, l, ok in SURFACES]},
                       '/api/set_surface': lambda: with_history(req['track'], 'type de sol', lambda: set_surface(req)),
                       '/api/object_alpha': lambda: with_history(req['track'], 'transparence', lambda: set_object_alpha(req)),
+                      '/api/object_glow': lambda: with_history(req['track'], 'texture lumineuse', lambda: set_object_glow(req)),
                       '/api/menu_info': lambda: menu_info(req['track']),
                       '/api/apply_menu': lambda: with_history(req['track'], 'nom et images de menu', lambda: apply_menu(req)),
                       '/api/auto_falls': lambda: with_history(req['track'], 'chutes et réapparitions', lambda: auto_falls(req)),
@@ -5374,6 +6245,7 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/import_folder': lambda: with_history(req['track'], f"import du dossier {req.get('folder') or 'map'}",
                                                                  lambda: import_folder(req)),
                       '/api/export_obj': lambda: export_obj(req),
+                      '/api/scene_points': lambda: scene_points(req),
                       '/api/archives': lambda: choose_archives(req),
                       '/api/pick_folder': lambda: pick_folder(req),
                       '/api/flyby_auto': lambda: flyby_auto(req),
@@ -5388,7 +6260,10 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/walls_zone': lambda: with_history(req['track'], 'murs invisibles autour de la sélection',
                                                               lambda: walls_zone(req)),
                       '/api/set_invisible': lambda: with_history(req['track'], 'mur invisible' if req.get('invisible') else 'mur visible',
-                                                                 lambda: set_invisible(req))}
+                                                                 lambda: set_invisible(req)),
+                      '/api/menu_layout_save': lambda: menu_layout_save(req),
+                      '/api/menu_track_create': lambda: menu_track_create(req),
+                      '/api/menu_track_delete': lambda: menu_track_delete(req)}
             if self.path == '/api/settings':                 # rapide, sans verrou ni barre de progression
                 self._send(200, set_settings(req))
             elif self.path in routes:

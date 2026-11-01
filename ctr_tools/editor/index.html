@@ -6,7 +6,7 @@
 <title>CTR Track Editor</title>
 <style>
   :root { --bg:#14161a; --panel:#1d2026; --panel2:#262a32; --line:#2f3540; --text:#dde1e8; --muted:#8f97a5; --accent:#f2b134;
-          --blue:#3fa9ff; --ok:#5fcf80; --err:#ff6b6b; --new:#7ee08a; --side:340px; }
+          --blue:#3fa9ff; --ok:#5fcf80; --err:#ff6b6b; --new:#7ee08a; --side:340px; --details:340px; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, "Segoe UI", sans-serif; overflow:hidden; }
   #top { position:fixed; inset:0 0 auto 0; background:var(--panel); border-bottom:1px solid var(--line); z-index:5; }
@@ -16,11 +16,28 @@
   .tabs button { border:none; background:none; padding:5px 14px; border-radius:7px; }
   .tabs button.on { background:var(--accent); color:#111; font-weight:600; }
   .tabs button:disabled { opacity:.5; }
+  .tabs .tabslabel { align-self:center; padding:0 6px 0 8px; font-size:12px; white-space:nowrap; }
   .spacer { flex:1; }
   .group { display:inline-flex; gap:6px; align-items:center; }
-  #statusbar { display:flex; gap:8px; align-items:center; padding:5px 14px; border-top:1px solid var(--line); background:#181b20; font-size:13px; min-height:28px; }
-  #status { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
-  #status:hover { white-space:normal; }
+  #statusbar { position:fixed; left:0; right:0; bottom:0; height:var(--bot,30px); z-index:6; display:flex; gap:8px; align-items:center; padding:0 10px 0 14px;
+               border-top:1px solid var(--line); background:#181b20; font-size:13px; }
+  #status { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; cursor:pointer; }
+  #statusbar button { padding:2px 9px; font-size:12px; }
+  #statusbar button.on { border-color:var(--accent); color:var(--accent); }
+  .bpop { position:fixed; bottom:calc(var(--bot,30px) + 6px); right:calc(var(--details) + 12px); z-index:7; background:var(--panel); border:1px solid var(--line);
+          border-radius:10px; box-shadow:0 8px 24px #000b; padding:8px 10px; font-size:12.5px; }
+  .bpop[hidden] { display:none; }
+  .bphead { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .bphead b { flex:1; }
+  .bphead button { padding:0 7px; border:none; background:none; color:var(--muted); }
+  #histpanel { left:calc(var(--side) + 12px); width:min(720px, calc(100vw - var(--side) - var(--details) - 24px)); }
+  #histlist { max-height:45vh; overflow:auto; display:flex; flex-direction:column; gap:4px; }
+  #histlist .h { display:grid; grid-template-columns:58px 1fr; gap:8px; padding:3px 4px; border-bottom:1px solid #262a32; white-space:pre-wrap; word-break:break-word; }
+  #histlist .h time { color:var(--muted); font-family:ui-monospace, monospace; font-size:11.5px; }
+  #histlist .h.err { color:var(--err); } #histlist .h.ok { color:var(--ok); }
+  #help table { border-collapse:collapse; }
+  #help td { padding:3px 8px; vertical-align:top; }
+  #help td:first-child { color:var(--accent); white-space:nowrap; font-family:ui-monospace, monospace; font-size:12px; }
   select, button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:7px; padding:6px 11px; font:inherit; cursor:pointer; }
   button:hover:not(:disabled) { border-color:var(--accent); }
   button:disabled { cursor:default; opacity:.55; }
@@ -29,6 +46,38 @@
   button.danger:hover { border-color:var(--err); color:var(--err); }
   .iconbtn { padding:6px 9px; }
   #more { position:relative; }
+  #more[hidden] { display:none; }
+  #menubar { display:flex; gap:2px; align-items:center; }
+  #menubar > .mb { position:relative; }
+  #menubar > .mb > button { border:none; background:none; padding:5px 10px; border-radius:6px; }
+  #menubar > .mb > button:hover, #menubar > .mb.open > button { background:var(--panel2); }
+  .mdrop { position:absolute; left:0; top:calc(100% + 4px); min-width:250px; background:var(--panel); border:1px solid var(--line); border-radius:9px;
+           padding:5px; box-shadow:0 8px 24px #000b; z-index:30; display:flex; flex-direction:column; }
+  .mdrop .sub { top:-6px; left:calc(100% - 4px); }
+  .mi { position:relative; display:flex; gap:8px; align-items:center; padding:6px 10px; border-radius:6px; cursor:pointer; white-space:nowrap; user-select:none; }
+  .mi:hover { background:#2c313a; }
+  .mi.off { opacity:.4; cursor:default; }
+  .mi.off:hover { background:none; }
+  .mi .ck { width:14px; color:var(--accent); flex:none; }
+  .mi .mk { margin-left:auto; padding-left:18px; color:var(--muted); font-size:12px; }
+  .mi > .sub { display:none; }
+  .mi.subopen > .sub { display:flex; }
+  .msep { border-top:1px solid var(--line); margin:4px 2px; }
+  .mnote { color:var(--muted); font-size:11.5px; padding:4px 10px; white-space:normal; max-width:280px; }
+  #sidehead { display:flex; align-items:center; gap:8px; margin:-2px 0 10px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  #sidehead b { flex:1; }
+  #sidehead button { padding:2px 8px; }
+  #side.win details.sec > summary { display:none; }
+  #side.win details.sec { border:none; background:none; }
+  #side.win details.sec > .body { padding:0; }
+  #side[hidden] { display:none; }
+  #side.win details.sec:not(.shown) { display:none; }
+  .resizer { position:fixed; top:var(--top,44px); bottom:var(--bot,30px); width:7px; cursor:col-resize; z-index:3; }
+  .resizer:hover, .resizer.drag { background:#f2b13455; }
+  .resizer[hidden] { display:none; }
+  #sideresize { left:calc(var(--side) - 4px); }
+  #detresize { right:calc(var(--details) - 4px); }
+  body.resizing { cursor:col-resize; user-select:none; }
   #moremenu { position:absolute; right:0; top:calc(100% + 6px); min-width:260px; background:var(--panel); border:1px solid var(--line); border-radius:9px;
               padding:6px; box-shadow:0 8px 24px #000b; z-index:20; display:flex; flex-direction:column; gap:4px; }
   #moremenu[hidden] { display:none; }
@@ -37,7 +86,7 @@
   #moremenu .sep { border-top:1px solid var(--line); margin:3px 0; }
   #moremenu .lang { display:flex; gap:8px; align-items:center; padding:4px 11px; }
   #moremenu .lang select { flex:1; }
-  #prog { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); width:min(460px, calc(100vw - 32px)); z-index:20;
+  #prog { position:fixed; left:50%; bottom:calc(var(--bot,30px) + 12px); transform:translateX(-50%); width:min(460px, calc(100vw - 32px)); z-index:20;
           background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; box-shadow:0 4px 18px #0009; }
   #prog .phead { display:flex; justify-content:space-between; gap:8px; }
   #prog .pstep { color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -49,7 +98,7 @@
   #dctx .ctxi:hover { background:#2c313a; }
   #dctx .ctxi.off { opacity:.4; cursor:default; }
   #dctx .ctxi.off:hover { background:none; }
-  #side { position:fixed; top:var(--top,44px); bottom:0; left:0; width:var(--side); overflow:auto; background:var(--panel);
+  #side { position:fixed; top:var(--top,44px); bottom:var(--bot,30px); left:0; width:var(--side); overflow:auto; background:var(--panel);
           border-right:1px solid var(--line); padding:10px 12px 40px; z-index:1; }
   #side h3 { margin:12px 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
   .sec { border:1px solid var(--line); border-radius:10px; margin:0 0 10px; background:#1a1d22; }
@@ -85,10 +134,27 @@
   .links label { display:flex; gap:4px; align-items:center; white-space:nowrap; overflow:hidden; font-size:12px; }
   .tag { font-size:10px; padding:0 5px; border-radius:4px; background:#333; color:var(--muted); }
   .tag.new { background:#1f3d26; color:var(--new); }
-  #view { position:fixed; top:var(--top,44px); left:var(--side); right:0; bottom:0; }
-  #help { position:fixed; right:12px; bottom:10px; color:var(--muted); font-size:12px; background:#000a; padding:6px 28px 6px 10px; border-radius:8px; max-width:calc(100vw - var(--side) - 24px); }
-  #help button { position:absolute; right:4px; top:3px; border:none; background:none; padding:0 4px; color:var(--muted); }
-  #tourhud { position:fixed; left:calc(var(--side) + 12px); right:12px; bottom:12px; z-index:6; background:#000c; border:1px solid var(--line);
+  #details { position:fixed; top:var(--top,44px); bottom:var(--bot,30px); right:0; width:var(--details); overflow:auto; background:var(--panel);
+             border-left:1px solid var(--line); padding:10px 12px 40px; z-index:1; }
+  #details .dhead { font-weight:600; margin:0 0 8px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  #details h3 { margin:12px 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  #view { position:fixed; top:var(--top,44px); left:var(--side); right:var(--details); bottom:var(--bot,30px); }
+  #viewbar { position:fixed; top:calc(var(--top,44px) + 8px); left:calc(var(--side) + 8px); right:calc(var(--details) + 8px); z-index:3;
+             display:flex; flex-wrap:wrap; gap:6px; align-items:center; pointer-events:none; }
+  #viewbar > * { pointer-events:auto; }
+  #viewbar .tabs, #viewbar > button, #dispbtn { background:#1d2026e6; }
+  #viewbar .tabs button { padding:4px 10px; font-size:12.5px; }
+  #viewbar > button, #dispbtn { padding:5px 10px; font-size:12.5px; }
+  #viewbar kbd { font:11px ui-monospace, monospace; padding:0 4px; border:1px solid currentColor; border-radius:3px; opacity:.7; margin-left:2px; }
+  #gizmobar button.on { background:var(--blue); color:#111; }
+  #dispwrap { position:relative; }
+  #dispmenu { position:absolute; left:0; top:calc(100% + 6px); min-width:290px; background:var(--panel); border:1px solid var(--line); border-radius:9px;
+              padding:6px; box-shadow:0 8px 24px #000b; display:flex; flex-direction:column; gap:2px; }
+  #dispmenu[hidden], #dispmenu [hidden] { display:none; }
+  #dispmenu label { display:flex; gap:8px; align-items:center; padding:5px 8px; font-size:12.5px; border-radius:6px; cursor:pointer; }
+  #dispmenu label:hover { background:#2c313a; }
+  #dispmenu .cnt { color:var(--muted); font-size:11.5px; }
+  #tourhud { position:fixed; left:calc(var(--side) + 12px); right:calc(var(--details) + 12px); bottom:calc(var(--bot,30px) + 12px); z-index:6; background:#000c; border:1px solid var(--line);
              border-radius:10px; padding:8px 12px; display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; font-size:12.5px; }
   #tourhud[hidden] { display:none; }
   #tourhud .tinfo { font-family:ui-monospace, monospace; color:var(--text); }
@@ -97,8 +163,28 @@
   #tourwarn { flex-basis:100%; color:#ff8a5a; font-weight:600; }
   #tourwarn:empty { display:none; }
   #tourhud .tkeys { flex-basis:100%; color:var(--muted); font-size:11px; }
-  @media (max-width:760px) { #tourhud { left:12px; bottom:calc(48vh + 12px); } }
-  @media (max-width:760px) { #side { width:100%; height:48vh; top:auto; } #view { left:0; bottom:48vh; } #help { display:none; }
+  #menuPage { position:fixed; top:var(--top,44px); left:0; right:0; bottom:var(--bot,30px); overflow:auto; background:var(--bg); z-index:4; padding:16px; }
+  #menuPage[hidden] { display:none; }
+  #menuPage .mphead { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+  #menuPage .mphead h2 { margin:0 8px 0 0; font-size:17px; }
+  #menuPage .lead { max-width:900px; }
+  #menuPage .mpnew { display:flex; flex-wrap:wrap; gap:8px; align-items:center; background:var(--panel); border:1px solid var(--line);
+                     border-radius:10px; padding:10px 12px; margin-bottom:14px; }
+  #menuPage input[type=text] { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:7px; padding:6px 9px; font:inherit; }
+  #menuPage .mpgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:12px; align-items:start; }
+  #menuPage .mpcat { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; }
+  #menuPage .mpcat.empty { opacity:.75; border-style:dashed; }
+  #menuPage .mpcat .chead { display:flex; gap:6px; align-items:center; margin-bottom:8px; }
+  #menuPage .mpcat .chead input { flex:1; min-width:0; font-weight:600; }
+  #menuPage .lvl { display:flex; gap:6px; align-items:center; padding:4px 6px; border-radius:6px; background:#1a1d22; margin-bottom:4px; }
+  #menuPage .lvl .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #menuPage .lvl select { padding:3px 6px; font-size:12px; max-width:130px; }
+  #menuPage .lvl button, #menuPage .chead button { padding:3px 7px; font-size:12px; }
+  #menuPage .note { color:var(--muted); font-size:12px; }
+  @media (max-width:1100px) { :root { --side:300px; --details:260px; } }
+  @media (max-width:760px) { #tourhud { left:12px; right:12px; bottom:calc(48vh + 12px); } }
+  @media (max-width:760px) { #side { width:100%; height:48vh; top:auto; } #details { width:100%; top:auto; bottom:48vh; height:22vh; border-left:none;
+                             border-top:1px solid var(--line); } #view { left:0; right:0; bottom:70vh; } .resizer { display:none; }
                              #brand { display:none; } }
 </style>
 </head>
@@ -106,9 +192,11 @@
 <div id="top">
  <div id="bar">
   <span id="brand">🏁 CTR Track Editor</span>
+  <nav id="menubar"></nav>
   <div class="tabs" title="Mode d'édition">
     <button id="tabDecor" data-mode="decor" title="Ta map : importer, placer, nettoyer le décor">🏗 Décor</button>
     <button id="tabRace" data-mode="race" class="on" title="La course : parcours, IA, caisses, boosters">🏎 Course</button>
+    <button id="tabMenu" title="Menu du jeu : catégories, nouvelles pistes">🗂 Piste / catégorie</button>
   </div>
   <select id="mode" hidden><option value="race">Course</option><option value="decor">Décor</option></select>
   <select id="track" title="Piste modifiée (ta map remplace celle-ci dans le jeu)"></select>
@@ -122,14 +210,13 @@
     <button id="check" title="Contrôles avant installation (départ, sens, IA, caisses, boosters, fichiers)">✔ Vérifier</button>
     <button id="install" class="go" title="Copie ce qui est enregistré dans les archives du jeu (ferme shadPS4 avant)">🎮 Installer dans le jeu</button>
   </div>
-  <div id="more">
+  <div id="more" hidden>
     <button id="morebtn" class="iconbtn" title="Plus d'options">⋯</button>
     <div id="moremenu" hidden>
       <div class="lang">🌐 <select id="lang" title="Langue de l'éditeur">
         <option value="fr">Français</option><option value="en">English</option><option value="es">Español</option>
         <option value="it">Italiano</option><option value="de">Deutsch</option></select></div>
       <div class="sep"></div>
-      <label><input type="checkbox" id="wire"> Vue filaire de la collision</label>
       <label><input type="checkbox" id="showguide" checked> Afficher le guide « premiers pas »</label>
       <label><input type="checkbox" id="showhelp" checked> Afficher l'aide des raccourcis</label>
       <div class="sep"></div>
@@ -142,10 +229,14 @@
     </div>
   </div>
  </div>
- <div id="statusbar"><span>ℹ</span><span id="status">Chargement…</span></div>
 </div>
+<div id="statusbar"><span>ℹ</span><span id="status">Chargement…</span>
+ <button id="histbtn" title="Tous les messages depuis l'ouverture de l'éditeur">🕘 Historique</button>
+ <button id="helpbtn" title="Raccourcis clavier et souris">⌨ Raccourcis</button></div>
+<div id="histpanel" class="bpop" hidden><div class="bphead"><b>🕘 Historique des messages</b><button id="histclose" title="Fermer">×</button></div><div id="histlist"></div></div>
 <div id="prog" hidden><div class="phead"><b class="plabel"></b><span class="ptime"></span></div>
   <div class="pstep"></div><div class="pbar"><div class="pfill"></div></div></div>
+<div id="menuPage" hidden></div>
 <div id="tourhud" hidden>
   <b>🎥 Visite virtuelle</b>
   <button id="tplay" class="iconbtn" title="Lecture / pause (Espace)">⏸</button>
@@ -159,8 +250,9 @@
   <div id="tourwarn"></div>
   <div class="tkeys">Espace : pause · ← → : avancer / reculer de 20 m · ↑ ↓ : vitesse · glisser la souris : regarder autour · Échap : quitter</div>
 </div>
-<div id="side">
- <details id="guide" class="sec" open>
+<div id="side" class="win" hidden>
+ <div id="sidehead"><b id="sidetitle"></b><button id="sideclose" title="Fermer la fenêtre">×</button></div>
+ <details id="guide" class="sec" data-win="guide" open>
   <summary>🚀 Créer ta piste en 6 étapes</summary>
   <div class="body">
   <div id="gamedir"><span>🎮 Dossier du jeu<small id="gamedirpath">…</small></span><button id="gamedirbtn" title="Dossier « archives » du jeu installé pour shadPS4 (update.pak, t111_crash_cove.pak…)">📁 Choisir…</button></div>
@@ -174,9 +266,6 @@
   </ol></div>
  </details>
  <div id="raceSide">
-  <div class="seltitle">🎯 Sélection</div>
-  <div id="sel" class="card">Aucun point sélectionné. Clique sur un point d'une spline.</div>
-  <div id="tedit"></div>
   <details class="sec" open><summary>🏁 Parcours <span class="hint">tracé, IA, finitions</span></summary>
    <div class="body"><div class="stack">
     <button id="mkroute" class="primary" title="Tout le parcours déduit de la forme de la route (ta route importée)">Créer le parcours depuis la route…</button>
@@ -184,16 +273,15 @@
     <button id="mkfalls" title="Points de réapparition réguliers, plancher de chute sous la route, zones de chute dans les trous">Chutes et réapparitions…</button>
     <button id="mkminimap" title="Mini-carte de la course dessinée d'après le parcours enregistré">Générer la mini-carte</button>
     <button id="mkmenu" title="Nom de la piste dans les menus (par langue), fond, vignette, emblème et tracé du menu">Nom et images de la piste…</button>
-    <button id="tour" title="La caméra parcourt la ligne de course à hauteur de kart, pour repérer les problèmes avant d'installer">🎥 Visite virtuelle</button>
     <div class="btns" style="display:flex;gap:6px;flex-wrap:wrap"><button id="sfin2">Sélectionner la ligne d'arrivée</button><button id="sgall2">Sélectionner la grille de départ</button></div>
    </div></div></details>
-  <details class="sec" open id="secitems"><summary>📦 Objets sur la piste <span class="hint">caisses, TNT, fruits</span></summary>
+  <details class="sec" open id="secitems" data-win="items"><summary>📦 Objets sur la piste <span class="hint">caisses, TNT, fruits</span></summary>
    <div class="body"><div id="crates" class="card"></div></div></details>
-  <details class="sec" open><summary>⚡ Boosters <span class="hint">plaques turbo</span></summary>
+  <details class="sec" open data-win="boosts"><summary>⚡ Boosters <span class="hint">plaques turbo</span></summary>
    <div class="body"><div id="boosts" class="card"></div></div></details>
-  <details class="sec" id="secflyby"><summary>🎬 Survol d'introduction <span class="hint">caméras avant la course</span></summary>
+  <details class="sec" id="secflyby" data-win="flyby"><summary>🎬 Survol d'introduction <span class="hint">caméras avant la course</span></summary>
    <div class="body"><div id="flyby" class="card"></div></div></details>
-  <details class="sec adv"><summary>🔧 Avancé : transitions et splines</summary>
+  <details class="sec adv" data-win="advrace"><summary>🔧 Avancé : transitions et splines</summary>
    <div class="body">
     <h3>Transitions (clic : éditer les liens)</h3><div id="transitions"></div>
     <h3>Splines de départ (tour 1)</h3><div id="starts" class="card" style="color:var(--muted)"></div>
@@ -202,8 +290,6 @@
    </div></details>
  </div>
  <div id="decorSide" hidden>
-  <div class="seltitle">🎯 Sélection <span style="text-transform:none;letter-spacing:0">— clic droit sur un objet : sol, collision, texture…</span></div>
-  <div id="dsel" class="card">Aucun objet sélectionné. Clique sur un objet du décor.</div>
   <details class="sec" open><summary>🧹 Nouvelle map <span class="hint">à faire en premier</span></summary>
    <div class="body"><p class="lead">Retire l'ancienne piste (sol, décor, effets) et, si besoin, ce que tu as déjà ajouté, pour repartir d'une map vide.</p>
     <div class="stack"><button id="dnewmap" class="primary" title="Retirer l'ancien sol, l'ancien décor et/ou tes ajouts (imports, objets de la bibliothèque, copies)">Nouvelle map… (vider la map)</button></div></div></details>
@@ -219,30 +305,85 @@
     <div class="stack"><button id="dwallauto" class="primary" title="Murs le long des bords de la route, là où il y a du vide (et hors route si tu veux)">Générer le long de la route…</button>
      <button id="dwallzone" title="Clique (Maj+clic : plusieurs) les parties de la map dans la vue 3D, puis ce bouton : murs le long de leurs bords, jamais sur le parcours">Murs autour de la sélection…</button>
      <button id="dwalladd" title="Mur droit de 20 m au centre de la vue, face à la caméra">Ajouter un mur au centre de la vue</button>
-     <button id="dwallsel" title="Pour les déplacer ou les supprimer (Suppr) ensemble">Sélectionner tous les murs invisibles</button></div>
-    <label style="display:flex;gap:6px;align-items:center;margin:6px 0 0"><input type="checkbox" id="dwallvis" checked> Afficher les murs invisibles</label></div></details>
+     <button id="dwallsel" title="Pour les déplacer ou les supprimer (Suppr) ensemble">Sélectionner tous les murs invisibles</button></div></div></details>
+  <details class="sec" open><summary>💡 Lumières <span class="hint">lampadaires, torches, fenêtres…</span></summary>
+   <div class="body"><p class="lead">Lumières du jeu en temps réel : elles éclairent le décor autour d'elles. Clic droit sur un lampadaire › « Ajouter une lumière » (ou sur tous les objets du même modèle d'un coup). Réglages repris des pistes du jeu (Oxide Station, Cortex Castle…).</p>
+    <div class="stack"><button id="dltadd" title="Lumière au centre de la vue">Ajouter une lumière au centre de la vue</button>
+     <button id="dltall" title="Pour les régler ou les supprimer">Lumière suivante</button>
+     <button id="dltclear" class="danger" title="Retire toutes les lumières ajoutées (annulable, Ctrl+Z)">Supprimer toutes les lumières</button></div></div></details>
   <details class="sec" open><summary>🛠 Finitions de la map</summary>
    <div class="body"><div class="stack">
-    <button id="dmovez" title="Monte ou descend tous les objets du décor d'un coup (la collision suit à l'enregistrement)">↕ Déplacer toute la map en hauteur…</button>
+    <button id="dmovez" title="Déplace toute la map (décor, collision, parcours, objets) en X, Y, Z ; les karts doivent rester dans l'emprise de la piste d'origine">✥ Déplacer toute la map…</button>
+    <button id="dscale" title="Agrandit ou rétrécit toute la map autour de la ligne d'arrivée : décor, collision, parcours, splines IA, grille, caisses, boosters, réapparitions…">⤢ Changer l'échelle de toute la map…</button>
     <button id="dlight" title="Collision simplifiée, textures en 512, nettoyage des modèles inutilisés">Alléger la map…</button>
     <button id="dalpha" title="Découpe alpha (feuillages, grillages) des textures importées">Transparence des textures…</button>
     <button id="dambiance" title="Jour, soir ou nuit : soleil, brouillard, couleurs de l'image">🌅 Ambiance (jour, soir, nuit)…</button></div></div></details>
-  <details class="sec"><summary>👁 Affichage</summary>
-   <div class="body">
-    <label style="display:flex;gap:6px;align-items:center;margin:4px 0"><input type="checkbox" id="dtextures" checked> Afficher les textures du jeu
-      <span style="color:var(--muted);font-size:11px">(décoché : une couleur par fichier)</span></label>
-    <label style="display:flex;gap:6px;align-items:center;margin:4px 0"><input type="checkbox" id="dcolvis" checked> Afficher la collision du sol (gris)</label>
-    <button id="dtour" style="margin-top:6px" title="La caméra parcourt la ligne de course à hauteur de kart, pour repérer les problèmes avant d'installer">🎥 Visite virtuelle</button></div></details>
-  <details class="sec"><summary>🔍 Rechercher un objet</summary>
+  <details class="sec" data-win="search"><summary>🔍 Rechercher un objet</summary>
    <div class="body"><input id="dsearch" placeholder="nom ou modèle…" style="width:100%;background:#262a32;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px">
     <div id="dresults" style="margin-top:6px"></div></div></details>
-  <details class="sec adv"><summary>🔧 Avancé : fichiers de décor, Blender</summary>
+  <details class="sec adv" data-win="files"><summary>🔧 Avancé : fichiers de décor, Blender</summary>
    <div class="body"><div class="stack" style="margin-bottom:8px"><button id="dexport">Exporter pour Blender…</button></div>
     <h3>Fichiers de décor</h3><div id="dfiles"></div></div></details>
  </div>
 </div>
+<div id="sideresize" class="resizer" title="Glisser pour changer la largeur" hidden></div>
+<div id="detresize" class="resizer" title="Glisser pour changer la largeur"></div>
+<div id="details">
+ <div class="dhead">🎯 Sélection</div>
+ <div id="raceDetails">
+  <div id="sel" class="card">Aucun point sélectionné. Clique sur un point d'une spline.</div>
+  <div id="tedit"></div>
+ </div>
+ <div id="decorDetails" hidden>
+  <p class="lead">Clic droit sur un objet : sol, collision, texture…</p>
+  <div id="dsel" class="card">Aucun objet sélectionné. Clique sur un objet du décor.</div>
+ </div>
+</div>
 <div id="view"></div>
-<div id="help"><button id="helpclose" title="Masquer">×</button>Clic : sélectionner · flèches : déplacer · molette/clic droit : caméra · Suppr : supprimer · Inser : ajouter/dupliquer · W déplacer, E tourner, R échelle · Ctrl+Z / Ctrl+Y</div>
+<div id="viewbar">
+ <div class="tabs" id="gizmobar" title="Poignées de l'objet sélectionné">
+  <button data-gmode="translate" title="Déplacer l'objet sélectionné (W)">✥ Déplacer <kbd>W</kbd></button>
+  <button data-gmode="rotate" title="Tourner l'objet sélectionné (E)">⟳ Tourner <kbd>E</kbd></button>
+  <button data-gmode="scale" title="Changer la taille de l'objet sélectionné (R)">⤢ Taille <kbd>R</kbd></button>
+ </div>
+ <div class="tabs" id="movemode" title="Ce que bougent les flèches du clavier">
+  <span class="tabslabel">⌨ Flèches du clavier :</span>
+  <button data-movemode="camera" title="Flèches / Page préc.-suiv. du clavier : déplacer la vue (les poignées restent utilisables à la souris)">🎥 Caméra</button>
+  <button data-movemode="objects" title="Flèches / Page préc.-suiv. du clavier : déplacer l'objet sélectionné (Maj : x10)">✥ Objets</button>
+ </div>
+ <div id="dispwrap">
+  <button id="dispbtn" title="Ce qui est affiché dans la vue 3D">👁 Affichage ▾</button>
+  <div id="dispmenu" hidden>
+   <div data-only="race">
+    <label title="Boîtes rouges : un kart qui y entre réapparaît. Clique une zone pour la déplacer (W), la redimensionner (R) ou la supprimer (Suppr)">
+     <input type="checkbox" id="fzvis" checked> Voir les zones de chute <span id="fzcount" class="cnt"></span></label>
+    <label title="Disques turquoise (flèche = sens du kart à la réapparition) ; en jaune : ceux de la zone de chute sélectionnée">
+     <input type="checkbox" id="rpvis" checked> Voir les points de réapparition <span id="rpcount" class="cnt"></span></label>
+   </div>
+   <div data-only="decor" hidden>
+    <label><input type="checkbox" id="dtextures" checked> Afficher les textures du jeu <span class="cnt">(décoché : une couleur par fichier)</span></label>
+    <label><input type="checkbox" id="dcolvis" checked> Afficher la collision du sol (gris)</label>
+    <label><input type="checkbox" id="dwallvis" checked> Afficher les murs invisibles</label>
+    <label><input type="checkbox" id="dltvis" checked> Afficher les lumières (<span id="dltcount">0</span>)</label>
+   </div>
+   <label><input type="checkbox" id="wire"> Vue filaire de la collision</label>
+  </div>
+ </div>
+ <button id="tour" title="La caméra parcourt la ligne de course à hauteur de kart, pour repérer les problèmes avant d'installer">🎥 Visite virtuelle</button>
+ <button id="refresh3d" title="Relit la piste et le décor enregistrés (modèles, textures, collision), sans recharger la page ; la caméra ne bouge pas">⟳ Actualiser la vue</button>
+</div>
+<div id="help" class="bpop" hidden><div class="bphead"><b>⌨ Raccourcis</b><button id="helpclose" title="Masquer">×</button></div>
+ <table>
+  <tr><td>Clic</td><td>sélectionner (Maj+clic : plusieurs, en Décor)</td></tr>
+  <tr><td>Clic droit</td><td>menu de l'objet (Décor) · maintenu : tourner la vue</td></tr>
+  <tr><td>Molette</td><td>zoom vers le curseur</td></tr>
+  <tr><td>Clic droit maintenu + ZQSD</td><td>voler (A / E : descendre / monter, Maj : vite)</td></tr>
+  <tr><td>Flèches · Page préc. / suiv.</td><td>vue ou objet, selon « Flèches du clavier »</td></tr>
+  <tr><td>W · E · R</td><td>déplacer · tourner · taille</td></tr>
+  <tr><td>Suppr · Inser</td><td>supprimer · ajouter ou dupliquer</td></tr>
+  <tr><td>Échap</td><td>tout désélectionner</td></tr>
+  <tr><td>Ctrl+Z · Ctrl+Y</td><td>annuler · rétablir</td></tr>
+ </table></div>
 
 <script src="/i18n.js"></script>
 <script type="importmap">
@@ -256,7 +397,28 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const status = (t, kind) => { $('status').textContent = t; $('status').style.color = kind === 'err' ? 'var(--err)' : kind === 'ok' ? 'var(--ok)' : ''; };
+// barre d'etat (en bas) : dernier message ; tous les messages dans l'historique (clic sur le message ou 🕘)
+const statusLog = [];
+const status = (t, kind) => {
+  $('status').textContent = t; $('status').style.color = kind === 'err' ? 'var(--err)' : kind === 'ok' ? 'var(--ok)' : '';
+  const last = statusLog[statusLog.length - 1];
+  if (last && last.t === String(t)) last.at = new Date();
+  else { statusLog.push({ t: String(t), kind, at: new Date() }); if (statusLog.length > 200) statusLog.shift(); }
+  if (!$('histpanel').hidden) renderHistory();
+};
+function renderHistory() {
+  $('histlist').innerHTML = statusLog.slice().reverse().map(h => `<div class="h ${h.kind || ''}"><time>${h.at.toLocaleTimeString().slice(0, 8)}</time><span>${esc(h.t)}</span></div>`).join('')
+    || '<div class="h"><time></time><span>Aucun message.</span></div>';
+}
+function toggleHistory(show) {
+  $('histpanel').hidden = !(show ?? $('histpanel').hidden);
+  $('histbtn').classList.toggle('on', !$('histpanel').hidden);
+  if (!$('histpanel').hidden) renderHistory();
+}
+$('status').title = 'Cliquer pour voir tous les messages';
+$('status').onclick = () => toggleHistory();
+$('histbtn').onclick = () => toggleHistory();
+$('histclose').onclick = () => toggleHistory(false);
 const COLORS = { position_paths: 0xf2b134, ai_paths: 0x3fb5e0, shortcut: 0xe05ab4, new: 0x7ee08a };
 const hex = c => '#' + c.toString(16).padStart(6, '0');
 const LIST_KEYS = [['previous_ai', 'IA précédentes', 'ai_paths'], ['next_ai', 'IA suivantes', 'ai_paths'],
@@ -274,10 +436,135 @@ camera.up.set(0, 0, 1);
 scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x303030, 1.0));
 const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(1, -0.6, 2); scene.add(sun);
 const orbit = new OrbitControls(camera, renderer.domElement);
+// Camera plus libre (OrbitControls brut : la molette ralentissait a l'infini vers un point fixe, la rotation se
+// faisait autour de ce point meme loin de ce qu'on regarde) :
+//  * molette vers le point sous la souris, et on traverse le point vise au lieu d'y rester colle ;
+//  * rotation autour de la profondeur de ce qui est au centre de la vue (point vise replace sur l'axe de visee,
+//    sans saut d'image) ;
+//  * vol : clic droit maintenu + ZQSD / WASD (touches physiques), A / E (Q / E) descendre / monter, Maj : x4.
+orbit.zoomToCursor = true;
+orbit.zoomSpeed = 1.6;
+const DOLLY_MIN = 400;                                    // pouces (~10 m) : en deca, le point vise avance
+renderer.domElement.addEventListener('wheel', e => {
+  if (!orbit.enabled || e.deltaY >= 0) return;
+  const dir = orbit.target.clone().sub(camera.position), d = dir.length();
+  if (d < DOLLY_MIN) { orbit.target.addScaledVector(dir.normalize(), DOLLY_MIN); orbit.update(); }
+}, { passive: true });
+const pivotRay = new THREE.Raycaster();
+function retargetPivot() {
+  // rotation : le point vise passe a la distance de ce qui est au centre de l'ecran (collision, sinon sol du point vise)
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+  pivotRay.set(camera.position, fwd);
+  let dist = null;
+  if (colMesh) dist = pivotRay.intersectObject(colMesh, false)[0]?.distance ?? null;
+  if (dist == null && Math.abs(fwd.z) > 1e-3) {
+    const t = (orbit.target.z - camera.position.z) / fwd.z;
+    if (t > 0) dist = t;
+  }
+  if (dist == null || dist < 50) return;
+  orbit.target.copy(camera.position).addScaledVector(fwd, Math.min(dist, 2e5));
+  orbit.update();
+}
+// pas sur une poignee de deplacement : le pivot deplace avant le clic des poignees les rendait inattrapables
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button !== 0 || !orbit.enabled || tour || overGizmo(e)) return;
+  retargetPivot();
+}, true);
+function overGizmo(e) {
+  if (!gizmo.object || !gizmo.enabled) return false;
+  const r = renderer.domElement.getBoundingClientRect();
+  gizmo.pointerHover({ x: (e.clientX - r.left) / r.width * 2 - 1, y: -(e.clientY - r.top) / r.height * 2 + 1, button: -1 });
+  return gizmo.axis !== null;
+}
+const flyKeys = new Set();
+let flyRight = false, flyLast = 0;
+const FLY_CODES = { KeyW: [0, 1, 0], KeyS: [0, -1, 0], KeyA: [-1, 0, 0], KeyD: [1, 0, 0], KeyQ: [0, 0, -1], KeyE: [0, 0, 1] };
+// flèches / Page préc.-suiv. : mode « Caméra » -> la vue (panView), mode « Objets » -> la sélection (nudgeSelection)
+const ARROW_CODES = { ArrowUp: [0, 1, 0], ArrowDown: [0, -1, 0], ArrowLeft: [-1, 0, 0], ArrowRight: [1, 0, 0], PageUp: [0, 0, 1], PageDown: [0, 0, -1] };
+let moveMode = 'objects';
+try { if (localStorage.getItem('ctrMoveMode') === 'camera') moveMode = 'camera'; } catch {}
+function setMoveMode(m) {
+  moveMode = m;
+  try { localStorage.setItem('ctrMoveMode', m); } catch {}
+  document.querySelectorAll('[data-movemode]').forEach(b => b.classList.toggle('on', b.dataset.movemode === m));
+  // les poignees restent actives dans les deux modes (en mode Camera, elles etaient coupees : « je n'arrive pas a
+  // cliquer sur les fleches de deplacement ») ; seul le clavier change de role
+  flyKeys.clear();
+}
+const typing = e => /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) || e.target.isContentEditable;
+renderer.domElement.addEventListener('pointerdown', e => { if (e.button === 2) flyRight = true; });
+addEventListener('pointerup', e => { if (e.button === 2) { flyRight = false; flyKeys.clear(); } });
+addEventListener('blur', () => { flyRight = false; flyKeys.clear(); });
+addEventListener('keydown', e => {                         // flèches : vue (Caméra) ou objet sélectionné (Objets)
+  if (!(e.code in ARROW_CODES) || tour || menuOpen || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (moveMode === 'camera') panView(ARROW_CODES[e.code], e.shiftKey); else nudgeSelection(ARROW_CODES[e.code], e.shiftKey);
+  e.preventDefault(); e.stopImmediatePropagation();
+}, true);
+addEventListener('keydown', e => {                         // avant les raccourcis de l'editeur (W/E/R du gizmo...)
+  if (!flyRight || tour || !(e.code in FLY_CODES || e.key === 'Shift')) return;
+  if (e.code in FLY_CODES) flyKeys.add(e.code);
+  ctxDown = null;                                         // relacher le clic droit n'ouvre pas le menu du decor
+  e.preventDefault(); e.stopImmediatePropagation();
+}, true);
+addEventListener('keyup', e => { flyKeys.delete(e.code); });
+function flyTick(t) {
+  const dt = Math.min(0.1, (t - flyLast) / 1000); flyLast = t;
+  if (!flyRight || !flyKeys.size || !orbit.enabled || tour) return;
+  const { flat, right } = viewAxes();
+  const v = new THREE.Vector3();
+  for (const c of flyKeys) {
+    const [x, y, z] = FLY_CODES[c];
+    v.addScaledVector(right, x).addScaledVector(flat, y).z += z;
+  }
+  if (!v.lengthSq()) return;
+  // vitesse selon la distance au point vise (lent de pres, rapide de haut), Maj : x4
+  const speed = Math.max(400, camera.position.distanceTo(orbit.target) * 0.5) * (flyShift ? 4 : 1);
+  v.normalize().multiplyScalar(speed * dt);
+  camera.position.add(v); orbit.target.add(v); orbit.update();
+}
+function viewAxes() {
+  // avant / droite de la vue, a plat (vue de dessus : d'apres l'azimut)
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
+  const flat = new THREE.Vector3(fwd.x, fwd.y, 0);
+  if (flat.lengthSq() < 1e-6) flat.set(-Math.sin(orbit.getAzimuthalAngle()), Math.cos(orbit.getAzimuthalAngle()), 0);
+  flat.normalize();
+  return { flat, right: new THREE.Vector3(flat.y, -flat.x, 0) };
+}
+function panView([x, y, z], big) {
+  // un pas par appui (la repetition du clavier fait le reste) : 5 % de la distance au point vise, Maj : x4
+  if (!orbit.enabled) return;
+  const { flat, right } = viewAxes();
+  const v = new THREE.Vector3().addScaledVector(right, x).addScaledVector(flat, y);
+  v.z += z;
+  v.normalize().multiplyScalar(Math.max(200, camera.position.distanceTo(orbit.target) * 0.05) * (big ? 4 : 1));
+  camera.position.add(v); orbit.target.add(v); orbit.update();
+}
+const NUDGE = 100;                                       // pouces (~2,5 m) par appui, Maj : x10
+function nudgeSelection([x, y, z], big) {
+  // objet tenu par le gizmo : deplace le long de l'axe du monde le plus proche de la direction de la fleche
+  // (vue tournee), comme un glisser du gizmo (objectChange : memes mises a jour, une etape d'annulation)
+  const o = gizmo.object;
+  if (!o || gizmo.dragging) { status('Mode Objets : sélectionne d\'abord un objet (flèches = déplacer la sélection)'); return; }
+  const { flat, right } = viewAxes();
+  const d = new THREE.Vector3().addScaledVector(right, x).addScaledVector(flat, y);
+  const step = NUDGE * (big ? 10 : 1), v = new THREE.Vector3();
+  if (z) v.z = z * step;
+  else if (Math.abs(d.x) >= Math.abs(d.y)) v.x = Math.sign(d.x) * step;
+  else v.y = Math.sign(d.y) * step;
+  if ((v.x && !gizmo.showX) || (v.y && !gizmo.showY) || (v.z && !gizmo.showZ)) return;   // axe bloque pour cet objet
+  if (o.parent) { o.parent.updateMatrixWorld(); v.applyMatrix3(new THREE.Matrix3().setFromMatrix4(o.parent.matrixWorld).invert()); }
+  o.position.add(v); o.updateMatrixWorld();
+  gizmo.dispatchEvent({ type: 'objectChange' });
+}
+let flyShift = false;
+addEventListener('keydown', e => { if (e.key === 'Shift') flyShift = true; });
+addEventListener('keyup', e => { if (e.key === 'Shift') flyShift = false; });
 const gizmo = new TransformControls(camera, renderer.domElement);
 gizmo.setSize(0.8);
 gizmo.addEventListener('dragging-changed', e => { orbit.enabled = !e.value; });
 scene.add(gizmo);
+document.querySelectorAll('[data-movemode]').forEach(b => b.onclick = () => setMoveMode(b.dataset.movemode));
+setMoveMode(moveMode);
 function resize() {
   document.documentElement.style.setProperty('--top', $('top').offsetHeight + 'px');
   const w = view.clientWidth, h = view.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
@@ -286,7 +573,8 @@ addEventListener('resize', resize);
 let tour = null;                                          // visite virtuelle en cours (voir startTour)
 renderer.setAnimationLoop(t => {
   if (tour) tourTick(t);
-  if (flyPreview) flyPreview();                         // lecture du survol d'introduction (voir playFlyby)
+  flyTick(t);                                           // vol de la camera (clic droit + ZQSD)
+  if (flyPreview) flyPreview();                        // lecture du survol d'introduction (voir playFlyby)
   renderer.render(scene, camera);
 });
 
@@ -478,8 +766,8 @@ function applyGizmoAxes() {
   if (mode === 'race' && (selected?.kind === 'crate' || selected?.kind === 'flyPose') && gizmo.getMode() !== 'translate') gizmo.setMode('translate');
   const yawOnly = mode === 'race' && selected?.kind && gizmo.getMode() === 'rotate';
   gizmo.showX = gizmo.showY = !yawOnly;
-  // poignees de taille : zones de transition et boosters (profondeur X, largeur Y, hauteur Z)
-  const sizable = selected?.kind === 'transition' || selected?.kind === 'boost';
+  // poignees de taille : zones de transition, boosters et zones de chute (profondeur X, largeur Y, hauteur Z)
+  const sizable = selected?.kind === 'transition' || selected?.kind === 'boost' || selected?.kind === 'fallZone';
   if (mode === 'race' && selected?.kind && !sizable && gizmo.getMode() === 'scale') gizmo.setMode('translate');
   if (mode === 'race') gizmo.space = sizable && gizmo.getMode() === 'scale' ? 'local' : 'world';
 }
@@ -629,6 +917,100 @@ function renderBoostMarkers() {
     boostGroup.add(m);
   });
 }
+// ---- zones de chute (_Design) : boites ou un kart qui entre reapparait --------------------------------------------
+// Un raccourci au-dessus d'une zone (T901 Boo Lake) renvoyait le kart en arriere : zones visibles, deplacables,
+// redimensionnables (poignees R), supprimables (ecartees sous la carte a l'enregistrement).
+let fallZones = [], fallZonesLoaded = '[]';
+const fallGroup = new THREE.Group(); scene.add(fallGroup);
+function renderFallMarkers() {
+  fallGroup.clear();
+  const live = fallZones.filter(z => !z.deleted);
+  if ($('fzcount')) $('fzcount').textContent = `(${live.length})`;
+  fallGroup.visible = mode === 'race' && $('fzvis').checked;
+  fallZones.forEach((z, i) => {
+    if (z.deleted) return;
+    const sel = selected?.kind === 'fallZone' && selected.index === i, d = z.dims;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(d[0], d[1], d[2]),
+      new THREE.MeshBasicMaterial({ color: sel ? 0xffe27a : 0xff3355, transparent: true, opacity: sel ? 0.28 : 0.12, depthWrite: false }));
+    m.add(new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({ color: sel ? 0xffe27a : 0xff5577 })));
+    m.position.set(...z.pos);
+    m.userData = { kind: 'fallZone', index: i, dims: [...d] };
+    fallGroup.add(m);
+  });
+}
+function selectFallZone(i) { renderFallMarkers(); select(fallGroup.children.find(x => x.userData.index === i) || null); }
+function deleteFallZone(i) {
+  fallZones[i].deleted = true; select(null); renderFallMarkers(); markDirty(); pushHistory();
+  status(`Zone ${fallZones[i].name} supprimée (enregistre pour l'appliquer)`);
+}
+function renderFallSelection(valuesOnly) {
+  const box = $('sel'), z = fallZones[selected.index];
+  if (!z) return;
+  const m = v => (v / 39.37).toFixed(1);
+  if (valuesOnly && box.querySelector('[data-fz]')) {
+    box.querySelectorAll('[data-fz]').forEach(inp => {
+      const [f, k] = inp.dataset.fz.split(':');
+      if (document.activeElement !== inp) inp.value = f === 'dims' ? m(z.dims[+k]) : z.pos[+k].toFixed(0);
+    });
+    return;
+  }
+  const row = (f, label, vals, conv) => `<div style="display:grid;grid-template-columns:70px repeat(3,1fr);gap:4px;margin:3px 0;align-items:center">
+    <span style="color:var(--muted);font-size:11px">${label}</span>${vals.map((v, k) => `<input data-fz="${f}:${k}" type="number" value="${conv(v)}"
+    style="width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:2px 4px">`).join('')}</div>`;
+  box.innerHTML = `<div class="card"><div><b>Zone de chute</b> <span style="color:var(--muted);font-size:11px">${esc(z.name)}</span></div>
+    <div style="color:var(--muted);font-size:11px;margin:2px 0 4px">Un kart qui entre dans cette boîte réapparaît à l'un de ces points :
+      ${z.points.map(esc).join(', ') || '—'}. Si un raccourci passe dedans, réduis-la ou supprime-la.</div>
+    ${row('pos', 'Centre (po)', z.pos, v => v.toFixed(0))}${row('dims', 'Taille (m)', z.dims, m)}
+    <div class="btns" style="margin-top:6px"><button data-g="translate">Déplacer (W)</button><button data-g="scale">Taille (R)</button>
+      <button id="fzfocus">Centrer</button><button id="fzdel" class="danger">Supprimer (Suppr)</button></div></div>`;
+  box.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { gizmo.setMode(b.dataset.g); applyGizmoAxes(); });
+  box.querySelectorAll('[data-fz]').forEach(inp => inp.onchange = () => {
+    const [f, k] = inp.dataset.fz.split(':'), v = parseFloat(inp.value);
+    if (!isFinite(v)) return;
+    if (f === 'dims') z.dims[+k] = Math.max(100, v * 39.37); else z.pos[+k] = v;
+    selectFallZone(selected.index); markDirty(); pushHistory();
+  });
+  $('fzfocus').onclick = () => focusOn(z.pos);
+  $('fzdel').onclick = () => deleteFallZone(selected.index);
+}
+$('fzvis').onchange = () => { if (!$('fzvis').checked && selected?.kind === 'fallZone') select(null); renderFallMarkers(); };
+// points de reapparition (entites du _Design ou du _RaceSystem citees par les splines de position) : affichage seul
+let respawnPts = {};
+const respawnGroup = new THREE.Group(); scene.add(respawnGroup);
+const respawnGeo = new THREE.CylinderGeometry(300, 300, 30, 24);    // ~7,5 m : visible de loin
+async function loadRespawnPoints() {
+  const names = [...new Set(splines.flatMap(s => s.respawns || []))];
+  respawnPts = {};
+  if (names.length) {
+    try {                                               // sans api() : ne bloque pas les boutons pendant la lecture
+      const r = await fetch('/api/scene_points', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                   body: JSON.stringify({ track, names }) }).then(x => x.json());
+      for (const n of names) if (r.poses?.[n]) respawnPts[n] = r.poses[n];
+    } catch (e) { /* sans importance : points simplement non affiches */ }
+  }
+  renderRespawnMarkers();
+}
+function renderRespawnMarkers() {
+  respawnGroup.clear();
+  respawnGroup.visible = mode === 'race' && $('rpvis').checked;
+  const hot = new Set(selected?.kind === 'fallZone' ? fallZones[selected.index]?.points || [] : []);
+  let n = 0;
+  for (const [name, p0] of Object.entries(respawnPts)) {
+    const p = designPoses[name] || p0;                  // place en attente (« Creer le parcours ») sinon enregistree
+    if (!p?.pos || p.pos[2] < -50000) continue;
+    const col = hot.has(name) ? 0xffe27a : 0x3fd0c0;
+    const disc = new THREE.Mesh(respawnGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.85, depthTest: false }));
+    disc.rotation.x = Math.PI / 2; disc.renderOrder = 9;
+    const a = new THREE.Mesh(arrowGeo, new THREE.MeshBasicMaterial({ color: col, depthTest: false }));
+    a.rotation.z = -Math.PI / 2; a.scale.setScalar(3); a.position.set(480, 0, 0); a.renderOrder = 9;
+    const g = new THREE.Group(); g.add(disc, a);
+    g.position.set(p.pos[0], p.pos[1], p.pos[2]); g.rotation.z = p.yaw || 0;
+    g.traverse(o => { o.raycast = () => {}; });         // affichage seul : ne gene pas les clics
+    respawnGroup.add(g); n++;
+  }
+  if ($('rpcount')) $('rpcount').textContent = `(${n})`;
+}
+$('rpvis').onchange = renderRespawnMarkers;
 // ---- teleporteurs (mecanisme de Spyro Circuit) ------------------------------------------------
 // Une zone de transition devient un portail : le kart qui y entre reapparait a l'arrivee (entite du _Design, anneau
 // violet, fleche = sens du kart a l'arrivee). teleporters = {transition: {pos, yaw}} ; le serveur greffe le script
@@ -872,6 +1254,7 @@ function openCrateAuto() {
                   tnt: +ov.querySelector('#ct').value, nitro: +ov.querySelector('#cn').value,
                   wumpa_lines: +ov.querySelector('#cw').value, wumpa_per_line: +ov.querySelector('#cwn').value };
     const replace = ov.querySelector('#crep').checked;
+    try { localStorage.setItem('ctrCrateAuto:' + track, JSON.stringify(opt)); } catch {}   // repris apres une mise a l'echelle
     ov.remove();
     const paths = racePaths();
     if (!paths.length) { status('Aucune spline de position : crée d\'abord le parcours', 'err'); return; }
@@ -925,6 +1308,12 @@ function startChanged() {
     if (m && b) {
       b.pos = m.position.toArray(); b.yaw = m.rotation.z;
       if (gizmo.getMode() === 'scale') b.dims = [0, 1, 2].map(k => Math.max(50, Math.round(m.userData.dims[k] * Math.abs(m.scale.getComponent(k)))));
+    }
+  } else if (sel.kind === 'fallZone') {
+    const m = fallGroup.children.find(x => x.userData.index === sel.index), z = fallZones[sel.index];
+    if (m && z) {
+      z.pos = m.position.toArray().map(v => Math.round(v));
+      if (gizmo.getMode() === 'scale') z.dims = [0, 1, 2].map(k => Math.max(100, Math.round(m.userData.dims[k] * Math.abs(m.scale.getComponent(k)))));
     }
   } else if (sel.kind === 'transition') {
     const m = markers.children.find(x => x.userData.name === sel.name), t = transitions[sel.name];
@@ -986,6 +1375,7 @@ function renderStartSelection(valuesOnly) {
   let pos, yaw, html;
   if (sel.kind === 'crate') { renderCrateSelection(valuesOnly); return; }
   if (sel.kind === 'boost') { renderBoostSelection(valuesOnly); return; }
+  if (sel.kind === 'fallZone') { renderFallSelection(valuesOnly); return; }
   if (sel.kind === 'grid') { ({ pos, yaw } = startGrid[sel.index]); }
   else if (sel.kind === 'gridAll') { pos = gridPivot.position.toArray(); yaw = gridPivot.rotation.z; }
   else if (sel.kind === 'tpArrival') { ({ pos, yaw } = teleporters[sel.name]); }
@@ -1258,6 +1648,11 @@ function select(handle) {
   if (was === 'boost' || selected?.kind === 'boost') {
     renderBoostMarkers(); if (selected?.kind === 'boost') handle = boostGroup.children.find(x => x.userData.index === selected.index);
   }
+  if (was === 'fallZone' || selected?.kind === 'fallZone') {
+    renderFallMarkers(); renderRespawnMarkers();         // points de la zone en jaune
+    if (selected?.kind === 'fallZone') handle = fallGroup.children.find(x => x.userData.index === selected.index);
+    if (selected?.kind === 'fallZone' && gizmo.getMode() === 'rotate') gizmo.setMode('translate');   // boite alignee sur les axes
+  }
   if (selected?.kind === 'transition') { renderTransitionMarkers(); handle = markers.children.find(x => x.userData.name === selected.name); }
   if (was === 'flyPose' || selected?.kind === 'flyPose') {
     renderFlybyMarkers();
@@ -1292,6 +1687,9 @@ renderer.domElement.addEventListener('pointerup', e => {
   mouse.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1);
   ray.setFromCamera(mouse, camera);
   if (mode === 'decor') {
+    const lh = lightGroup.visible ? ray.intersectObjects(lightGroup.children, false)[0] : null;   // petites : d'abord
+    if (lh) { selectLight(lh.object.userData.light); return; }
+    if (lightSel != null) selectLight(null);
     const hit = ray.intersectObjects(decorGroup.children.filter(m => m.visible), false)[0];
     selectDecor(hit ? hit.object : null, e.shiftKey); return;
   }
@@ -1301,7 +1699,8 @@ renderer.domElement.addEventListener('pointerup', e => {
     || ray.intersectObjects(startGroup.children, false)[0]
     || ray.intersectObjects(tpGroup.children.filter(x => x.userData.kind === 'tpArrival'), false)[0]
     || ray.intersectObjects(flyGroup.children.filter(x => x.userData.kind === 'flyPose'), false)[0]
-    || ray.intersectObjects(markers.children, false)[0];
+    || ray.intersectObjects(markers.children, false)[0]
+    || (fallGroup.visible ? ray.intersectObjects(fallGroup.children, false)[0] : null);   // en dernier : grandes boites
   select(hit ? hit.object : null);
 });
 function insertAfter() {
@@ -1397,8 +1796,10 @@ function openAiGenerator(ref) {
   };
 }
 function applyGeneratedLanes(ref, lanes, { start, end, existing, replace, join, quiet }) {
-  // modele (pour le serveur : donnees copiees de la spline modele) : une spline IA deja enregistree
-  const template = (existing.find(s => !s.isNew) || splines.find(s => s.kind === 'ai_paths' && !s.isNew))?.name;
+  // modele (pour le serveur : donnees copiees de la spline modele) : une spline IA deja enregistree ; a defaut (parcours
+  // recree sans enregistrer entre-temps : toutes les IA sont nouvelles), le modele d'une nouvelle (comme replaceSpecial)
+  const template = (existing.find(s => !s.isNew) || splines.find(s => s.kind === 'ai_paths' && !s.isNew))?.name
+    || (existing.find(s => s.isNew && s.template) || splines.find(s => s.kind === 'ai_paths' && s.isNew && s.template))?.template;
   if (!template) throw new Error('aucune spline IA existante pour servir de modèle');
   // ou cabler : transitions de la section ; a defaut, comme le modele
   const wires = [];
@@ -1669,8 +2070,15 @@ function raceChain() {
 async function openRouteCreator() {
   const chain = raceChain(), fin = chain[0]?.transition;
   if (!fin) { status('Il faut une ligne d\'arrivée (transition « changement de tour ») reliée aux splines de position', 'err'); return; }
-  let pieces = { objects: [], checked: [] };
-  try { pieces = await api('/api/route_objects?track=' + encodeURIComponent(track)); } catch (e) { /* sans liste : surfaces du sol */ }
+  let pieces = { objects: [], checked: [] }, guess = { source: null };
+  status('Recherche de la ligne de départ (objet Start / Finish, damier)…');
+  [pieces, guess] = await Promise.all([
+    api('/api/route_objects?track=' + encodeURIComponent(track)).catch(() => pieces),     // sans liste : surfaces du sol
+    api('/api/route_start?track=' + encodeURIComponent(track)).catch(() => guess)]);
+  status('');
+  const gdist = guess.source ? Math.round(Math.hypot(guess.pos[0] - fin.position[0], guess.pos[1] - fin.position[1]) / 39.37) : 0;
+  const gdesc = guess.source === 'name' ? `objet « ${esc(guess.object)} » (nom Start / Finish)`
+    : guess.source === 'checker' ? `damier au sol sur « ${esc(guess.object)} »` : '';
   // pre-cochees : la selection du mode Decor, sinon la route memorisee / les objets « road »
   const pre = new Set(lastDecorObjects.length ? lastDecorObjects.map(o => o.id) : pieces.checked);
   const ov = document.createElement('div');
@@ -1681,7 +2089,7 @@ async function openRouteCreator() {
     <div style="margin-bottom:6px"><b>Créer le parcours depuis la route</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Le tracé est déduit de la forme de la route (circuit fermé), sans les splines actuelles :
     ${chain.length} sections (splines de position) et transitions, ligne d'arrivée, grille, points de réapparition, puis toutes les splines IA.
-    Départ : la ligne d'arrivée actuelle (déplace-la d'abord sur ta route si besoin) et son sens. Une seule étape à annuler (Ctrl+Z).</div>
+    Départ : un objet nommé Start / Finish de ta map, sinon un damier au sol, sinon la ligne d'arrivée actuelle (choix ci-dessous). Une seule étape à annuler (Ctrl+Z).</div>
     <label style="display:block"><input type="radio" name="rsrc" value="objects" ${have ? 'checked' : 'disabled'}> <b>Morceaux de route</b>
       <span style="color:var(--muted);font-size:12px">(coche tous les morceaux qui forment le circuit)</span></label>
     ${have ? `<div style="display:flex;gap:6px;margin:4px 0"><input id="rq" placeholder="chercher un objet…" style="${field};margin:0;flex:1">
@@ -1696,6 +2104,12 @@ async function openRouteCreator() {
       : `<div style="font-size:12px;color:var(--muted);margin:0 0 8px 22px">Aucun objet importé : importe ta map en mode Décor.</div>`}
     <label style="display:block;margin-bottom:4px"><input type="radio" name="rsrc" value="surfaces" ${have ? '' : 'checked'}> Surfaces du sol</label>
     <input id="rsurf" placeholder="ex. 38, 13 — vide : celles sous le tracé actuel" style="${field}">
+    <div style="margin:2px 0"><b>Départ</b></div>
+    ${guess.source ? `<label style="display:flex;gap:6px;align-items:center"><input type="radio" name="rstart" value="found" checked>
+        <span style="flex:1">Ligne trouvée : ${gdesc} <span style="color:var(--muted);font-size:12px">— à ${gdist} m de la ligne d'arrivée actuelle</span></span>
+        <button id="rstartsee" style="padding:2px 8px" title="Centre la vue 3D sur la ligne trouvée">👁 Voir</button></label>`
+      : `<div style="font-size:12px;color:var(--muted);margin:0 0 2px 22px">Aucun objet nommé Start / Finish ni damier au sol trouvé dans la map.</div>`}
+    <label style="display:block;margin-bottom:8px"><input type="radio" name="rstart" value="finish" ${guess.source ? '' : 'checked'}> Ligne d'arrivée actuelle (et son sens)</label>
     <label style="display:flex;gap:8px;align-items:center;margin-bottom:2px">Franchir les trous (sauts) jusqu'à
       <input id="rjump" type="number" min="0" max="150" step="5" value="40" style="${field};width:70px;margin:0"> m</label>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Un trou sous un saut, ou un espace entre deux morceaux : le parcours continue tout droit
@@ -1727,6 +2141,18 @@ async function openRouteCreator() {
   });
   count();
   ov.querySelector('#rno').onclick = () => ov.remove();
+  // « Voir » : fenetre masquee, vue centree sur la ligne trouvee, bouton pour revenir
+  ov.querySelector('#rstartsee')?.addEventListener('click', e => {
+    e.preventDefault();
+    ov.style.display = 'none';
+    focusOn(guess.pos);
+    const back = document.createElement('button');
+    back.className = 'primary';
+    back.textContent = '↩ Revenir à la création du parcours';
+    back.style.cssText = 'position:fixed;top:104px;left:50%;transform:translateX(-50%);z-index:9;box-shadow:0 6px 20px #000a';
+    back.onclick = () => { back.remove(); ov.style.display = 'flex'; };
+    document.body.appendChild(back);
+  });
   ov.querySelector('#ryes').onclick = async () => {
     const useObj = ov.querySelector('input[name=rsrc]:checked')?.value === 'objects';
     const picked = boxes().filter(b => b.checked).map(b => ({ file: b.dataset.file, id: +b.value }));
@@ -1736,7 +2162,8 @@ async function openRouteCreator() {
     const opt = { reverse: ov.querySelector('#rrev').checked, neutralize: ov.querySelector('#rneut').checked,
                   ai: ov.querySelector('#rai').checked, randomness: +ov.querySelector('#rr').value / 100,
                   maxJump: Math.max(0, +ov.querySelector('#rjump').value || 0),
-                  sections: Math.max(1, Math.min(30, Math.round(+ov.querySelector('#rsec').value || chain.length))) };
+                  sections: Math.max(1, Math.min(30, Math.round(+ov.querySelector('#rsec').value || chain.length))),
+                  start: guess.source && ov.querySelector('input[name=rstart]:checked')?.value === 'found' ? { pos: guess.pos, yaw: guess.yaw } : null };
     ov.remove();
     try { status(await createRoute(chain, source, opt), 'ok'); } catch (e) { status('Erreur : ' + e.message, 'err'); }
   };
@@ -1774,9 +2201,14 @@ async function createRoute(chain, source, opt) {
     opt = { ...opt, ai: true };
     changed = ` (${before} → ${chain.length} transitions)`;
   }
-  status('Analyse de la route et calcul du tracé…');
-  const r = await api('/api/route_layout', { track, source, start: fin.position, heading: fin.yaw || 0, reverse: opt.reverse,
-    sections: chain.length, respawns: chain.map(c => c.position.respawns || []), max_jump: opt.maxJump ?? 40 });
+  status(opt.guide ? 'Calcul du tracé depuis le dessin…' : 'Analyse de la route et calcul du tracé…');
+  // depart : ligne trouvee (objet Start / Finish, damier) ou ligne d'arrivee actuelle ; la ligne d'arrivee est
+  // ensuite placee au debut du parcours cree
+  const r = await api('/api/route_layout', { track, source, start: opt.start ? opt.start.pos : fin.position,
+    heading: opt.start ? opt.start.yaw : (fin.yaw || 0), reverse: opt.reverse,
+    sections: chain.length, respawns: chain.map(c => c.position.respawns || []), max_jump: opt.maxJump ?? 40,
+    ...(opt.guide ? { guide: opt.guide } : {}) });
+  if (r.preview) showRoutePreview(r, source, opt);
   // splines de position et transitions, dans l'ordre de course
   chain.forEach((c, k) => {
     c.position.points = r.sections[k]; buildSpline(c.position);
@@ -1797,6 +2229,72 @@ async function createRoute(chain, source, opt) {
     (br.branches ? `, ${br.branches} branche(s) de l'ancien tracé retirée(s)` : '') +
     (opt.neutralize ? `, ${Object.keys(r.design_moves).length + Object.keys(r.race_moves).length} entités écartées` : '') + ai +
     ' — vérifie puis enregistre (Ctrl+Z pour annuler)';
+}
+// Apercu de dessus du parcours cree (route grise, parcours jaune, trous en rouge, depart vert) ; on peut dessiner
+// par-dessus : un trait ouvert remplace le morceau du tour entre ses deux bouts, un trait ferme remplace tout le tour ;
+// « Recréer » renvoie le trace obtenu au serveur (guide de route_gen.road_loop).
+let lastRoute = null;                                    // {r, source, opt} du dernier parcours cree
+function spliceStroke(G, S) {
+  const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const n = G.length, seg = G.map((p, i) => d(p, G[(i + 1) % n])), L = seg.reduce((a, b) => a + b, 0);
+  const sl = S.slice(1).reduce((a, p, i) => a + d(p, S[i]), 0);
+  if (d(S[0], S[S.length - 1]) < Math.max(15 * 39.37, 0.03 * L) && sl > 0.3 * L) return S.slice();   // trait ferme
+  const near = p => G.reduce((b, q, i) => d(p, q) < d(p, G[b]) ? i : b, 0);
+  let i = near(S[0]), j = near(S[S.length - 1]), s = S.slice();
+  const arc = (a, b) => { let t = 0; for (let k = a; k !== b; k = (k + 1) % n) t += seg[k]; return t; };
+  if (arc(i, j) > L / 2) { s.reverse(); [i, j] = [j, i]; }            // trait dessine a contre-sens du tour
+  const kept = [];
+  for (let k = j; ; k = (k + 1) % n) { kept.push(G[k]); if (k === i) break; }
+  return kept.concat(s);
+}
+function showRoutePreview(r, source, opt) {
+  lastRoute = { r, source, opt };
+  $('routeprev')?.remove();
+  const pv = r.preview, base = r.loop.map(p => [p[0], p[1]]);
+  let guide = base, strokes = [], cur = null;
+  const box = document.createElement('div'); box.id = 'routeprev';
+  box.style.cssText = 'position:fixed;right:calc(var(--details) + 12px);top:calc(var(--top,44px) + 52px);z-index:8;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #000b;padding:8px 10px;max-width:calc(100vw - var(--side) - var(--details) - 24px)';
+  const scale = Math.min(1.4, 560 / pv.w, (innerHeight - 260) / pv.h);
+  box.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b style="flex:1">🗺 Parcours vu de dessus</b>
+      <span style="color:var(--muted);font-size:12px">${Math.round(r.length / 39.37)} m</span><button id="rpclose" style="padding:0 8px" title="Fermer">×</button></div>
+    <canvas id="rpcanvas" width="${Math.round(pv.w * scale)}" height="${Math.round(pv.h * scale)}" style="display:block;cursor:crosshair;border-radius:6px;touch-action:none"></canvas>
+    <div style="font-size:11.5px;color:var(--muted);margin:6px 0;max-width:${Math.round(pv.w * scale)}px">Gris : la route · jaune : le parcours (rouge : au-dessus d'un trou) · vert : départ.
+      Dessine à la souris : un trait <b>ouvert</b> corrige le morceau entre ses deux bouts, un trait <b>fermé</b> remplace tout le tour. Ton tracé s'affiche en bleu.</div>
+    <div class="btns" style="display:flex;gap:6px;flex-wrap:wrap"><button id="rpundo">↶ Effacer le dernier trait</button><button id="rpclear">Tout effacer</button>
+      <span style="flex:1"></span><button id="rpgo" class="primary" disabled>🔁 Recréer le parcours depuis le dessin</button></div>`;
+  document.body.appendChild(box);
+  const cv = box.querySelector('#rpcanvas'), ctx = cv.getContext('2d'), img = new Image();
+  const toPx = p => [((p[0] - pv.x0) / pv.px - 0.5) * scale, ((pv.y1 - p[1]) / pv.px - 0.5) * scale];
+  const toWorld = (u, v) => [pv.x0 + (u / scale + 0.5) * pv.px, pv.y1 - (v / scale + 0.5) * pv.px];
+  const line = (pts, color, width, closed) => {
+    if (pts.length < 2) return;
+    ctx.beginPath(); pts.forEach((p, k) => { const [u, v] = toPx(p); k ? ctx.lineTo(u, v) : ctx.moveTo(u, v); });
+    if (closed) ctx.closePath();
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = ctx.lineCap = 'round'; ctx.stroke();
+  };
+  const draw = () => {
+    ctx.imageSmoothingEnabled = false; ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    if (strokes.length) line(guide, '#3fa9ff', 3, true);
+    if (cur) line(cur, '#7fd0ff', 2, false);
+    box.querySelector('#rpgo').disabled = !strokes.length;
+  };
+  const rebuild = () => { guide = strokes.reduce((g, s) => spliceStroke(g, s), base); draw(); };
+  img.onload = draw; img.src = 'data:image/png;base64,' + pv.png;
+  const at = e => { const b = cv.getBoundingClientRect(); return toWorld(e.clientX - b.left, e.clientY - b.top); };
+  cv.onpointerdown = e => { try { cv.setPointerCapture(e.pointerId); } catch (err) { /* sans importance */ } cur = [at(e)]; };
+  cv.onpointermove = e => { if (!cur) return; const p = at(e), q = cur[cur.length - 1];
+    if (Math.hypot(p[0] - q[0], p[1] - q[1]) > pv.px * 1.5 / scale) { cur.push(p); draw(); } };
+  cv.onpointerup = () => { if (cur && cur.length > 3) strokes.push(cur); cur = null; rebuild(); };
+  box.querySelector('#rpundo').onclick = () => { strokes.pop(); rebuild(); };
+  box.querySelector('#rpclear').onclick = () => { strokes = []; rebuild(); };
+  box.querySelector('#rpclose').onclick = () => box.remove();
+  box.querySelector('#rpgo').onclick = async () => {
+    const chain = raceChain();
+    if (!chain[0]?.transition) { status('Il faut une ligne d\'arrivée reliée aux splines de position', 'err'); return; }
+    box.querySelector('#rpgo').disabled = true;
+    try { status(await createRoute(chain, source, { ...opt, sections: chain.length, guide }), 'ok'); }
+    catch (e) { status('Erreur : ' + e.message, 'err'); box.querySelector('#rpgo').disabled = false; }
+  };
 }
 // branches de l'ancien trace : section a plusieurs splines de position (Mystery Caves split_02, raccourcis de Sewer
 // Speedway, Turbo Track...). Le parcours cree est une seule boucle : les branches sont detachees des transitions du
@@ -1867,6 +2365,12 @@ addEventListener('keydown', e => {
     if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
     if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); return; }
   }
+  if (mode === 'decor' && lightSel != null) {             // lumiere selectionnee : deplacer seulement
+    if (e.key === 'Delete') deleteLight(lightSel);
+    else if (e.key === 'Insert') duplicateLight(lightSel);
+    else if (e.key === 'Escape') selectLight(null);
+    return;
+  }
   if (mode === 'decor') {
     if (!e.ctrlKey && !e.metaKey && (e.key === 'w' || e.key === 'z')) gizmo.setMode('translate');
     if (e.key === 'e') gizmo.setMode('rotate');
@@ -1877,6 +2381,13 @@ addEventListener('keydown', e => {
     return;
   }
   if (!selected) return;
+  if (selected.kind === 'fallZone') {
+    if (e.key === 'w' || e.key === 'z') { gizmo.setMode('translate'); applyGizmoAxes(); }
+    if (e.key === 'r') { gizmo.setMode('scale'); applyGizmoAxes(); }
+    if (e.key === 'Delete') deleteFallZone(selected.index);
+    else if (e.key === 'Escape') select(null);
+    return;
+  }
   if (selected.kind === 'boost') {
     if (e.key === 'w' || e.key === 'z') { gizmo.setMode('translate'); applyGizmoAxes(); }
     if (e.key === 'e') { gizmo.setMode('rotate'); applyGizmoAxes(); }
@@ -1904,7 +2415,10 @@ addEventListener('keydown', e => {
   if (e.key === 'Delete') removeSelected();
   if (e.key === 'Insert') insertAfter();
 });
-function markDirty() { dirty = true; status('Modifications non enregistrées'); if (!gizmo.dragging) pushHistory(); }
+function markDirty() {
+  dirty = true; status('Modifications non enregistrées'); if (!gizmo.dragging) pushHistory();
+  if (mode === 'decor') scheduleCollisionMask();
+}
 
 // ---- annuler / retablir -----------------------------------------------------------------
 // Instantane de l'etat NON enregistre apres chaque modification (markDirty ; un glisser du gizmo = une etape) :
@@ -1913,11 +2427,11 @@ function markDirty() { dirty = true; status('Modifications non enregistrées'); 
 let undoStack = [], redoStack = [], dupUid = 0;
 const allDecorMeshes = new Set();
 function snapshotState() {
-  if (mode === 'decor') return JSON.stringify(dEdits);
+  if (mode === 'decor') return JSON.stringify({ edits: dEdits, ops: dOps, lights });
   return JSON.stringify({ splines: splines.map(s => ({ name: s.name, kind: s.kind, shortcut: s.shortcut, points: s.points,
     isNew: s.isNew, template: s.template, visible: s.visible, respawns: s.respawns })), transitions, starting, deleted,
     startGrid, playerStart, replacedAi, designPoses, raceEntityPositions, crates, boosts, teleporters, flyby,
-    deletedTransitions, sectionMerges });
+    deletedTransitions, sectionMerges, fallZones });
 }
 function resetHistory() { undoStack = [snapshotState()]; redoStack = []; updateUndoButtons(); }
 function pushHistory() {
@@ -1930,7 +2444,10 @@ function updateUndoButtons() { $('redo').disabled = !redoStack.length; }
 function restoreState(s) {
   const st = JSON.parse(s);
   if (mode === 'decor') {
-    dEdits = st;
+    dEdits = st.edits; dOps = st.ops;
+    lights = st.lights || []; if (lightSel != null && lightSel >= lights.length) lightSel = null;
+    renderLights();
+    replayOps();
     for (const m of allDecorMeshes) {
       const { obj, file } = m.userData, e = dEdits[file];
       let t = null;
@@ -1942,7 +2459,7 @@ function restoreState(s) {
       if (!t && m.parent) m.removeFromParent();
       if (t) placeMesh(m, t.pos, t.euler || obj.euler, t.scale || obj.scale);
     }
-    setDecorSelection(dMulti.filter(m => m.parent)); applyFileVisibility(); renderDecorPanel();
+    setDecorSelection(dMulti.filter(m => m.parent)); applyFileVisibility(); renderDecorPanel(); scheduleCollisionMask();
   } else {
     root.clear();
     splines = st.splines; splines.forEach(buildSpline);
@@ -1951,7 +2468,8 @@ function restoreState(s) {
     designPoses = st.designPoses || {}; raceEntityPositions = st.raceEntityPositions || {}; crates = st.crates || [];
     boosts = st.boosts || []; teleporters = st.teleporters || {}; flyby = st.flyby || {};
     deletedTransitions = st.deletedTransitions || []; sectionMerges = st.sectionMerges || {};
-    select(null); renderTransitionMarkers(); renderStartMarkers(); renderCrateMarkers(); renderBoostMarkers();
+    fallZones = st.fallZones || [];
+    select(null); renderTransitionMarkers(); renderStartMarkers(); renderCrateMarkers(); renderBoostMarkers(); renderFallMarkers();
     renderTeleportMarkers(); renderFlybyMarkers(); renderFlybyPanel(); renderPanel();
   }
   dirty = undoStack.length > 1;
@@ -1973,7 +2491,7 @@ async function undo() {
     for (const k of Object.keys(geoCache)) if (/[\\/]Custom[\\/]/.test(k)) delete geoCache[k];   // textures des imports
     const wasDecor = mode === 'decor';
     await loadTrack(track, true);
-    if (decor) await loadDecor(true);
+    if (decor) await loadDecor(true, false);
     if (wasDecor) gizmo.detach();
     status(`Enregistrement « ${r.undone} » annulé — ${r.remaining} autre(s) annulable(s). Réinstalle pour l'appliquer au jeu.`, 'ok');
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
@@ -1991,13 +2509,15 @@ gizmo.addEventListener('dragging-changed', e => {
   if (!e.value && mode === 'race' && selected?.kind === 'boost' && gizmo.getMode() === 'scale') {
     const i = selected.index; renderBoostMarkers(); selectBoost(i);
   }
+  if (!e.value && mode === 'race' && selected?.kind === 'fallZone' && gizmo.getMode() === 'scale') selectFallZone(selected.index);
   if (!e.value && dirty) pushHistory();
 });
 function focusOn(p) { orbit.target.set(...p); camera.position.set(p[0] + 3000, p[1] - 3000, p[2] + 4000); orbit.update(); }
 $('wire').onchange = e => { if (colMesh) colMesh.material.wireframe = e.target.checked; };
 
 // ---- decor ------------------------------------------------------------------------------
-let mode = 'race', decor = null, dSelected = null, dEdits = {};
+// dOps : modifications du clic droit (type de sol, mur invisible) gardees en attente, appliquees par « Enregistrer »
+let mode = 'race', decor = null, dSelected = null, dEdits = {}, dOps = [];
 const decorGroup = new THREE.Group(); decorGroup.visible = false; scene.add(decorGroup);
 const geoCache = {};
 const FILE_COLORS = [0xc9a26b, 0x7fae6b, 0x6b9fae, 0x9fbf5a, 0x5aa0bf, 0xb07fae, 0xbfa05a];
@@ -2040,11 +2560,22 @@ function textureMaterial({ ns, decal }) {
 // mur invisible : violet translucide (rien n'est affiche en jeu)
 const wallMat = new THREE.MeshBasicMaterial({ color: 0xc040ff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
 let showWalls = true;
+// texture lumineuse (clic droit > Texture lumineuse) : brille par elle-meme quand les lumieres sont affichees
+const glowMatCache = {};
+function glowMaterial(key) {
+  const k = key.ns + (key.decal ? '|decal' : '');
+  return glowMatCache[k] ??= (() => {
+    const m = textureMaterial(key).clone();
+    m.emissive = new THREE.Color(0xffffff); m.emissiveMap = m.map; m.emissiveIntensity = 1;
+    return m;
+  })();
+}
+const lightsShown = () => mode === 'decor' && $('dltvis').checked;
 function baseMaterial(m) {
   if (m.userData.obj.invisible) return wallMat;
   const g = m.geometry, f = fileMats[m.userData.file];
   if (!showTextures || !g.userData.texKeys?.length) return f;
-  return [f, ...g.userData.texKeys.map(textureMaterial)];
+  return [f, ...g.userData.texKeys.map(m.userData.obj.glow && lightsShown() ? glowMaterial : textureMaterial)];
 }
 function refreshMaterials() {
   for (const m of allDecorMeshes) m.material = dMulti.includes(m) ? selMat : baseMaterial(m);
@@ -2058,6 +2589,103 @@ async function reloadModelGeometry(model) {
   for (const m of allDecorMeshes) if (m.userData.obj.model === model) { m.geometry = g; m.material = dMulti.includes(m) ? selMat : baseMaterial(m); }
 }
 function editsOf(file) { return dEdits[file] ??= { moves: {}, duplicates: [], deleted: [] }; }
+// ---- sol gris (collision) tenu a jour ----------------------------------------------------------
+// Relu en arriere-plan apres chaque enregistrement / operation du decor (l'editeur reste utilisable) ; en
+// attendant, les triangles des objets supprimes, deplaces (ancienne place) ou passes « sans collision » sont
+// masques (calcul au repos, ~150 ms apres la derniere modification).
+let colBase = null, colToken = 0, maskTimer = null;
+function setCollision(col) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(col.positions, 3));
+  const index = new Uint32Array(col.indices), P = col.positions, cent = new Float32Array(index.length);
+  for (let i = 0; i < index.length; i += 3)
+    for (let k = 0; k < 3; k++) cent[i + k] = (P[index[i] * 3 + k] + P[index[i + 1] * 3 + k] + P[index[i + 2] * 3 + k]) / 3;
+  g.setIndex(new THREE.BufferAttribute(index, 1)); g.computeVertexNormals();
+  colBase = { index, cent, pos: g.attributes.position.array };
+  if (colMesh?.parent) { colMesh.geometry.dispose(); colMesh.geometry = g; }
+  else {
+    // legerement recule : le terrain visible du decor (meme surface) passe devant
+    colMesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: 0x6b7280, side: THREE.DoubleSide, wireframe: $('wire').checked,
+                                                                 polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }));
+    colMesh.visible = mode !== 'decor' || $('dcolvis').checked;
+    scene.add(colMesh);
+  }
+  if (decor) applyCollisionMask();
+}
+async function refreshCollision() {
+  const tok = ++colToken, name = track;
+  try {
+    const col = await fetch('/api/collision?track=' + encodeURIComponent(name)).then(r => r.json());
+    if (tok === colToken && name === track && col.positions) setCollision(col);
+  } catch (e) { /* sol gris garde tel quel */ }
+}
+function scheduleCollisionMask() { clearTimeout(maskTimer); maskTimer = setTimeout(applyCollisionMask, 150); }
+// Surface d'un modele en voxels (repere local, cote v) : un triangle de collision est a l'objet si son centre tombe
+// pres de cette surface (voxel ou voisin) ; une boite englobante cachait aussi la route sous un pont. Gardee par
+// geometrie (copies d'un meme modele).
+function surfaceVoxels(geo, v) {
+  const key = 'vox' + v.toFixed(2);
+  if (geo.userData[key]) return geo.userData[key];
+  const o = geo.boundingBox.min, P = geo.attributes.position.array, I = geo.index.array, set = new Set();
+  const sz = geo.boundingBox.getSize(new THREE.Vector3()), K = Math.ceil(Math.max(sz.x, sz.y, sz.z) / v) + 4;
+  const vox = { set, o, v, K };
+  for (let i = 0; i < I.length; i += 3) {
+    const a = I[i] * 3, b = I[i + 1] * 3, c = I[i + 2] * 3;
+    const d = (p, q) => Math.hypot(P[p] - P[q], P[p + 1] - P[q + 1], P[p + 2] - P[q + 2]);
+    const n = Math.max(1, Math.min(256, Math.ceil(Math.max(d(a, b), d(b, c), d(c, a)) / v)));
+    for (let p = 0; p <= n; p++) for (let q = 0; q <= n - p; q++) {
+      const u = p / n, w = q / n, r = 1 - u - w;
+      set.add(voxKey(vox, P[a] * r + P[b] * u + P[c] * w, P[a + 1] * r + P[b + 1] * u + P[c + 1] * w, P[a + 2] * r + P[b + 2] * u + P[c + 2] * w, 0, 0, 0));
+    }
+  }
+  return geo.userData[key] = vox;
+}
+const voxKey = (vox, x, y, z, dx, dy, dz) => (Math.floor((x - vox.o.x) / vox.v) + 2 + dx)
+  + (Math.floor((y - vox.o.y) / vox.v) + 2 + dy) * vox.K + (Math.floor((z - vox.o.z) / vox.v) + 2 + dz) * vox.K * vox.K;
+function onSurface(vox, p) {
+  for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
+    if (vox.set.has(voxKey(vox, p.x, p.y, p.z, dx, dy, dz))) return true;
+  return false;
+}
+function applyCollisionMask() {
+  if (!colMesh || !colBase) return;
+  const boxes = [], tmp = new THREE.Object3D();
+  for (const m of allDecorMeshes) {
+    const { obj, file } = m.userData, e = dEdits[file];
+    if (m.userData.isNew || !m.geometry.index) continue;          // copie : pas encore de collision
+    const off = dOps.length && String(obj.surface) === 'none' && 'surface0' in obj && String(obj.surface0) !== 'none';
+    if (!off && !(e && (e.deleted.includes(obj.id) || e.moves[obj.id]))) continue;
+    placeMesh(tmp, obj.pos, obj.euler, obj.scale); tmp.updateMatrix();   // place enregistree (celle de la collision)
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    const size = m.geometry.boundingBox.getSize(new THREE.Vector3()), s = Math.max(...obj.scale.map(Math.abs), 1e-3);
+    // voxel de 24 po dans le monde (collision simplifiee « Alleger la map » : sommets decales de 20-40 po), au
+    // plus 1500 par cote (decor geant : temps et memoire)
+    const vox = surfaceVoxels(m.geometry, Math.max(24 / s, Math.max(size.x, size.y, size.z) / 1500));
+    const lb = m.geometry.boundingBox.clone().expandByScalar(vox.v * 2);
+    boxes.push({ inv: tmp.matrix.clone().invert(), vox, wb: lb.applyMatrix4(tmp.matrix) });
+  }
+  const { index, cent, pos } = colBase;
+  let out = index;
+  if (boxes.length) {
+    const keep = new Uint32Array(index.length), v = new THREE.Vector3();
+    // centre ET sommets sur la surface : un triangle voisin qui touche seulement le bord de l'objet reste
+    const near = (b, j) => onSurface(b.vox, v.set(pos[j * 3], pos[j * 3 + 1], pos[j * 3 + 2]).applyMatrix4(b.inv));
+    let n = 0;
+    for (let i = 0; i < index.length; i += 3) {
+      const x = cent[i], y = cent[i + 1], z = cent[i + 2];
+      let hide = false;
+      for (const b of boxes) {
+        const w = b.wb;
+        if (x < w.min.x || x > w.max.x || y < w.min.y || y > w.max.y || z < w.min.z || z > w.max.z) continue;
+        if (onSurface(b.vox, v.set(x, y, z).applyMatrix4(b.inv))
+            && near(b, index[i]) && near(b, index[i + 1]) && near(b, index[i + 2])) { hide = true; break; }
+      }
+      if (!hide) { keep[n++] = index[i]; keep[n++] = index[i + 1]; keep[n++] = index[i + 2]; }
+    }
+    out = keep.subarray(0, n);
+  }
+  if (colMesh.geometry.index?.array !== out) colMesh.geometry.setIndex(new THREE.BufferAttribute(out, 1));
+}
 function placeMesh(m, pos, euler, scale) { m.position.set(...pos); m.rotation.set(euler[0], euler[1], euler[2], 'ZYX'); m.scale.set(...scale); }
 function makeDecorMesh(geo, obj, file, extra = {}) {
   const m = new THREE.Mesh(geo, fileMats[file]);
@@ -2066,10 +2694,15 @@ function makeDecorMesh(geo, obj, file, extra = {}) {
   placeMesh(m, obj.pos, obj.euler, obj.scale);
   decorGroup.add(m); allDecorMeshes.add(m); return m;
 }
-async function loadDecor(keepCamera) {
+// keepCamera : rechargement apres une operation enregistree -> sol gris relu aussi (en arriere-plan), sauf
+// refreshCol = false (la piste est rechargee juste apres)
+async function loadDecor(keepCamera, refreshCol = !!keepCamera) {
   status('Chargement du décor…');
   decor = await api('/api/decor?name=' + encodeURIComponent(track));
-  decorGroup.clear(); allDecorMeshes.clear(); dEdits = {}; selectDecor(null);
+  decorGroup.clear(); allDecorMeshes.clear(); dEdits = {}; dOps = []; selectDecor(null);
+  lights = decor.lights || []; lightPresets = decor.light_presets || {}; lightsLoaded = JSON.stringify(lights);
+  lightSel = null; renderLights();
+  if (refreshCol) refreshCollision();
   decor.files.forEach((f, i) => { fileMats[f.file] = new THREE.MeshLambertMaterial({ color: FILE_COLORS[i % FILE_COLORS.length] }); f.visible = f.visible ?? true; });
   const models = [...new Set(decor.files.flatMap(f => f.objects.map(o => o.model)))];
   let done = 0, next = 0;
@@ -2109,6 +2742,7 @@ function selectDecor(m, toggle = false) {
   if (m) setDecorSelection(dMulti.includes(m) ? dMulti.filter(x => x !== m) : [...dMulti, m]);
 }
 function setDecorSelection(list) {
+  if (list.some(Boolean) && lightSel != null) { lightSel = null; renderLights(); }
   for (const m of dMulti) { m.material = baseMaterial(m); m.userData.linkMesh?.removeFromParent(); }
   dMulti = list.filter(Boolean);
   dSelected = dMulti.length === 1 ? dMulti[0] : null;
@@ -2144,9 +2778,10 @@ function multiChanged() {
 // ---- menu clic droit (mode Decor) : type de sol, collision, texture, transparence, poignees, copie... -----------
 let surfaceCatalog = null, ctxDown = null;
 // un echec (serveur relance, erreur) n'est pas garde : sinon le menu restait sans herbe / terre... jusqu'au rechargement
+let surfaceCatalogList = null;                       // derniere liste recue (libelles des modifications en attente)
 const loadSurfaces = () => surfaceCatalog ??= api('/api/surfaces', {}).then(r => {
   if (!r.surfaces?.length) throw new Error('liste des sols vide');
-  return r.surfaces;
+  return surfaceCatalogList = r.surfaces;
 }).catch(e => { surfaceCatalog = null; throw e; });
 const surfaceLabel = (s, list) => s === 'none' ? 'sans collision' : s === 'auto' || s == null ? 'comme le sol dessous'
   : ((list || []).find(x => x.value === +s)?.label || `surface ${s}`);
@@ -2192,6 +2827,11 @@ async function openDecorMenu(x, y) {
     + item(obj?.alpha ? 'Désactiver la transparence' : 'Activer la transparence (découpe)', 'alpha',
            { disabled: !(one && obj.alpha != null), title: 'texture importée depuis une image : parties transparentes non affichées' })
     + sep
+    + item(obj?.glow ? 'Texture non lumineuse' : '✨ Texture lumineuse (brille comme une lampe)', 'glow',
+           { disabled: !(one && obj.glow != null && !obj.invisible),
+             title: 'image importée : elle émet sa propre lumière (globes, néons, fenêtres) ; tous les modèles qui utilisent cette image' })
+    + item('💡 Ajouter une lumière ▸', 'light', { title: 'une par morceau séparé de l\'objet (globe, lanterne, poteau) ; déplaçable ensuite' })
+    + sep
     + item('Déplacer (W)', 'mv') + item('Tourner (E)', 'rot', { disabled: !!one && !obj.has_transform }) + item('Échelle (R)', 'scl', { disabled: !one || !obj.has_transform })
     + item('Centrer la vue', 'focus')
     + item('Sélectionner les objets du même modèle', 'same', { disabled: !one })
@@ -2200,11 +2840,28 @@ async function openDecorMenu(x, y) {
   const solMenu = () => head + item('← Retour', 'back')
     + item('Comme le sol dessous (automatique)', 's:auto', { check: cur.size === 1 && cur.has('auto') })
     + (surfErr ? item(`<span style="color:var(--err)">Types de sol indisponibles</span> — réessayer`, 'retry', { title: surfErr }) : '')
-    + surfaces.map(s => item(esc(s.label)
-        + (s.speed != null && s.speed < 0.99 ? ` <span style="color:var(--accent);font-size:11px">ralentit ×${String(Math.round(s.speed * 100) / 100).replace('.', ',')}</span>` : '')
-        + (s.traction != null && s.traction < 0.99 ? ` <span style="color:#7fc8ff;font-size:11px">glisse (adhérence ×${String(Math.round(s.traction * 100) / 100).replace('.', ',')})</span>` : ''), 's:' + s.value,
-                             { check: cur.size === 1 && cur.has(String(s.value)) })).join('')
+    // deux colonnes et reperes courts (details dans l'infobulle) : la liste tenait toute la hauteur de l'ecran
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;column-gap:4px">'
+    + surfaces.map(s => {
+        const num = v => String(Math.round(v * 100) / 100).replace('.', ',');
+        const slow = s.speed != null && s.speed < 0.99, slip = s.traction != null && s.traction < 0.99;
+        return item(esc(s.label)
+          + (slow ? ` <span style="color:var(--accent);font-size:11px">×${num(s.speed)}</span>` : '')
+          + (slip ? ` <span style="color:#7fc8ff;font-size:11px">glisse</span>` : ''), 's:' + s.value,
+          { check: cur.size === 1 && cur.has(String(s.value)),
+            title: [slow ? `ralentit ×${num(s.speed)}` : '', slip ? `adhérence ×${num(s.traction)}` : '',
+                    s.floor ? 'une pente raide compte comme du sol, pas comme un mur : demi-tube, tuyau (jusqu\'à ~90° dans le jeu)' : '']
+              .filter(Boolean).join(' · ') });
+      }).join('')
+    + '</div>'
     + item('Sans collision', 's:none', { check: cur.size === 1 && cur.has('none') });
+  const sameModel = one ? decorGroup.children.filter(m => m.visible && m.userData.obj.model === obj.model) : [];
+  const lightMenu = () => head + item('← Retour', 'back')
+    + (one ? item(`Placer sur : ${lightOnSame ? `les ${sameModel.length} objets du même modèle` : 'cet objet'} <span style="color:var(--muted)">(changer)</span>`, 'lwhere',
+                  { title: 'une lumière par objet du même modèle (tous les lampadaires d\'un coup)' })
+           : `<div style="color:var(--muted);font-size:11px;padding:2px 8px">Une lumière par objet sélectionné</div>`)
+    + Object.entries(lightPresets).map(([k, p]) => item(`<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${colorHex(p.color)};margin-right:6px"></span>${esc(p.label)}`,
+        'l:' + k, { title: `repris de ${p.from} — intensité ${p.intensity}, portée ${Math.round(p.radius / M_PER_IN)} m` })).join('');
   const render = html => {
     menu.innerHTML = html;
     menu.querySelectorAll('.ctxi:not(.off)').forEach(el => el.onclick = () => act(el.dataset.a));
@@ -2216,13 +2873,17 @@ async function openDecorMenu(x, y) {
       render(solMenu()); return;
     }
     if (a === 'back') { render(main()); return; }
+    if (a === 'light') { render(lightMenu()); return; }
+    if (a === 'lwhere') { lightOnSame = !lightOnSame; render(lightMenu()); return; }
     closeDecorMenu();
+    if (a.startsWith('l:')) return addLights((one && lightOnSame ? sameModel : sel).flatMap(lampPoints), a.slice(2));
     if (a === 'col_on') return setSurface(imported, 'auto');
     if (a === 'col_off') return setSurface(imported, 'none');
     if (a.startsWith('s:')) return setSurface(imported, a.slice(2));
     if (a === 'tex') { const i = $('dtex'); i?.scrollIntoView({ block: 'center' }); i?.focus(); return; }
     if (a === 'teximg') { $('dteximg')?.click(); return; }
     if (a === 'alpha') return setObjectAlpha(one, !obj.alpha);
+    if (a === 'glow') return setObjectGlow(one, !obj.glow);
     if (a === 'wall') return setInvisible(one, !obj.invisible);
     if (a === 'zone') { $('dwallzone').click(); return; }
     if (a === 'mv' || a === 'rot' || a === 'scl') { gizmo.setMode({ mv: 'translate', rot: 'rotate', scl: 'scale' }[a]); return; }
@@ -2237,15 +2898,39 @@ async function openDecorMenu(x, y) {
   menu.style.left = Math.max(4, Math.min(x, innerWidth - w - 4)) + 'px';
   menu.style.top = Math.max(4, Math.min(y, innerHeight - h - 4)) + 'px';
 }
-async function setSurface(list, surface) {
+// Type de sol / mur invisible : gardes en attente (dOps, annulables), appliques par « Enregistrer » avec une seule
+// passe de collision ; la valeur enregistree de chaque objet est gardee (surface0, invisible0) pour Annuler.
+function applyOp(op) {
+  if (op.op === 'surface') {
+    const ids = new Set(op.objects.map(o => o.file + '|' + o.id));
+    for (const m of allDecorMeshes) if (ids.has(m.userData.file + '|' + m.userData.obj.id)) m.userData.obj.surface = op.surface === 'auto' || op.surface === 'none' ? op.surface : +op.surface;
+  } else if (op.op === 'invisible') {
+    for (const m of allDecorMeshes) if (m.userData.obj.model === op.model) m.userData.obj.invisible = op.invisible ? (m.userData.obj.invisible0 || 'obj') : undefined;
+  }
+}
+function replayOps() {
+  for (const m of allDecorMeshes) {
+    const o = m.userData.obj;
+    if ('surface0' in o) o.surface = o.surface0;
+    if ('invisible0' in o) o.invisible = o.invisible0;
+  }
+  dOps.forEach(applyOp);
+  refreshMaterials(); if (dSelected) renderDecorSel();
+}
+function queueOp(op, label) {
+  for (const m of allDecorMeshes) {
+    const o = m.userData.obj;
+    if (!('surface0' in o)) o.surface0 = o.surface;
+    if (!('invisible0' in o)) o.invisible0 = o.invisible;
+  }
+  dOps.push(op); applyOp(op);
+  refreshMaterials(); applyFileVisibility(); renderDecorSel(); markDirty();
+  status(`${label} — en attente : appliqué à l'enregistrement (${dOps.length} modification(s) du clic droit en attente)`, 'ok');
+}
+function setSurface(list, surface) {
   if (!list.length) return;
-  if (dirty && !(await ask('Le décor a des modifications non enregistrées : enregistre-les d\'abord (le type de sol est enregistré aussitôt). Continuer quand même ?'))) return;
-  try {
-    const r = await api('/api/set_surface', { track, surface, objects: list.map(m => ({ file: m.userData.file, id: m.userData.obj.id })) });
-    for (const m of list) m.userData.obj.surface = r.surface;
-    renderDecorSel();
-    status(r.report.join(' · ') + ' — réinstalle pour le voir en jeu', 'ok');
-  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+  queueOp({ op: 'surface', surface, objects: list.map(m => ({ file: m.userData.file, id: m.userData.obj.id })) },
+          `${list.length} objet(s) : ${surfaceLabel(surface, surfaceCatalogList)}`);
 }
 async function setObjectAlpha(m, on) {
   try {
@@ -2257,9 +2942,19 @@ async function setObjectAlpha(m, on) {
     status(r.report.join(' · ') + ' — réinstalle pour le voir en jeu', 'ok');
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
 }
+// Texture lumineuse (emission) : materiau de l'image importee refait aussitot ; tous les modeles de cette image
+async function setObjectGlow(m, on) {
+  try {
+    const r = await api('/api/object_glow', { track, model: m.userData.obj.model, glow: on });
+    const label = m.userData.obj.custom_material;
+    for (const x of allDecorMeshes) if (x.userData.obj.custom_material === label) x.userData.obj.glow = on;
+    renderDecorSel(); refreshMaterials();
+    status(r.report.join(' · ') + ' — réinstalle pour le voir en jeu', 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+}
 // ---- murs invisibles (collision seule) -----------------------------------------------------
-// Operations enregistrees aussitot (comme le type de sol) ; le decor est recharge apres (les modeles des murs
-// automatiques gardent leurs noms d'une generation a l'autre : geometries oubliees).
+// Creation de murs : enregistree aussitot (le serveur fabrique les modeles) ; le decor est recharge apres (les
+// modeles des murs automatiques gardent leurs noms d'une generation a l'autre : geometries oubliees).
 async function wallOperation(path, body, label) {
   if (dirty && !(await ask('Le décor a des modifications non enregistrées : enregistre-les d\'abord (cette opération est enregistrée aussitôt). Continuer quand même ?'))) return null;
   status(label + '… (recalcul de la collision)');
@@ -2275,10 +2970,9 @@ async function wallOperation(path, body, label) {
     return r;
   } catch (e) { status('Erreur : ' + e.message, 'err'); return null; }
 }
-async function setInvisible(m, on) {
-  const r = await wallOperation('/api/set_invisible', { model: m.userData.obj.model, invisible: on },
-                                on ? 'Mur invisible' : 'Retour au modèle visible');
-  if (r) for (const k in texMatCache) delete texMatCache[k];
+function setInvisible(m, on) {
+  queueOp({ op: 'invisible', model: m.userData.obj.model, invisible: on },
+          `${m.userData.obj.name || 'modèle'} : ${on ? 'mur invisible' : 'de nouveau visible en jeu'}`);
 }
 $('dwallvis').onchange = e => { showWalls = e.target.checked; if (decor) applyFileVisibility(); };
 $('dwallsel').onclick = () => {
@@ -2293,34 +2987,212 @@ $('dwalladd').onclick = () => {
   wallOperation('/api/wall_add', { pos: [t.x, t.y, z], yaw: Math.atan2(d.y, d.x) + Math.PI / 2, length: 20, height: 10 }, 'Ajout d\'un mur invisible');
 };
 let reloadCollisionAfterSave = false;
-// toute la map en hauteur : chaque objet du decor (tous les fichiers, caches ou non) decale en Z, comme un
-// deplacement a la main (Annuler, Enregistrer : la collision et les plaques de booster suivent)
+// toute la map deplacee (X, Y, Z) : decor ET course (meme chemin que la mise a l'echelle, echelle 1). Les karts doivent
+// rouler DANS l'emprise de la piste d'origine (collision du jeu) : au-dehors, quitter depuis la pause plantait le jeu
+// (T901 Boo Lake a x = -533 m pour une emprise qui commence a -460 m ; T111 / T113 : maps de plusieurs km).
 $('dmovez').onclick = () => {
   if (!decor) return;
   const all = [...allDecorMeshes].filter(m => m.parent);
-  const zs = all.map(m => m.position.z);
+  const M = 39.37, ob = decor.orig_bounds, rb = raceBounds();
+  const fmt = b => b.map(([a, c]) => `${(a / M).toFixed(0)} → ${(c / M).toFixed(0)}`).join(' · ');
+  const fits = (b, off) => ob && b && [0, 1, 2].every(k => b[k][0] + off[k] >= ob[0][k] - M && b[k][1] + off[k] <= ob[1][k] + M);   // 1 m de tolerance (arrondis)
+  let killz = null;                                     // plancher de chute : un kart qui tombe doit reapparaitre DANS l'emprise
+  api('/api/scene_points', { track, names: [] }).then(r => { killz = r.killz; check(); }).catch(() => {});
   const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
-  const ov = overlayCard(`<div style="margin-bottom:8px"><b>Déplacer toute la map en hauteur</b></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Les ${all.length} objets du décor (tous les fichiers, imports,
-    objets du jeu, murs invisibles) montent ou descendent ensemble ; leurs origines vont de z = ${Math.round(Math.min(...zs))} à
-    ${Math.round(Math.max(...zs))} po (${(Math.min(...zs) / 39.37).toFixed(0)} à ${(Math.max(...zs) / 39.37).toFixed(0)} m).
-    Enregistre ensuite : la collision suit. <b style="color:var(--text)">Le parcours, la grille, les caisses et les points de
-    réapparition ne bougent pas</b> : recrée le parcours après (« Créer le parcours », puis « Chutes et réapparitions »).</div>
-    <label>Décalage en hauteur (m, négatif = descendre)<input id="mzval" type="number" step="1" value="0" style="${field}"></label>
-    <div class="btns" style="justify-content:flex-end"><button id="mzno">Annuler</button><button id="mzyes" class="primary">Déplacer</button></div>`, 520);
+  const ov = overlayCard(`<div style="margin-bottom:8px"><b>Déplacer toute la map</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Tout bouge ensemble : les ${all.length} objets du décor (la collision
+    suit), le parcours et les splines IA, la grille, les caisses, les boosters, les zones de chute, les réapparitions, les lumières,
+    le survol et le plancher de chute. <b style="color:var(--text)">Enregistré aussitôt</b> ; refais la mini-carte ensuite.</div>
+    <div style="font-size:12px;margin-bottom:8px">${ob ? `Emprise de la piste d'origine (m, X · Y · Z) : ${fmt([[ob[0][0], ob[1][0]], [ob[0][1], ob[1][1]], [ob[0][2], ob[1][2]]])}<br>` : ''}
+      ${rb ? `Parcours actuel (m) : ${fmt(rb)}` : 'Pas encore de parcours.'}
+      <div id="mzfit" style="margin-top:4px"></div></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Les karts doivent rouler <b style="color:var(--text)">dans l'emprise
+      de la piste d'origine</b> : au-dehors, quitter la course depuis la pause fait planter le jeu.</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+      <label>X (m)<input id="mzx" type="number" step="1" value="0" style="${field}"></label>
+      <label>Y (m)<input id="mzy" type="number" step="1" value="0" style="${field}"></label>
+      <label>Z (m)<input id="mzval" type="number" step="1" value="0" style="${field}"></label></div>
+    <div class="btns" style="justify-content:space-between"><button id="mzcenter" ${ob && rb ? '' : 'disabled'}
+      title="Décalage X / Y qui place le parcours au centre de l'emprise d'origine">Centrer dans la piste d'origine</button>
+      <span><button id="mzno">Annuler</button> <button id="mzyes" class="primary">Déplacer et enregistrer</button></span></div>`, 600);
   const q = s => ov.querySelector(s);
+  const off = () => [+q('#mzx').value || 0, +q('#mzy').value || 0, +q('#mzval').value || 0].map(v => v * M);
+  const check = () => {
+    if (!ob || !rb) return;
+    const o = off(), ok = fits(rb, o), kz = killz == null ? null : killz + o[2];
+    q('#mzfit').innerHTML = (ok ? '<span style="color:var(--ok)">✔ Le parcours tiendra dans l\'emprise d\'origine</span>'
+                                : '<span style="color:var(--err)">✖ Le parcours dépassera de l\'emprise d\'origine</span>')
+      + (kz == null ? '' : kz >= ob[0][2] ? `<br><span style="color:var(--ok)">✔ Plancher de chute (${(kz / M).toFixed(0)} m) dans l'emprise</span>`
+        : `<br><span style="color:var(--err)">✖ Plancher de chute à ${(kz / M).toFixed(0)} m, sous l'emprise (${(ob[0][2] / M).toFixed(0)} m) : il sera remonté à ${(Math.min(ob[0][2] + M, rb[2][0] + o[2] - 10 * M) / M).toFixed(0)} m (10 m sous le parcours au plus)</span>`);
+  };
+  ov.querySelectorAll('input').forEach(i => i.oninput = check); check();
+  q('#mzcenter').onclick = () => {
+    for (const [k, id] of [[0, '#mzx'], [1, '#mzy'], [2, '#mzval']])
+      q(id).value = Math.round(((ob[0][k] + ob[1][k]) / 2 - (rb[k][0] + rb[k][1]) / 2) / M);
+    check();
+  };
   q('#mzno').onclick = () => ov.remove();
-  q('#mzyes').onclick = () => {
-    const dz = parseFloat(q('#mzval').value) * 39.37;
+  q('#mzyes').onclick = async () => {
+    const o = off();
     ov.remove();
-    if (!dz) return;
-    setDecorSelection([]);
-    for (const m of all) { m.position.z += dz; recordDecorEdit(m); }
-    markDirty(); pushHistory(); renderDecorPanel();
-    reloadCollisionAfterSave = true;                       // sol gris (collision) relu apres l'enregistrement
-    status(`${all.length} objets déplacés de ${(dz / 39.37).toFixed(1)} m en hauteur — Enregistrer pour appliquer (collision recalculée), Ctrl+Z pour annuler`, 'ok');
+    if (!o.some(v => v)) return;
+    // plancher de chute remonte dans l'emprise d'origine (1 m au-dessus de son bas), mais toujours 10 m sous le parcours
+    const floor = ob && rb && killz != null && killz + o[2] < ob[0][2]
+      ? Math.min(ob[0][2] + M, rb[2][0] + o[2] - 10 * M) : null;
+    try { await scaleMap(1, [0, 0, 0], o, floor); } catch (e) { status('Erreur : ' + e.message, 'err'); }
   };
 };
+// echelle de toute la map autour de la ligne d'arrivee : decor (positions et tailles, la collision suit) ET scene
+// de course (splines, zones, grille, caisses, boosters, teleporteurs, survol, reapparitions, plancher de chute).
+// Enregistre aussitot : course d'abord, puis decor (les plaques des boosters donnent alors les memes valeurs).
+$('dscale').onclick = () => {
+  if (!decor) return;
+  const fin = Object.values(transitions).find(t => t.increment_lap);
+  const all = [...allDecorMeshes].filter(m => m.parent);
+  const box = new THREE.Box3(); all.forEach(m => box.expandByPoint(m.position));
+  const pivot = fin ? [...fin.position] : box.isEmpty() ? [0, 0, 0] : box.getCenter(new THREE.Vector3()).toArray();
+  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const ov = overlayCard(`<div style="margin-bottom:8px"><b>Changer l'échelle de toute la map</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Tout grandit ou rétrécit autour
+    ${fin ? 'de la ligne d\'arrivée (elle ne bouge pas)' : 'du centre de la map'} : les ${all.length} objets du décor
+    (taille et position, collision recalculée), le parcours et les splines IA, les zones de transition, la grille de départ,
+    les caisses, les boosters, les téléporteurs, le survol d'introduction, les points de réapparition, les zones de chute
+    (position et taille), les lumières et le plancher de chute.
+    <b style="color:var(--text)">La course et le décor sont enregistrés aussitôt</b> (modifications en cours comprises) ;
+    « Annuler » revient en arrière (deux enregistrements). Refais ensuite la mini-carte.</div>
+    <label>Échelle (1 = inchangée, 1.5 = 50 % plus grande, 0.8 = 20 % plus petite)<input id="mscval" type="number" min="0.25" max="4" step="0.05" value="1" style="${field}"></label>
+    <div id="mscinfo" style="font-size:12px;margin-bottom:8px"></div>
+    <div class="btns" style="justify-content:flex-end"><button id="mscno">Annuler</button><button id="mscyes" class="primary">Appliquer et enregistrer</button></div>`, 540);
+  const q = s => ov.querySelector(s);
+  const size = box.isEmpty() ? null : box.getSize(new THREE.Vector3());
+  const info = () => {
+    const f = parseFloat(q('#mscval').value);
+    q('#mscinfo').textContent = size && f > 0 ? `Étendue du décor : ${(size.x / 39.37).toFixed(0)} × ${(size.y / 39.37).toFixed(0)} m → `
+      + `${(size.x * f / 39.37).toFixed(0)} × ${(size.y * f / 39.37).toFixed(0)} m` : '';
+  };
+  q('#mscval').oninput = info; info();
+  q('#mscno').onclick = () => ov.remove();
+  q('#mscyes').onclick = async () => {
+    const f = parseFloat(q('#mscval').value);
+    if (!(f >= 0.25 && f <= 4)) { status('Échelle entre 0.25 et 4', 'err'); return; }
+    ov.remove();
+    if (Math.abs(f - 1) < 1e-6) return;
+    try { await scaleMap(f, pivot); } catch (e) { status('Erreur : ' + e.message, 'err'); }
+  };
+};
+// off : decalage ajoute apres l'echelle (pouces) ; f = 1 et off : toute la map deplacee (« Deplacer toute la map »)
+async function scaleMap(f, P, off = [0, 0, 0], killzFloor = null) {
+  const S = p => p.map((v, k) => P[k] + (v - P[k]) * f + off[k]);
+  const moveOnly = Math.abs(f - 1) < 1e-9;
+  status(moveOnly ? 'Déplacement de la course…' : 'Mise à l\'échelle de la course…');
+  const sp = await api('/api/scene_points', { track, names: [...new Set(splines.flatMap(s => s.respawns || []))] });
+  for (const s of splines) s.points = s.points.map(S);
+  for (const t of Object.values(transitions)) {
+    t.position = S(t.position);
+    if (t.dimensions) t.dimensions = t.dimensions.map(v => v * f);
+  }
+  startGrid = startGrid.map(g => ({ ...g, pos: S(g.pos) }));
+  if (playerStart) playerStart = { ...playerStart, pos: S(playerStart.pos) };
+  crates.forEach(c => c.pos = S(c.pos));
+  boosts.forEach(b => { b.pos = S(b.pos); b.dims = b.dims.map(v => v * f); });
+  for (const tp of Object.values(teleporters)) if (tp.pos) tp.pos = S(tp.pos);
+  for (const s of flybyShots) {
+    const m = JSON.parse(JSON.stringify(flyModel(s)));
+    for (const w of ['start', 'end']) { m[w].pos = S(m[w].pos); m[w].look = S(m[w].look); }
+    flyby[s.key] = m;
+  }
+  // reapparitions et zones de chute : poses en attente sinon celles enregistrees
+  for (const n of new Set([...Object.keys(sp.poses), ...Object.keys(designPoses)])) {
+    const p = designPoses[n] || sp.poses[n];
+    designPoses[n] = { ...p, pos: S(p.pos) };
+  }
+  for (const n in raceEntityPositions) raceEntityPositions[n] = S(raceEntityPositions[n]);
+  // zones de chute : centre ET taille (le centre seul suivait, via les poses du _Design : boites trop petites)
+  fallZones = fallZones.map(z => ({ ...z, pos: S(z.pos), dims: z.dims.map(v => v * f) }));
+  const r1 = await saveRace({ killz: killzFloor ?? P[2] + (sp.killz - P[2]) * f + off[2] });
+  // lumieres ajoutees (fichier _Lighting) : position et portee, enregistrees avec le decor ci-dessous
+  lights = lights.map(l => ({ ...l, pos: S(l.pos), radius: Math.min(50000, l.radius * f) }));
+  lightSel = null; renderLights();
+  status(moveOnly ? 'Déplacement du décor…' : 'Mise à l\'échelle du décor…');
+  const all = [...allDecorMeshes].filter(m => m.parent);
+  setDecorSelection([]);
+  for (const m of all) {
+    m.position.set(...S(m.position.toArray()));
+    if (m.userData.obj.has_transform) m.scale.multiplyScalar(f);
+    recordDecorEdit(m);
+  }
+  markDirty(); pushHistory(); renderDecorPanel();
+  reloadCollisionAfterSave = true;
+  if (!(await saveDecor())) return;
+  if (moveOnly) {                                       // simple deplacement : tout garde sa place relative
+    await refreshCollision();
+    const m = off.map(v => (v / 39.37).toFixed(0)).join(', ');
+    status(`Map déplacée de (${m}) m (${all.length} objets, ${splines.length} splines) et enregistrée — `
+           + `${r1.report.length} changement(s) de course. Refais la mini-carte, puis « Vérifier ».`, 'ok');
+    return;
+  }
+  // sol a la nouvelle taille : caisses replacees (placement automatique), objets reposes dessus, course enregistree
+  status('Placement des caisses et objets reposés sur le sol…');
+  await refreshCollision();
+  const placed = await placeAfterScale();
+  await saveRace();
+  status(`Map mise à l'échelle ×${f} (${all.length} objets, ${splines.length} splines) et enregistrée — `
+         + `${r1.report.length} changement(s) de course, ${placed.join(', ')}. Refais la mini-carte, puis « Vérifier ».`, 'ok');
+}
+// emprise du parcours (splines de position, en pouces) : [min, max]
+function raceBounds() {
+  const pts = splines.filter(s => s.kind === 'position_paths').flatMap(s => s.points);
+  if (!pts.length) return null;
+  return [0, 1, 2].map(k => [Math.min(...pts.map(p => p[k])), Math.max(...pts.map(p => p[k]))]);
+}
+function crateAutoOptions() {
+  // derniers reglages du placement automatique pour cette piste, sinon deduits des caisses presentes
+  try { const o = JSON.parse(localStorage.getItem('ctrCrateAuto:' + track)); if (o && o.rows) return o; } catch {}
+  const n = k => crates.filter(c => c.kind === k).length;
+  return { rows: Math.max(1, Math.round(n('question') / 4)), per_row: 4, spacing: 14.6 * 39.37, skip: 0.12, fruit: n('fruit'),
+           tnt: n('tnt'), nitro: n('nitro'), wumpa_lines: Math.ceil(n('wumpa') / 5), wumpa_per_line: 5 };
+}
+async function placeAfterScale() {
+  const out = [];
+  const paths = racePaths();
+  if (paths.length && crates.length) {
+    try {
+      const r = await api('/api/crates_auto', { track, paths, ...crateAutoOptions() });
+      const pool = crates.map(c => ({ ...c }));                // caisses d'origine reutilisees (meme nom)
+      crates = r.crates.map(c => {
+        const k = pool.findIndex(o => o.kind === c.kind && o.name);
+        return { name: k >= 0 ? pool.splice(k, 1)[0].name : null, kind: c.kind, pos: c.pos };
+      });
+      out.push(`${crates.length} caisse(s) replacée(s)`);
+    } catch (e) { out.push('caisses non replacées : ' + e.message); }
+  }
+  // boosters (point au sol), grille (60 po au-dessus du sol, repere decale d'autant), reapparitions (50 po, comme
+  // « Chutes et réapparitions ») : niveau le plus proche de leur hauteur actuelle (ponts, sauts)
+  let nb = 0, ng = 0, nr = 0;
+  for (const b of boosts) {
+    const z = groundZ(b.pos[0], b.pos[1], b.pos[2] + 300);
+    if (z != null) { b.pos = [b.pos[0], b.pos[1], z]; nb++; }
+  }
+  const lifts = [];
+  for (const s of startGrid) {
+    const g = groundZ(s.pos[0], s.pos[1], s.pos[2] + 800);
+    if (g == null) continue;
+    lifts.push(g + 60 - s.pos[2]); s.pos = [s.pos[0], s.pos[1], g + 60]; ng++;
+  }
+  if (playerStart && lifts.length) playerStart = { ...playerStart, pos: [playerStart.pos[0], playerStart.pos[1], playerStart.pos[2] + lifts.reduce((a, c) => a + c) / lifts.length] };
+  // poses enregistrees (la course vient d'etre rechargee : plus de poses en attente)
+  const names = [...new Set([...splines.flatMap(s => s.respawns || []), ...fallZones.flatMap(z => z.points || [])])];
+  const sp = names.length ? await api('/api/scene_points', { track, names }) : { poses: {} };
+  for (const [n, p] of Object.entries(sp.poses)) {
+    // points de reapparition seuls : la reponse contient aussi les zones de chute (Respawn_Trigger_*, sous la route)
+    // et le repere Respawn_waypoint_camera
+    if (!/^respawn_waypoint/i.test(n) || /camera/i.test(n)) continue;
+    const g = groundZ(p.pos[0], p.pos[1], p.pos[2] + 300);
+    if (g != null) { designPoses[n] = { ...p, pos: [p.pos[0], p.pos[1], g + 50] }; nr++; }
+  }
+  out.push(`posés au sol : ${nb} booster(s), ${ng} place(s) de grille, ${nr} réapparition(s)`);
+  return out;
+}
 // murs le long des bords des parties de la map choisies dans la vue 3D (jamais sur la route du parcours)
 $('dwallzone').onclick = async () => {
   const chosen = dMulti.filter(m => !m.userData.obj.invisible);
@@ -2407,6 +3279,7 @@ function recordDecorEdit(m) {
   else e.moves[obj.id] = obj.has_transform ? t : { pos: t.pos };
 }
 function decorChanged() {
+  if (lightSel != null && gizmo.object?.userData.light === lightSel) { lightMoved(); return; }
   if (gizmo.object === pivot && dMulti.length > 1) { multiChanged(); return; }
   const m = dSelected; if (!m) return;
   recordDecorEdit(m);
@@ -2444,6 +3317,7 @@ function renderMultiSel(valuesOnly) {
 }
 function renderDecorSel(valuesOnly) {
   const box = $('dsel'), m = dSelected;
+  if (lightSel != null && !dMulti.length) { renderLightSel(valuesOnly); return; }
   if (dMulti.length > 1) { renderMultiSel(valuesOnly); return; }
   if (!m) { box.innerHTML = 'Aucun objet sélectionné. Clique sur un objet du décor (Maj+clic : plusieurs).'; return; }
   const { obj, file } = m.userData, t = currentTransform(m);
@@ -2583,17 +3457,182 @@ $('dsearch').oninput = e => {
     box.appendChild(row);
   }
 };
+// ---- lumieres ajoutees (lights.py) : lampadaires, torches... dans le _Lighting de la piste ------------------------
+// Marqueur = boule de la couleur de la lumiere ; selectionnee : portee en fil de fer, poignee de deplacement.
+const lightGroup = new THREE.Group(); lightGroup.visible = false; scene.add(lightGroup);
+const lightGeo = new THREE.SphereGeometry(70, 16, 12), lightRangeGeo = new THREE.SphereGeometry(1, 24, 16);
+let lights = [], lightPresets = {}, lightsLoaded = '[]', lightSel = null, lightOnSame = false;
+const M_PER_IN = 39.37;
+const lightCol = l => new THREE.Color(l.color[0], l.color[1], l.color[2]);
+const colorHex = c => '#' + c.map(v => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('');
+// Apercu de l'eclairage : une vraie lumiere ponctuelle par lumiere ajoutee (couleur, portee ; intensite du jeu
+// ramenee a l'echelle de l'editeur), au plus MAX_PREVIEW_LIGHTS (les plus proches de la vue) pour garder le rendu fluide.
+const MAX_PREVIEW_LIGHTS = 48;
+const previewIntensity = l => Math.min(6, 0.6 + Math.sqrt(Math.max(0, l.intensity)) * 0.5);
+function renderLights() {
+  lightGroup.clear();
+  lightGroup.visible = lightsShown();
+  const t = orbit.target;
+  const lit = new Set(lights.map((l, i) => [i, (l.pos[0] - t.x) ** 2 + (l.pos[1] - t.y) ** 2 + (l.pos[2] - t.z) ** 2])
+    .sort((a, b) => a[1] - b[1]).slice(0, MAX_PREVIEW_LIGHTS).map(([i]) => i));
+  lights.forEach((l, i) => {
+    const m = new THREE.Mesh(lightGeo, new THREE.MeshBasicMaterial({ color: lightCol(l) }));
+    m.position.set(...l.pos); m.userData = { light: i }; lightGroup.add(m);
+    if (lit.has(i)) m.add(new THREE.PointLight(lightCol(l), previewIntensity(l), l.radius, 0));   // decroit jusqu'a la portee
+    if (i === lightSel) {
+      m.scale.setScalar(1.5);
+      const r = new THREE.Mesh(lightRangeGeo, new THREE.MeshBasicMaterial({ color: lightCol(l), wireframe: true, transparent: true, opacity: 0.3 }));
+      r.scale.setScalar(l.radius / 1.5); r.raycast = () => {}; m.add(r);
+      if (mode === 'decor') gizmo.attach(m);
+    }
+  });
+  $('dltcount').textContent = lights.length;
+}
+function selectLight(i) {
+  if (dMulti.length) setDecorSelection([]);
+  lightSel = i;
+  if (i == null && gizmo.object?.userData.light != null) gizmo.detach();
+  if (i != null) gizmo.setMode('translate');
+  renderLights(); renderDecorSel();
+}
+function lightMoved() {
+  const p = gizmo.object.position;
+  lights[lightSel].pos = [p.x, p.y, p.z];
+  markDirty(); renderLightSel(true);
+}
+function changedLights(msg) { renderLights(); renderDecorSel(); markDirty(); if (msg) status(msg + ' — Enregistrer pour l\'écrire dans la piste', 'ok'); }
+function addLights(points, key) {
+  const p = lightPresets[key] || Object.values(lightPresets)[0];
+  for (const pos of points) lights.push({ pos, color: [...p.color], intensity: p.intensity, radius: p.radius, preset: key });
+  lightSel = lights.length - 1;
+  if (dMulti.length) setDecorSelection([]);
+  changedLights(`${points.length} lumière(s) « ${p.label} » ajoutée(s)`);
+}
+function lampPoints(m) {
+  // Une lumiere par morceau separe de l'objet : un OBJ importe peut contenir tous les lampadaires d'une map en un
+  // seul objet (Boo Lake « CaveLight24_lamp » : 25 lampes ; la boite de l'objet entier donnait un point au hasard).
+  // Morceaux = triangles relies (sommets soudes au pouce pres), regroupes s'ils sont a moins de 3 m en vue de dessus.
+  // Petit morceau (globe, lanterne) : son centre ; haut (poteau, torche) : 10 % sous son sommet.
+  const g = m.geometry, pos = g.attributes.position, idx = g.index, n = pos.count;
+  const key = new Map(), weld = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const k = `${Math.round(pos.getX(i))},${Math.round(pos.getY(i))},${Math.round(pos.getZ(i))}`;
+    let w = key.get(k);
+    if (w === undefined) key.set(k, w = key.size);
+    weld[i] = w;
+  }
+  const par = Int32Array.from({ length: key.size }, (_, i) => i);
+  const find = a => { while (par[a] !== a) a = par[a] = par[par[a]]; return a; };
+  if (idx) for (let t = 0; t + 2 < idx.count; t += 3) {
+    const a = find(weld[idx.getX(t)]);
+    for (const j of [1, 2]) { const b = find(weld[idx.getX(t + j)]); if (b !== a) par[b] = a; }
+  }
+  const parts = new Map(), v = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    const r = find(weld[i]);
+    let b = parts.get(r);
+    if (!b) parts.set(r, b = new THREE.Box3());
+    b.expandByPoint(v.fromBufferAttribute(pos, i));
+  }
+  const NEAR = 120, groups = [];
+  for (const b of parts.values()) {
+    const grp = groups.find(x => b.min.x - NEAR <= x.max.x && b.max.x + NEAR >= x.min.x && b.min.y - NEAR <= x.max.y && b.max.y + NEAR >= x.min.y);
+    if (grp) grp.union(b); else groups.push(b.clone());
+  }
+  m.updateMatrixWorld();
+  return groups.map(b => {
+    const c = b.getCenter(new THREE.Vector3()), h = b.max.z - b.min.z;
+    if (h > 400) c.z = b.max.z - h * 0.1;                 // plus de 10 m de haut : poteau
+    return c.applyMatrix4(m.matrixWorld).toArray();
+  });
+}
+function deleteLight(i) { lights.splice(i, 1); lightSel = null; gizmo.detach(); changedLights('Lumière supprimée'); }
+function duplicateLight(i) {
+  const l = lights[i];
+  lights.push({ ...l, pos: [l.pos[0] + 300, l.pos[1], l.pos[2]], color: [...l.color] });
+  lightSel = lights.length - 1; changedLights('Lumière dupliquée');
+}
+function renderLightSel(valuesOnly) {
+  const box = $('dsel'), l = lights[lightSel];
+  if (!l) return;
+  if (valuesOnly && box.querySelector('[data-lp]')) {
+    box.querySelectorAll('[data-lp]').forEach(inp => { if (document.activeElement !== inp) inp.value = l.pos[+inp.dataset.lp].toFixed(1); });
+    return;
+  }
+  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:2px 4px';
+  const row = (label, html) => `<div style="display:grid;grid-template-columns:84px 1fr;gap:6px;align-items:center;margin:4px 0"><span style="color:var(--muted);font-size:11px">${label}</span>${html}</div>`;
+  const preset = lightPresets[l.preset];
+  box.innerHTML = `<div><b>💡 Lumière ${lightSel + 1} / ${lights.length}</b></div>
+    <div style="color:var(--muted);font-size:11px">Éclaire en temps réel le décor autour d'elle (portée en fil de fer).${preset ? ` Réglage repris de ${esc(preset.from)}.` : ''}</div>
+    ${row('Type', `<select id="ltype" style="${field}"><option value="">Personnalisé</option>${Object.entries(lightPresets).map(([k, p]) =>
+      `<option value="${k}" ${l.preset === k ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
+    ${row('Couleur', `<input type="color" id="lcolor" value="${colorHex(l.color)}" style="width:100%;height:26px;background:none;border:1px solid var(--line);border-radius:4px">`)}
+    ${row('Intensité', `<input type="number" id="lint" min="0" max="1000" step="0.5" value="${l.intensity}" style="${field}">`)}
+    ${row('Portée (m)', `<input type="number" id="lrad" min="2" max="1270" step="1" value="${(l.radius / M_PER_IN).toFixed(1)}" style="${field}">`)}
+    <div style="display:grid;grid-template-columns:52px repeat(3,1fr);gap:4px;margin:3px 0;align-items:center"><span style="color:var(--muted);font-size:11px">Position</span>
+      ${[0, 1, 2].map(k => `<input data-lp="${k}" type="number" step="50" value="${l.pos[k].toFixed(1)}" style="${field}">`).join('')}</div>
+    <div class="btns" style="margin-top:6px"><button id="lsame" title="Même type, couleur, intensité et portée pour toutes les lumières">Réglages pour toutes</button>
+      <button id="ldup">Dupliquer (Inser)</button><button id="ldel" class="danger">Supprimer (Suppr)</button></div>`;
+  const q = s => box.querySelector(s);
+  q('#ltype').onchange = e => {
+    const p = lightPresets[e.target.value];
+    if (p) Object.assign(l, { color: [...p.color], intensity: p.intensity, radius: p.radius, preset: e.target.value });
+    else delete l.preset;
+    changedLights();
+  };
+  const custom = () => { delete l.preset; changedLights(); };
+  // valeur ramenee dans les bornes et identique a l'actuelle : rien ne change (pas de « modification » fantome)
+  const setNum = (k, v, msg) => {
+    if (v === l[k]) { renderLightSel(); status(msg); return; }
+    l[k] = v; custom();
+  };
+  q('#lcolor').onchange = e => { const c = new THREE.Color(e.target.value); l.color = [c.r, c.g, c.b]; custom(); };
+  q('#lint').onchange = e => setNum('intensity', Math.max(0, Math.min(1000, +e.target.value || 0)), 'Intensité inchangée (de 0 à 1000)');
+  q('#lrad').onchange = e => setNum('radius', Math.max(2, Math.min(1270, +e.target.value || 30)) * M_PER_IN, 'Portée inchangée (de 2 à 1270 m)');
+  box.querySelectorAll('[data-lp]').forEach(inp => inp.onchange = () => { l.pos[+inp.dataset.lp] = +inp.value || 0; changedLights(); });
+  q('#lsame').onclick = () => {
+    for (const o of lights) Object.assign(o, { color: [...l.color], intensity: l.intensity, radius: l.radius }, l.preset ? { preset: l.preset } : {});
+    if (!l.preset) lights.forEach(o => delete o.preset);
+    changedLights(`Réglages appliqués aux ${lights.length} lumières`);
+  };
+  q('#ldup').onclick = () => duplicateLight(lightSel);
+  q('#ldel').onclick = () => deleteLight(lightSel);
+}
+$('dltvis').onchange = () => { renderLights(); refreshMaterials(); };
+$('dltclear').onclick = () => {
+  if (!lights.length) return;
+  const n = lights.length;
+  lights = []; lightSel = null; if (gizmo.object?.userData.light != null) gizmo.detach();
+  changedLights(`${n} lumière(s) supprimée(s)`);
+};
+$('dltadd').onclick = () => { const t = orbit.target; addLights([[t.x, t.y, t.z + 300]], 'street'); };
+$('dltall').onclick = () => {
+  if (!lights.length) { status('Aucune lumière : clic droit sur un lampadaire › Ajouter une lumière'); return; }
+  const i = lightSel == null ? 0 : (lightSel + 1) % lights.length;
+  selectLight(i); focusOn(lights[i].pos);
+};
 async function saveDecor() {
   const files = Object.fromEntries(Object.entries(dEdits).filter(([, e]) => Object.keys(e.moves).length || e.duplicates.length || e.deleted.length));
-  if (!Object.keys(files).length) { status('Rien à enregistrer'); return; }
+  const lightsChanged = JSON.stringify(lights) !== lightsLoaded;
+  if (!Object.keys(files).length && !dOps.length && !lightsChanged) {
+    dirty = false;                                       // modification annulee ou sans effet : plus rien en attente
+    status('Rien à enregistrer : les valeurs sont les mêmes que celles enregistrées'); return;
+  }
   status('Enregistrement du décor et recalcul de la collision… (quelques secondes)');
   try {
-    const r = await api('/api/decor_save', { track, files });
-    await loadDecor(true);
-    // boosters (mode Course) suivent leurs plaques ; map entiere deplacee : sol gris (collision) relu
-    if (r.boosts_changed || reloadCollisionAfterSave) await loadTrack(track, true);
+    const r = await api('/api/decor_save', { track, files, ops: dOps, lights: lightsChanged ? lights : undefined });
+    // boosters (mode Course) suivent leurs plaques, map entiere deplacee : piste rechargee (sol gris compris) ;
+    // sinon sol gris seul relu en arriere-plan
+    const reloadRace = r.boosts_changed || reloadCollisionAfterSave;
+    if (dOps.some(o => o.op === 'invisible')) {                 // modeles reecrits (mur <-> visible)
+      for (const o of dOps) if (o.op === 'invisible') delete geoCache[o.model];
+      for (const k in texMatCache) delete texMatCache[k];
+    }
+    await loadDecor(true, !reloadRace);
+    if (reloadRace) await loadTrack(track, true);
     reloadCollisionAfterSave = false;
     status('Décor enregistré — ' + r.report.join(' · '), 'ok');
+    return r;
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
 }
 // Import OBJ : modele + objet de decor (place au centre de la vue) + collision (surface du sol dessous par defaut)
@@ -2863,7 +3902,14 @@ $('dfolder').onclick = () => {
       <button id="fscan" style="margin-bottom:8px">Analyser</button></div>
     <div id="finfo" style="font-size:12px;color:var(--muted);margin-bottom:8px">Clique sur « Analyser ».</div>
     <div id="fopts" hidden>
-      <label>Fichier .obj / .dae<select id="fobj" style="${field}"></select></label>
+      <div style="margin-bottom:4px">Fichiers .obj / .dae <span style="color:var(--muted);font-size:11px">(plusieurs : importés ensemble, même échelle et même placement)</span></div>
+      <div id="ffiles" style="font-size:12px;max-height:18vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 6px;margin-bottom:8px"></div>
+      <details id="felbox" style="margin-bottom:8px"><summary style="cursor:pointer">Éléments à importer <span id="felcount" style="color:var(--muted);font-size:12px"></span></summary>
+        <div style="display:flex;gap:6px;align-items:center;margin:4px 0">
+          <input id="felq" placeholder="filtrer par nom…" style="flex:1;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px">
+          <span class="btns"><button id="felall" title="Coche les éléments affichés (filtre)">Tout cocher</button><button id="felnone" title="Décoche les éléments affichés (filtre)">Tout décocher</button></span></div>
+        <div id="fels" style="font-size:12px;max-height:28vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 6px"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Les matériaux et l'échelle proposée se mettent à jour d'après les éléments cochés.</div></details>
       <label>Placement<select id="fplace" style="${field}"><option value="view">route (ou centre-bas de la scène) au centre de la vue</option>
         <option value="absolute">coordonnées de l'OBJ = coordonnées du jeu</option></select></label>
       <label>Mètres par unité de l'OBJ<input id="fscale" type="number" step="any" value="1" style="${field}"></label>
@@ -2909,22 +3955,70 @@ $('dfolder').onclick = () => {
   };
   q('#fall').onclick = () => { scan.materials.forEach(m => m.collision = true); renderMats(); };
   q('#fnone').onclick = () => { scan.materials.forEach(m => m.collision = false); renderMats(); };
-  const doScan = async obj => {
+  // fichiers choisis (null : le serveur prend le premier) et elements gardes (null : tous ; sinon 'fichier|objet')
+  let selFiles = null, selObjects = null, rescanTimer = null;
+  const elKey = e => e.file + '|' + e.name;
+  const rescanSoon = () => { clearTimeout(rescanTimer); rescanTimer = setTimeout(() => doScan(), 700); };
+  const renderFiles = () => {
+    q('#ffiles').innerHTML = scan.objs.map((f, i) => `<label style="display:flex;gap:6px;align-items:center;margin:1px 0">
+      <input type="checkbox" data-i="${i}" ${scan.files.includes(f) ? 'checked' : ''}> ${esc(f)}</label>`).join('');
+    q('#ffiles').querySelectorAll('input').forEach(c => c.onchange = () => {
+      const chosen = [...q('#ffiles').querySelectorAll('input:checked')].map(x => scan.objs[+x.dataset.i]);
+      if (!chosen.length) { c.checked = true; return; }           // au moins un fichier
+      selFiles = chosen; selObjects = null; rescanSoon();
+    });
+  };
+  const renderElements = () => {
+    const els = scan.elements || [], f = q('#felq').value.trim().toLowerCase(), multi = scan.files.length > 1;
+    const on = e => !selObjects || selObjects.has(elKey(e));
+    const shown = els.filter(e => !f || (e.name + ' ' + e.file).toLowerCase().includes(f));
+    const nOn = els.filter(on).length;
+    q('#felcount').textContent = `(${nOn} / ${els.length} cochés)`;
+    q('#fels').innerHTML = shown.slice(0, 1500).map((e, i) => `<label style="display:flex;gap:6px;align-items:center;margin:1px 0">
+      <input type="checkbox" data-k="${esc(elKey(e))}" ${on(e) ? 'checked' : ''}>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${multi ? `<span style="color:var(--muted)">${esc(e.file)} ›</span> ` : ''}${esc(e.name || '(sans nom)')}</span>
+      <span style="color:var(--muted)">${e.triangles}</span></label>`).join('')
+      + (shown.length > 1500 ? `<div style="color:var(--muted)">… ${shown.length - 1500} autres (filtre pour les voir)</div>` : '');
+    q('#fels').querySelectorAll('input').forEach(c => c.onchange = () => setElements([c.dataset.k], c.checked));
+  };
+  const setElements = (keys, on) => {
+    const all = (scan.elements || []).map(elKey);
+    selObjects ??= new Set(all);
+    keys.forEach(k => on ? selObjects.add(k) : selObjects.delete(k));
+    if (selObjects.size === all.length) selObjects = null;
+    renderElements();
+    if (selObjects?.size === 0) { q('#fyes').disabled = true; q('#finfo').textContent = 'Coche au moins un élément.'; return; }
+    rescanSoon();
+  };
+  const shownKeys = () => [...q('#fels').querySelectorAll('input')].map(c => c.dataset.k);
+  q('#felq').oninput = () => renderElements();
+  q('#felall').onclick = () => setElements(shownKeys(), true);
+  q('#felnone').onclick = () => setElements(shownKeys(), false);
+  let scanTok = 0;
+  const doScan = async () => {
     q('#finfo').textContent = 'Analyse…';
+    const tok = ++scanTok;                                  // analyse relancee entre-temps : reponse ignoree
     try {
-      scan = await api('/api/folder_scan', { folder: q('#ffold').value.trim(), obj });
-      q('#fobj').innerHTML = scan.objs.map(o => `<option ${o === scan.obj ? 'selected' : ''}>${esc(o)}</option>`).join('');
+      const r = await api('/api/folder_scan', { folder: q('#ffold').value.trim(), files: selFiles,
+                                                 objects: selObjects ? [...selObjects] : undefined });
+      if (tok !== scanTok) return;
+      scan = r;
+      selFiles = scan.files;
+      renderFiles(); renderElements();
       const found = scan.materials.filter(m => m.texture).length;
-      q('#finfo').textContent = `${scan.folder} : ${scan.obj} — ${scan.vertices} sommets, ${scan.triangles} triangles, ${scan.materials.length} matériaux (${found} avec texture trouvée), ${scan.images} image(s) dans le dossier.`;
+      q('#finfo').textContent = `${scan.folder} : ${scan.obj}${selObjects ? ` (${selObjects.size} élément(s) choisi(s))` : ''} — ${scan.vertices} sommets, ${scan.triangles} triangles, ${scan.materials.length} matériaux (${found} avec texture trouvée), ${scan.images} image(s) dans le dossier.`;
       q('#fopts').hidden = false; q('#fyes').disabled = false;
       // proposes pour ce fichier : axe du fichier (.dae : up_axis) et echelle donnant ~500 m de cote
       q('#fup').value = scan.up || 'y'; q('#fscale').value = scan.scale ?? 1;
       // materiau nomme comme un mur invisible dans Blender (invisible, nodraw, clip) : coche d'office
       scan.materials.forEach(m => { m.wall = /invisible|invis_|nodraw|clip/i.test(m.name || ''); });
       renderMats(); showSize();
-    } catch (e) { q('#finfo').textContent = 'Erreur : ' + e.message; q('#fopts').hidden = true; q('#fyes').disabled = true; }
+    } catch (e) {
+      if (tok !== scanTok) return;
+      q('#finfo').textContent = 'Erreur : ' + e.message; q('#fopts').hidden = true; q('#fyes').disabled = true;
+    }
   };
-  q('#fscan').onclick = () => doScan();
+  q('#fscan').onclick = () => { selFiles = selObjects = null; doScan(); };
   q('#fbrowse').onclick = async () => {                   // fenetre de choix ouverte par le serveur, puis analyse
     q('#finfo').textContent = 'Choisis le dossier dans la fenêtre ouverte…';
     try {
@@ -2933,10 +4027,9 @@ $('dfolder').onclick = () => {
       if (r.error) throw new Error(r.error);
       if (!r.ok) { q('#finfo').textContent = 'Choix du dossier annulé'; return; }
       q('#ffold').value = r.folder;
-      doScan();
+      selFiles = selObjects = null; doScan();
     } catch (e) { q('#finfo').textContent = 'Erreur : ' + e.message; }
   };
-  q('#fobj').onchange = e => doScan(e.target.value);
   q('#fyes').onclick = async () => {
     const folder = q('#ffold').value.trim();
     // echelle qui donne une route absurde (ex. 1 au lieu de 0,1 : map de 4 km, editeur bloque) : confirmation
@@ -2948,7 +4041,7 @@ $('dfolder').onclick = () => {
       force = true;
     }
     try { localStorage.setItem('ctr_import_folder', folder); } catch (e) { /* sans importance */ }
-    const req = { track, folder, obj: scan.obj, placement: q('#fplace').value, scale: sc * 39.37, force,
+    const req = { track, folder, files: scan.files, objects: selObjects ? [...selObjects] : undefined, placement: q('#fplace').value, scale: sc * 39.37, force,
                   up: q('#fup').value, pos: orbit.target.toArray(), road_material: scan.road_material || null,
                   texture_size: q('#ftsize').value,
                   materials: Object.fromEntries(scan.materials.map(m => [m.name, m.wall ? { collision: true, surface: 'invisible' }
@@ -3095,7 +4188,7 @@ $('dnewmap').onclick = () => {
     try {
       const r = await api('/api/newmap', req);
       await loadTrack(track, true);                     // collision (sol gris) rechargee
-      await loadDecor(true);
+      await loadDecor(true, false);
       showNewmapResult(r);
       status('Nouvelle map appliquée — ' + r.report.join(' · ') + ' (réinstalle pour le jeu)', 'ok');
     } catch (e) { status('Erreur : ' + e.message, 'err'); }
@@ -3200,7 +4293,7 @@ function tourVisibility() {
 async function tourDecor() {
   if (!$('tdecor').checked || decor || !track) return;
   const was = dirty;                                      // charger le decor ne doit pas effacer l'etat « non enregistre »
-  try { await loadDecor(true); } catch (e) { status('Erreur : ' + e.message, 'err'); }
+  try { await loadDecor(true, false); } catch (e) { status('Erreur : ' + e.message, 'err'); }
   dirty = was;
   if (tour) status('Visite virtuelle en cours — Échap pour quitter');
 }
@@ -3256,7 +4349,17 @@ function tourTick(t) {
   $('tourwarn').textContent = hole ? '⚠ Pas de sol sous la ligne de course ici (trou ou collision manquante)' : '';
 }
 $('tour').onclick = startTour;
-$('dtour').onclick = startTour;
+
+// barre posee sur la vue : boutons W / E / R (memes regles que le clavier, selon l'objet selectionne) + menu Affichage
+document.querySelectorAll('[data-gmode]').forEach(b => b.onclick = () =>
+  dispatchEvent(new KeyboardEvent('keydown', { key: { translate: 'w', rotate: 'e', scale: 'r' }[b.dataset.gmode] })));
+const syncGizmoBar = () => document.querySelectorAll('[data-gmode]').forEach(b => b.classList.toggle('on', b.dataset.gmode === gizmo.getMode()));
+const gizmoSetMode = gizmo.setMode.bind(gizmo);
+gizmo.setMode = m => { gizmoSetMode(m); syncGizmoBar(); };
+syncGizmoBar();
+$('dispbtn').onclick = e => { e.stopPropagation(); $('dispmenu').hidden = !$('dispmenu').hidden; };
+$('dispmenu').onclick = e => e.stopPropagation();
+addEventListener('click', () => { $('dispmenu').hidden = true; });
 $('tstop').onclick = stopTour;
 $('tplay').onclick = () => { tour.playing = !tour.playing; $('tplay').textContent = tour.playing ? '⏸' : '▶'; };
 $('tspeed').onchange = e => { if (tour) tour.speed = +e.target.value; e.target.blur(); };
@@ -3295,9 +4398,12 @@ async function setMode(m) {
   stopTour();
   if (dirty && !(await ask('Des modifications ne sont pas enregistrées. Changer de mode quand même ?'))) { $('mode').value = mode; syncModeTabs(); return; }
   mode = m; gizmo.detach(); selected = null; dSelected = null; dMulti = []; dirty = false; syncModeTabs();
-  $('raceSide').hidden = m !== 'race'; $('decorSide').hidden = m !== 'decor';
+  $('raceSide').hidden = $('raceDetails').hidden = m !== 'race'; $('decorSide').hidden = $('decorDetails').hidden = m !== 'decor';
+  document.querySelectorAll('#dispmenu [data-only]').forEach(d => d.hidden = d.dataset.only !== m);
   root.visible = markers.visible = startGroup.visible = crateGroup.visible = boostGroup.visible = tpGroup.visible = flyGroup.visible = m === 'race';
   decorGroup.visible = m === 'decor';
+  lightSel = null; renderLights(); refreshMaterials();   // lumieres ajoutees (et textures lumineuses) : mode Decor seulement
+  renderFallMarkers(); renderRespawnMarkers();           // zones de chute, reapparitions : mode Course seulement
   gizmo.showX = gizmo.showY = true;
   if (colMesh) colMesh.visible = m === 'race' || $('dcolvis').checked;
   if (m === 'decor' && !decor) await loadDecor();
@@ -3307,12 +4413,161 @@ async function setMode(m) {
 }
 $('mode').onchange = e => setMode(e.target.value);
 
+// ---- onglet « Menu » : categories du menu de selection des pistes du jeu, nouvelles pistes ----------------------
+// Brouillon edite dans la page (titres, ordre, pistes deplacees) puis installe d'un coup dans update2.pak ; creer,
+// renommer ou supprimer une piste creee agit aussitot (le brouillon doit etre installe avant).
+let menuOpen = false, menuData = null, menuDraft = null;
+const menuDirty = () => menuData && JSON.stringify(menuDraft) !== JSON.stringify(menuData.groups);
+const menuGroupTitle = g => g.title || g.game_title || 'Sans titre';
+async function openMenuPage() {
+  if (menuOpen) return;
+  if (dirty && !(await ask('Des modifications ne sont pas enregistrées. Ouvrir le menu quand même ?'))) return;
+  stopTour();
+  menuOpen = true; $('menuPage').hidden = false; syncModeTabs();
+  $('menuPage').innerHTML = '<div class="note">Lecture du menu du jeu…</div>';
+  try { setMenuData(await api('/api/menu_layout')); }
+  catch (e) { $('menuPage').innerHTML = `<div class="note" style="color:var(--err)">Erreur : ${esc(e.message)}</div>`; }
+}
+async function closeMenuPage() {
+  if (menuDirty() && !(await ask('Les changements du menu ne sont pas installés. Les abandonner ?'))) return false;
+  menuOpen = false; $('menuPage').hidden = true; syncModeTabs();
+  if (menuData) menuDraft = structuredClone(menuData.groups);
+  return true;
+}
+function setMenuData(d) {
+  menuData = d; menuDraft = structuredClone(d.groups);
+  labelTracks(d.tracks);
+  renderMenuPage();
+}
+// liste des pistes de l'editeur : nom des pistes creees a cote de leur identifiant
+function labelTracks(created, list) {
+  const sel = $('track'), cur = sel.value;
+  const names = Object.fromEntries((created || []).map(t => [t.id, t.display]));
+  const ids = list || [...sel.options].map(o => o.value);
+  sel.innerHTML = ids.map(t => `<option value="${esc(t)}">${esc(t)}${names[t] ? ' — ' + esc(names[t]) : ''}</option>`).join('');
+  sel.value = ids.includes(cur) ? cur : ids[0];
+}
+function renderMenuPage() {
+  const groups = menuDraft, d = menuDirty();
+  const opts = (skip) => groups.map((g, i) => i === skip ? '' : `<option value="${i}">${esc(menuGroupTitle(g))}</option>`).join('');
+  const lvl = (g, gi, l, li) => `<div class="lvl">
+      <span class="nm" title="${esc(l.zone)}">${esc(l.name)} ${l.track ? '<span class="tag new">créée</span>' : ''}</span>
+      <button data-a="lup" data-g="${gi}" data-l="${li}" ${li ? '' : 'disabled'} title="Monter">↑</button>
+      <button data-a="ldown" data-g="${gi}" data-l="${li}" ${li < g.levels.length - 1 ? '' : 'disabled'} title="Descendre">↓</button>
+      <select data-a="move" data-g="${gi}" data-l="${li}" title="Déplacer vers une autre catégorie"><option value="">Déplacer…</option>${opts(gi)}</select>
+      ${l.track ? `<button data-a="del" data-t="${esc(l.track)}" class="danger" ${d ? 'disabled' : ''} title="Supprimer cette piste">🗑</button>` : ''}
+    </div>`;
+  $('menuPage').innerHTML = `
+    <div class="mphead"><h2>🗂 Piste / catégorie</h2>
+      <button id="mpaddcat">➕ Nouvelle catégorie</button>
+      <span class="spacer"></span>
+      <button id="mpundo" ${d ? '' : 'disabled'}>↺ Annuler les changements</button>
+      <button id="mporig" title="Catégories et noms du jeu d'origine (tes pistes créées vont dans une catégorie « Custom »)">Menu d'origine</button>
+      <button id="mpsave" class="go" ${d ? '' : 'disabled'} title="Écrit le menu dans update2.pak (ferme shadPS4 avant)">🎮 Installer le menu</button>
+    </div>
+    <p class="lead">Renomme les catégories, range les pistes, crée des catégories : ces changements s'appliquent dans le jeu avec
+      « Installer le menu » (ferme shadPS4 avant). Une catégorie vide n'apparaît pas dans le jeu.</p>
+    <div class="mpnew"><b>➕ Nouvelle piste</b>
+      <input type="text" id="mpname" placeholder="Nom affiché dans le jeu" value="Custom Track" maxlength="40">
+      <label class="note">dans <select id="mpgroup">${groups.map((g, i) => `<option value="${esc(g.key)}" ${i === groups.length - 1 ? 'selected' : ''}>${esc(menuGroupTitle(g))}</option>`).join('')}</select></label>
+      <button id="mpcreate" class="primary" ${d ? 'disabled' : ''}>Créer la piste</button>
+      <span class="note">${d ? 'Installe d\'abord les changements du menu.' :
+        `Copie de Crash Cove vidée (ni sol ni décor), installée dans le jeu, prête pour l'import de ta map. ≈ 1 à 2 min, ≈ 360 Mo.`}</span>
+    </div>
+    <div class="mpgrid">${groups.map((g, gi) => `<div class="mpcat ${g.levels.length ? '' : 'empty'}">
+      <div class="chead">
+        <button data-a="cup" data-g="${gi}" ${gi ? '' : 'disabled'} title="Monter la catégorie">↑</button>
+        <button data-a="cdown" data-g="${gi}" ${gi < groups.length - 1 ? '' : 'disabled'} title="Descendre la catégorie">↓</button>
+        <input type="text" data-a="title" data-g="${gi}" value="${esc(g.title || '')}" placeholder="${esc(g.game_title || 'Custom')}" maxlength="40"
+          title="${g.id ? 'Vide = nom du jeu' : 'Nom de la catégorie'}">
+        <span class="tag ${g.id ? '' : 'new'}">${g.id ? 'jeu' : 'ajoutée'}</span>
+        ${g.id ? '' : `<button data-a="cdel" data-g="${gi}" class="danger" ${g.levels.length ? 'disabled title="Déplace d\'abord ses pistes"' : 'title="Supprimer la catégorie"'}>✕</button>`}
+      </div>
+      ${g.levels.map((l, li) => lvl(g, gi, l, li)).join('') || '<div class="note">Vide : n\'apparaît pas dans le jeu.</div>'}
+    </div>`).join('')}</div>`;
+  const P = $('menuPage');
+  const swap = (a, i, j) => { [a[i], a[j]] = [a[j], a[i]]; };
+  P.querySelectorAll('button[data-a], select[data-a]').forEach(el => {
+    const gi = +el.dataset.g, li = +el.dataset.l, a = el.dataset.a;
+    if (el.tagName === 'SELECT') el.onchange = () => {
+      if (el.value === '') return;
+      const [l] = groups[gi].levels.splice(li, 1); groups[+el.value].levels.push(l); renderMenuPage();
+    };
+    else el.onclick = async () => {
+      if (a === 'lup') swap(groups[gi].levels, li, li - 1);
+      else if (a === 'ldown') swap(groups[gi].levels, li, li + 1);
+      else if (a === 'cup') swap(groups, gi, gi - 1);
+      else if (a === 'cdown') swap(groups, gi, gi + 1);
+      else if (a === 'cdel') groups.splice(gi, 1);
+      else if (a === 'del') return deleteCreatedTrack(el.dataset.t);
+      renderMenuPage();
+    };
+  });
+  P.querySelectorAll('input[data-a="title"]').forEach(el => el.oninput = () => {
+    const gi = +el.dataset.g;
+    groups[gi].title = el.value.trim() || null;
+    // nom de la categorie a jour dans « Nouvelle piste … dans » et les listes « Déplacer… »
+    const label = menuGroupTitle(groups[gi]);
+    if ($('mpgroup').options[gi]) $('mpgroup').options[gi].textContent = label;
+    P.querySelectorAll(`select[data-a="move"] option[value="${gi}"]`).forEach(o => o.textContent = label);
+    const d2 = menuDirty();                                    // boutons a jour sans redessiner (le champ garde le focus)
+    $('mpsave').disabled = $('mpundo').disabled = !d2; $('mpcreate').disabled = d2;
+  });
+  $('mpaddcat').onclick = () => {
+    const keys = new Set(groups.map(g => g.key));
+    let i = 1; while (keys.has('custom' + i)) i++;
+    groups.push({ id: null, key: 'custom' + i, title: 'Nouvelle catégorie', game_title: null, levels: [] });
+    renderMenuPage();
+    const inp = P.querySelectorAll('input[data-a="title"]'); inp[inp.length - 1]?.select();
+  };
+  $('mpundo').onclick = () => { menuDraft = structuredClone(menuData.groups); renderMenuPage(); };
+  $('mporig').onclick = async () => {
+    if (!(await ask('Remettre les catégories et leurs noms du jeu d\'origine ? (tes pistes créées restent, dans une catégorie « Custom »)'))) return;
+    await saveMenuLayout([]);
+  };
+  $('mpsave').onclick = () => saveMenuLayout(menuDraft);
+  $('mpcreate').onclick = createMenuTrack;
+}
+async function saveMenuLayout(groups) {
+  status('Installation du menu dans le jeu…');
+  try {
+    const body = groups.map(g => ({ id: g.id, key: g.key, title: g.title, levels: g.levels.map(l => l.zone) }));
+    setMenuData(await api('/api/menu_layout_save', { groups: body }));
+    status('Menu installé dans le jeu (update2.pak).', 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+}
+async function createMenuTrack() {
+  const name = $('mpname').value.trim() || 'Custom Track', group = $('mpgroup').value;
+  if (!(await ask(`Créer la piste « ${name} » ? Copie de Crash Cove vidée, installée dans le jeu (ferme shadPS4 avant). ≈ 1 à 2 min.`))) return;
+  status(`Création de « ${name} »…`);
+  try {
+    const r = await api('/api/menu_track_create', { name, group, blank: true });
+    setMenuData(r.menu); labelTracks(r.menu.tracks, r.tracks);
+    status(`Piste « ${name} » créée (${r.track}) et installée — choisis-la dans la liste des pistes puis importe ta map (Décor).`, 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+}
+async function deleteCreatedTrack(id) {
+  const t = menuData.tracks.find(x => x.id === id);
+  if (!(await ask(`Supprimer définitivement « ${t?.display || id} » (${id}) ? Ses archives (.pak) et ses modifications enregistrées dans l'éditeur sont effacées.`))) return;
+  status('Suppression…');
+  try {
+    if (track === id) { const other = [...$('track').options].map(o => o.value).find(v => v !== id); if (other) { $('track').value = other; await loadTrack(other); decor = null; } }
+    const r = await api('/api/menu_track_delete', { track: id });
+    setMenuData(r.menu); labelTracks(r.menu.tracks, r.tracks);
+    status(`${id} supprimée.`, 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+}
+$('tabMenu').onclick = () => { if (!$('tabMenu').disabled) openMenuPage(); };
+
 // ---- interface : onglets, menu « ⋯ », guide, outils du parcours, aide --------------------------------------
 function syncModeTabs() {
-  document.querySelectorAll('.tabs [data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+  document.querySelectorAll('.tabs [data-mode]').forEach(b => b.classList.toggle('on', !menuOpen && b.dataset.mode === mode));
+  $('tabMenu').classList.toggle('on', menuOpen);
 }
 document.querySelectorAll('.tabs [data-mode]').forEach(b => b.onclick = async () => {
-  if (b.disabled || b.dataset.mode === mode) return;
+  if (b.disabled) return;
+  if (menuOpen && !(await closeMenuPage())) return;
+  if (b.dataset.mode === mode) { syncModeTabs(); return; }
   $('mode').value = b.dataset.mode;
   await setMode(b.dataset.mode);
   syncModeTabs();
@@ -3383,11 +4638,12 @@ $('sfin2').onclick = () => {
 // preferences d'affichage (guide, aide) : memorisees dans le navigateur
 const pref = (k, d) => { try { const v = localStorage.getItem('ctr_' + k); return v == null ? d : v === '1'; } catch (e) { return d; } };
 const setPref = (k, v) => { try { localStorage.setItem('ctr_' + k, v ? '1' : '0'); } catch (e) { /* sans importance */ } };
-const applyPrefs = () => { $('guide').hidden = !$('showguide').checked; $('help').hidden = !$('showhelp').checked; };
-$('showguide').checked = pref('guide', true); $('showhelp').checked = pref('help', true); applyPrefs();
-$('showguide').onchange = e => { setPref('guide', e.target.checked); applyPrefs(); };
-$('showhelp').onchange = e => { setPref('help', e.target.checked); applyPrefs(); };
-$('helpclose').onclick = () => { $('showhelp').checked = false; setPref('help', false); applyPrefs(); };
+const applyPrefs = () => { $('help').hidden = !$('showhelp').checked; $('helpbtn').classList.toggle('on', $('showhelp').checked); };
+$('showguide').checked = pref('guide', true); $('showhelp').checked = pref('help2', false); applyPrefs();
+$('helpbtn').onclick = () => { $('showhelp').checked = !$('showhelp').checked; $('showhelp').dispatchEvent(new Event('change')); };
+$('showguide').onchange = e => { setPref('guide', e.target.checked); };
+$('showhelp').onchange = e => { setPref('help2', e.target.checked); applyPrefs(); };
+$('helpclose').onclick = () => { $('showhelp').checked = false; setPref('help2', false); applyPrefs(); };
 // guide « premiers pas » : chaque etape bascule dans le bon mode et ouvre l'outil correspondant
 const gotoMode = async m => { if (mode !== m) { $('mode').value = m; await setMode(m); syncModeTabs(); } return mode === m; };
 document.querySelectorAll('#guide [data-step]').forEach(b => b.onclick = async () => {
@@ -3395,10 +4651,190 @@ document.querySelectorAll('#guide [data-step]').forEach(b => b.onclick = async (
   if (s === 'import' && await gotoMode('decor')) $('dfolder').click();
   else if (s === 'newmap' && await gotoMode('decor')) $('dnewmap').click();
   else if (s === 'route' && await gotoMode('race')) $('mkroute').click();
-  else if (s === 'items' && await gotoMode('race')) { $('secitems').open = true; $('secitems').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  else if (s === 'items' && await gotoMode('race')) openWin('items');
   else if (s === 'check') $('check').click();
   else if (s === 'install') $('install').click();
 });
+
+// ---- fenetres (colonne de gauche) : une seule a la fois, ouverte depuis le menu « Fenetre » ----
+let winOpen = null;
+const PANEL_W = { side: [220, 700, 340], details: [240, 700, 340] };     // min, max, defaut (px)
+const panelW = k => { let v = NaN; try { v = +localStorage.getItem('ctr_w_' + k); } catch (e) { /* sans importance */ }
+  const [lo, hi, d] = PANEL_W[k]; return v >= lo && v <= hi ? v : d; };
+function layoutPanels() {
+  const root = document.documentElement.style;
+  root.setProperty('--side', winOpen ? panelW('side') + 'px' : '0px');
+  root.setProperty('--details', panelW('details') + 'px');
+  $('side').hidden = $('sideresize').hidden = !winOpen;
+  resize();
+}
+function openWin(name) {
+  const el = document.querySelector(`#side [data-win="${name}"]`);
+  if (!el || el.closest('[hidden]:not(#side)')) return;
+  document.querySelectorAll('#side details.sec').forEach(s => s.classList.toggle('shown', s === el));
+  el.open = true; winOpen = name;
+  $('sidetitle').textContent = el.querySelector('summary').firstChild.textContent.trim();
+  layoutPanels();
+}
+function closeWin() { winOpen = null; document.querySelectorAll('#side details.sec').forEach(s => s.classList.remove('shown')); layoutPanels(); }
+$('sideclose').onclick = closeWin;
+// fenetre du mode precedent : fermee au changement de mode
+const winModeCheck = () => { if (winOpen && document.querySelector(`#side [data-win="${winOpen}"]`)?.closest('[hidden]:not(#side)')) closeWin(); };
+for (const id of ['tabDecor', 'tabRace']) $(id).addEventListener('click', () => setTimeout(winModeCheck, 300));
+
+// largeur des panneaux : poignee sur leur bord interieur (memorisee dans le navigateur)
+for (const [id, k, dir] of [['sideresize', 'side', 1], ['detresize', 'details', -1]]) {
+  $(id).onpointerdown = e => {
+    e.preventDefault();
+    const x0 = e.clientX, w0 = panelW(k), [lo, hi] = PANEL_W[k], h = $(id);
+    h.classList.add('drag'); document.body.classList.add('resizing'); h.setPointerCapture(e.pointerId);
+    h.onpointermove = ev => {
+      const w = Math.round(Math.max(lo, Math.min(hi, w0 + dir * (ev.clientX - x0))));
+      try { localStorage.setItem('ctr_w_' + k, w); } catch (err) { /* sans importance */ }
+      layoutPanels();
+    };
+    h.onpointerup = () => { h.onpointermove = h.onpointerup = null; h.classList.remove('drag'); document.body.classList.remove('resizing'); };
+  };
+  $(id).ondblclick = () => { try { localStorage.removeItem('ctr_w_' + k); } catch (e) { /* sans importance */ } layoutPanels(); };
+}
+layoutPanels();
+
+// ---- barre de menus : chaque entree declenche le bouton (ou la fonction) existant ----
+const clickId = id => () => $(id)?.click();
+const inMode = (m, fn) => async () => { if (await gotoMode(m)) { winModeCheck(); fn(); } };
+const toggleCk = id => ({ check: () => $(id).checked, run: () => { $(id).checked = !$(id).checked; $(id).dispatchEvent(new Event('change')); } });
+const lightTypes = all => () => Object.entries(lightPresets).map(([k, p]) => ({
+  label: p.label, check: () => all ? lights.length && lights.every(l => l.preset === k) : lights[lightSel]?.preset === k,
+  enabled: () => all ? lights.length > 0 : lightSel != null,
+  run: () => {
+    for (const l of all ? lights : [lights[lightSel]]) Object.assign(l, { color: [...p.color], intensity: p.intensity, radius: p.radius, preset: k });
+    changedLights(all ? `Type « ${p.label} » appliqué aux ${lights.length} lumières` : `Lumière : type « ${p.label} »`);
+  } }));
+const MENUS = [
+  ['Fichier', [
+    { label: '💾 Enregistrer', run: clickId('save') },
+    { label: '✔ Vérifier', run: clickId('check') },
+    { label: '🎮 Installer dans le jeu', run: clickId('install') },
+    '-',
+    { label: '📥 Importer ta map (dossier)…', run: inMode('decor', clickId('dfolder')) },
+    { label: '📥 Importer un modèle OBJ…', run: inMode('decor', clickId('dimport')) },
+    { label: '📦 Importer un pack de maps (.zip)…', run: clickId('packimp') },
+    { label: '📦 Exporter des maps (.zip)…', run: clickId('packexp') },
+    { label: '🧩 Exporter pour Blender…', only: 'decor', run: clickId('dexport') },
+    '-',
+    { label: '📁 Dossier des archives du jeu…', run: clickId('archdir') },
+    { label: '🌐 Langue', sub: () => [...$('lang').options].map(o => ({ label: o.text, check: () => $('lang').value === o.value,
+      run: () => { $('lang').value = o.value; $('lang').dispatchEvent(new Event('change')); } })) },
+    '-',
+    { label: '↩ Restaurer les archives du jeu', run: clickId('uninstall') },
+    { label: '🗑 Repartir de l\'original', run: clickId('reset') }]],
+  ['Édition', [
+    { label: '🚀 Guide : créer ta piste en 6 étapes', win: 'guide' },
+    '-',
+    { label: '↶ Annuler', key: 'Ctrl+Z', run: clickId('undo') },
+    { label: '↷ Rétablir', key: 'Ctrl+Y', run: clickId('redo') },
+    '-',
+    { label: '🏁 Parcours', only: 'race', sub: () => [
+      { label: 'Créer le parcours depuis la route…', run: clickId('mkroute') },
+      { label: 'Régénérer toutes les splines IA…', run: clickId('regenall') },
+      { label: 'Chutes et réapparitions…', run: clickId('mkfalls') },
+      '-',
+      { label: 'Sélectionner la ligne d\'arrivée', run: clickId('sfin2') },
+      { label: 'Sélectionner la grille de départ', run: clickId('sgall2') }] },
+    { label: '📦 Caisses', only: 'race', sub: () => [
+      { label: 'Placement automatique…', run: clickId('cauto') },
+      { label: 'Tout poser au sol', run: clickId('cground') },
+      { label: 'Tout retirer', run: clickId('cclear') }] },
+    { label: '🧹 Nouvelle map… (vider la map)', only: 'decor', run: clickId('dnewmap') },
+    { label: '🧱 Murs invisibles', only: 'decor', sub: () => [
+      { label: 'Générer le long de la route…', run: clickId('dwallauto') },
+      { label: 'Murs autour de la sélection…', run: clickId('dwallzone') },
+      { label: 'Sélectionner tous les murs invisibles', run: clickId('dwallsel') },
+      '-',
+      { label: 'Afficher les murs invisibles', ...toggleCk('dwallvis') }] },
+    { label: '💡 Lumières', only: 'decor', sub: () => [
+      { label: 'Afficher les lumières', ...toggleCk('dltvis') },
+      { label: 'Lumière suivante', run: clickId('dltall'), enabled: () => lights.length > 0 },
+      '-',
+      { label: 'Type de la lumière sélectionnée', sub: lightTypes(false), enabled: () => lightSel != null },
+      { label: 'Type de toutes les lumières', sub: lightTypes(true), enabled: () => lights.length > 0 },
+      '-',
+      { label: 'Supprimer toutes les lumières', run: clickId('dltclear'), enabled: () => lights.length > 0 }] },
+    { label: '🛠 Toute la map', only: 'decor', sub: () => [
+      { label: '✥ Déplacer toute la map…', run: clickId('dmovez') },
+      { label: '⤢ Changer l\'échelle de toute la map…', run: clickId('dscale') },
+      { label: 'Alléger la map…', run: clickId('dlight') },
+      { label: 'Transparence des textures…', run: clickId('dalpha') }] },
+    { label: '🔍 Rechercher un objet…', only: 'decor', check: () => winOpen === 'search', run: () => { openWin('search'); $('dsearch').focus(); } }]],
+  ['Ajouter', [
+    { label: '+ Caisse « ? »', only: 'race', run: clickId('caddq') },
+    { label: '+ Caisse de fruits', only: 'race', run: clickId('caddf') },
+    { label: '+ TNT', only: 'race', run: clickId('caddt') },
+    { label: '+ Nitro', only: 'race', run: clickId('caddn') },
+    { label: '+ Fruit Wumpa', only: 'race', run: clickId('caddw') },
+    { only: 'race', sep: true },
+    { label: '⚡ Booster au centre de la vue', only: 'race', run: clickId('badd') },
+    { label: '📚 Objet du jeu (bibliothèque)…', only: 'decor', run: clickId('dlib') },
+    { label: '💡 Lumière au centre de la vue', only: 'decor', run: clickId('dltadd') },
+    { label: '🧱 Mur invisible au centre de la vue', only: 'decor', run: clickId('dwalladd') },
+    { label: '📥 Modèle OBJ…', only: 'decor', run: clickId('dimport') },
+    { note: 'Caisses et boosters : mode Course · objets du décor, lumières, murs : mode Décor' }]],
+  ['Piste', [
+    { label: '🏁 Créer le parcours depuis la route…',
+      run: async () => { if (mode === 'race' || await gotoMode('race')) openRouteCreator(); } },
+    '-',
+    { label: '🗺 Générer la mini-carte', only: 'race', run: clickId('mkminimap') },
+    { label: '🏷 Nom et images de la piste…', only: 'race', run: clickId('mkmenu') },
+    { label: '🌅 Ambiance (jour, soir, nuit)…', only: 'decor', run: clickId('dambiance') },
+    { label: '🎥 Visite virtuelle', run: clickId('tour') },
+    { label: '⟳ Actualiser la vue', run: clickId('refresh3d') },
+    { label: '🗺 Parcours vu de dessus', only: 'race', enabled: () => !!lastRoute,
+      run: () => showRoutePreview(lastRoute.r, lastRoute.source, lastRoute.opt) },
+    '-',
+    { label: '📦 Objets sur la piste', only: 'race', win: 'items' },
+    { label: '⚡ Boosters', only: 'race', win: 'boosts' },
+    { label: '🎬 Survol d\'introduction', only: 'race', win: 'flyby' },
+    { label: '🔧 Transitions et splines', only: 'race', win: 'advrace' },
+    { label: '🔧 Fichiers de décor', only: 'decor', win: 'files' }]],
+  ['Aide', [
+    { label: '⌨ Raccourcis clavier', ...toggleCk('showhelp') },
+    { label: '🕘 Historique des messages', run: () => toggleHistory(true) }]],
+];
+function buildMenu(items) {
+  const box = document.createElement('div'); box.className = 'mdrop';
+  for (const it of typeof items === 'function' ? items() : items) {
+    if (it === '-' || it.sep) { if (!it.only || it.only === mode) box.insertAdjacentHTML('beforeend', '<div class="msep"></div>'); continue; }
+    if (it.only && it.only !== mode) continue;
+    if (it.note) { const n = document.createElement('div'); n.className = 'mnote'; n.textContent = it.note; box.appendChild(n); continue; }
+    const el = document.createElement('div'); el.className = 'mi';
+    const on = it.enabled ? it.enabled() : true;
+    if (!on) el.classList.add('off');
+    const checked = it.win ? winOpen === it.win : it.check?.();
+    el.innerHTML = `<span class="ck">${checked ? '✔' : ''}</span><span></span>${it.sub ? '<span class="mk">▸</span>' : it.key ? `<span class="mk">${it.key}</span>` : ''}`;
+    el.children[1].textContent = it.label;
+    if (it.sub) {
+      el.onpointerenter = () => { if (!on) return; box.querySelectorAll(':scope > .mi.subopen').forEach(x => x !== el && x.classList.remove('subopen'));
+        if (!el.querySelector('.sub')) { const s = buildMenu(it.sub); s.classList.add('sub'); el.appendChild(s); } el.classList.add('subopen'); };
+      el.onclick = e => { if (e.target === el || e.target.parentNode === el) el.onpointerenter(); };
+    } else {
+      el.onpointerenter = () => box.querySelectorAll(':scope > .mi.subopen').forEach(x => x.classList.remove('subopen'));
+      el.onclick = e => { e.stopPropagation(); if (!on) return; closeMenus(); it.win ? (winOpen === it.win ? closeWin() : openWin(it.win)) : it.run(); };
+    }
+    box.appendChild(el);
+  }
+  return box;
+}
+function closeMenus() { document.querySelectorAll('#menubar .mb').forEach(m => { m.classList.remove('open'); m.querySelector('.mdrop')?.remove(); }); }
+function openMenu(mb, items) { closeMenus(); mb.classList.add('open'); mb.appendChild(buildMenu(items)); }
+for (const [name, items] of MENUS) {
+  const mb = document.createElement('div'); mb.className = 'mb';
+  const b = document.createElement('button'); b.textContent = name; mb.appendChild(b);
+  b.onclick = e => { e.stopPropagation(); mb.classList.contains('open') ? closeMenus() : openMenu(mb, items); };
+  b.onpointerenter = () => { if (document.querySelector('#menubar .mb.open') && !mb.classList.contains('open')) openMenu(mb, items); };
+  $('menubar').appendChild(mb);
+}
+addEventListener('pointerdown', e => { if (!e.target.closest?.('#menubar')) closeMenus(); });
+addEventListener('keydown', e => { if (e.key === 'Escape') closeMenus(); });
 
 // Confirmation integree a la page (window.confirm est bloque dans certains navigateurs integres :
 // il renvoyait « annuler » sans rien afficher, et l'installation etait abandonnee en silence).
@@ -3418,7 +4854,7 @@ function ask(message) {
 }
 
 // ---- serveur ----------------------------------------------------------------------------
-const ACTION_BUTTONS = ['save', 'check', 'install', 'uninstall', 'reset', 'mode', 'track', 'undo', 'redo', 'tabRace', 'tabDecor'];
+const ACTION_BUTTONS = ['save', 'check', 'install', 'uninstall', 'reset', 'mode', 'track', 'undo', 'redo', 'tabRace', 'tabDecor', 'tabMenu'];
 let busy = 0;
 // Barre de progression des operations du serveur (enregistrement, import, installation...) : avancement lu
 // sur /api/progress pendant qu'une requete POST est en cours ; affichee seulement si l'operation dure.
@@ -3481,18 +4917,15 @@ async function loadTrack(name, keepCamera) {
     [n, { pos: tp.pos || transitions[n]?.position || [0, 0, 0], yaw: tp.yaw || 0 }]));
   teleportersLoaded = JSON.stringify(teleporters);
   renderTeleportMarkers();
+  fallZones = (d.fall_zones || []).map(z => ({ ...z, pos: [...z.pos], dims: [...z.dims] }));
+  fallZonesLoaded = JSON.stringify(fallZones);
+  renderFallMarkers();
+  loadRespawnPoints();
   flybyShots = d.flyby || [];
   flyby = Object.fromEntries(flybyShots.filter(s => s.custom).map(s => [s.key, s.model]));
   flybyLoaded = JSON.stringify(flyby);
   renderFlybyMarkers(); renderFlybyPanel();
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(d.collision.positions, 3));
-  g.setIndex(d.collision.indices); g.computeVertexNormals();
-  // legerement recule : le terrain visible du decor (meme surface) passe devant
-  colMesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: 0x6b7280, side: THREE.DoubleSide, wireframe: $('wire').checked,
-                                                               polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }));
-  colMesh.visible = mode !== 'decor' || $('dcolvis').checked;
-  scene.add(colMesh);
+  setCollision(d.collision);
   splines.forEach(buildSpline); renderTransitionMarkers(); renderPanel();
   if (!keepCamera) {
     const box = new THREE.Box3(); splines.forEach(s => s.points.forEach(p => box.expandByPoint(new THREE.Vector3(...p))));
@@ -3516,8 +4949,8 @@ $('save').onclick = async () => {
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
 };
 // enregistrement du mode Course (piste chargee), puis rechargement ; -> reponse du serveur (rapport)
-async function saveRace() {
-    const body = {
+async function saveRace(extra = {}) {
+    const body = { ...extra,
       track, deleted, starting_splines: starting,
       splines: Object.fromEntries(splines.map(s => [s.name, s.points])),
       new_splines: splines.filter(s => s.isNew && s.kind === 'ai_paths').map(s => ({ name: s.name, template: s.template })),
@@ -3535,6 +4968,8 @@ async function saveRace() {
                ...boosts.map(b => ({ kind: 'boost', pos: b.pos, yaw: b.yaw || 0, dims: b.dims }))],
       // teleporteurs : envoyes seulement s'ils ont change (le serveur reecrit alors le _Design et le RaceSystem)
       teleporters: JSON.stringify(teleporters) !== teleportersLoaded ? teleporters : undefined,
+      // zones de chute : envoyees seulement si elles ont change (deplacees, redimensionnees, supprimees)
+      fall_zones: JSON.stringify(fallZones) !== fallZonesLoaded ? fallZones : undefined,
       // survol d'introduction : plans modifies ({} = tous d'origine), seulement s'ils ont change
       flyby: JSON.stringify(flyby) !== flybyLoaded ? flyby : undefined };
     const r = await api('/api/save', body);
@@ -3675,10 +5110,10 @@ async function openMenuAssets() {
       <div style="background:repeating-conic-gradient(#2a2f38 0% 25%, #1d2026 0% 50%) 50%/16px 16px;border-radius:4px;display:flex;align-items:center;justify-content:center;height:110px">
         <img id="mimg_${k}" src="${im.preview}" style="max-width:150px;max-height:110px"></div>
       <div><b style="font-size:12px">${esc(im.label)}</b> <span style="color:var(--muted);font-size:11px">${im.size[0]} × ${im.size[1]}${im.custom ? ' · modifiée' : ''}</span>
-        <div class="btns" style="margin-top:4px"><label class="btnlike" style="cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:#262a32">Choisir une image…
+        ${im.shared ? `<div style="color:var(--muted);font-size:11px;margin-top:4px">Image commune à toutes les pistes du jeu (un seul exemplaire, au nom de Crash Cove) : non modifiable pour une piste créée.${k === 'intro' ? ' L\'icône de ta piste en course suit sa vignette.' : ''}</div>` : `<div class="btns" style="margin-top:4px"><label class="btnlike" style="cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:#262a32">Choisir une image…
           <input type="file" accept="image/*" data-k="${k}" class="mfile" hidden></label>
           ${k === 'outline' ? '<button data-gen="1">Générer depuis le parcours</button>' : ''}
-          <button data-orig="${k}">Remettre l'original</button></div>
+          <button data-orig="${k}">Remettre l'original</button></div>`}
         <div id="mst_${k}" style="color:var(--muted);font-size:11px;margin-top:2px"></div></div></div>`).join('');
   ov.innerHTML = `<div class="card" style="max-width:640px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:6px"><b>Nom et images de la piste</b> <span style="color:var(--muted);font-size:12px">(menus du jeu ; aucun fichier renommé)</span></div>
@@ -3832,22 +5267,44 @@ async function generateMinimap() {
     ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
     ov.innerHTML = `<div class="card" style="max-width:520px;width:100%;background:var(--panel);border:1px solid var(--line)">
       <div style="margin-bottom:6px"><b>Mini-carte générée</b> <span style="color:var(--muted);font-size:12px">(enregistrée — installe pour la voir en jeu)</span></div>
-      <img id="mmimg" src="${r.preview}" style="width:100%;background:#262a32;border-radius:4px;image-rendering:auto">
+      <div style="display:flex;gap:6px">
+        <figure style="flex:1;margin:0"><img id="mmimg" src="${r.preview}" style="width:100%;background:#262a32;border-radius:4px;image-rendering:auto">
+          <figcaption id="mmcap1" style="font-size:11px;color:var(--muted);text-align:center"></figcaption></figure>
+        <figure id="mmstoredbox" style="flex:1;margin:0" hidden><img id="mmstored" style="width:100%;background:#262a32;border-radius:4px;image-rendering:auto">
+          <figcaption style="font-size:11px;color:var(--muted);text-align:center">Image enregistrée (retournée)</figcaption></figure>
+      </div>
       <div id="mmrep" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
       <div style="font-size:12px;margin-top:6px">Réglage fin : si en jeu les pastilles des pilotes sont décalées par rapport au dessin,
-        déplace le dessin dans le même sens (pas de 2 px ; mémorisé, réinstalle ensuite).</div>
+        déplace le dessin dans le même sens (8 px par clic, 2 px avec Maj ; mémorisé, réinstalle ensuite).</div>
       <div class="btns" style="margin-top:4px;align-items:center"><button data-mv="0,-2">↑</button><button data-mv="0,2">↓</button>
         <button data-mv="-2,0">←</button><button data-mv="2,0">→</button><span id="mmnudge" style="color:var(--muted);font-size:12px"></span></div>
+      <div style="font-size:12px;margin-top:8px">En jeu, l'image est lue en miroir par rapport à cet aperçu ? Corrige son sens d'enregistrement
+        (l'image enregistrée retournée s'affiche à droite ; mémorisé, réinstalle ensuite) :</div>
+      <div class="btns" style="margin-top:4px;align-items:center"><button data-flip="h" title="Inverse gauche et droite">⇆ Miroir horizontal</button>
+        <button data-flip="v" title="Inverse haut et bas">⇅ Miroir vertical</button><span id="mmmirror" style="color:var(--muted);font-size:12px"></span></div>
       <div class="btns" style="justify-content:flex-end;margin-top:8px"><button id="mmok" class="primary">OK</button></div></div>`;
     document.body.appendChild(ov);
     const show = res => {
       ov.querySelector('#mmimg').src = res.preview;
+      // miroir actif : l'image enregistree (que le jeu relit retournee) s'affiche a cote de ce qu'on doit voir en jeu
+      ov.querySelector('#mmstoredbox').hidden = !res.stored_preview;
+      if (res.stored_preview) ov.querySelector('#mmstored').src = res.stored_preview;
+      ov.querySelector('#mmcap1').textContent = res.stored_preview ? 'Vu en jeu' : '';
       ov.querySelector('#mmrep').textContent = res.report.join(' · ') + '. Calée sur la mini-carte d\'origine de Crash Cove.';
       ov.querySelector('#mmnudge').textContent = `dessin décalé de ${res.nudge[0]} px (horizontal), ${res.nudge[1]} px (vertical)`;
+      const m = res.mirror || [false, false];
+      ov.querySelectorAll('[data-flip]').forEach(b => b.classList.toggle('primary', !!m['hv'.indexOf(b.dataset.flip)]));
+      ov.querySelector('#mmmirror').textContent = m[0] || m[1] ? 'miroir actif' : 'aucun miroir';
     };
     show(r);
-    ov.querySelectorAll('[data-mv]').forEach(b => b.onclick = async () => {
-      try { show(await api('/api/minimap', { track, move: b.dataset.mv.split(',').map(Number) })); status('Mini-carte réajustée — réinstalle pour la voir en jeu', 'ok'); }
+    // 8 px par clic (2 px avec Maj) : a 2 px, le dessin bougeait d'un demi-pixel a l'ecran (apercus reduits), invisible
+    ov.querySelectorAll('[data-mv]').forEach(b => b.onclick = async e => {
+      const k = e.shiftKey ? 1 : 4;
+      try { show(await api('/api/minimap', { track, move: b.dataset.mv.split(',').map(v => Number(v) * k) })); status('Mini-carte réajustée — réinstalle pour la voir en jeu', 'ok'); }
+      catch (e) { status('Erreur : ' + e.message, 'err'); }
+    });
+    ov.querySelectorAll('[data-flip]').forEach(b => b.onclick = async () => {
+      try { show(await api('/api/minimap', { track, flip: b.dataset.flip })); status('Sens de l\'image corrigé — réinstalle pour la voir en jeu', 'ok'); }
       catch (e) { status('Erreur : ' + e.message, 'err'); }
     });
     ov.querySelector('#mmok').onclick = () => ov.remove();
@@ -3904,7 +5361,7 @@ function showCheck(r, withInstall) {
       try {
         const res = await api('/api/fix', { track, fixes });
         await loadTrack(track, true);
-        if (decor) await loadDecor(true);
+        if (decor) await loadDecor(true, false);
         r = await api('/api/check', { track });
         note = `<div style="font-size:12px;margin:0 0 8px;padding:6px 8px;border-radius:6px;background:#1f3d26">✔ ${res.report.map(esc).join('<br>✔ ')}
           ${res.failed.length ? `<div style="color:var(--err)">✖ ${res.failed.map(esc).join('<br>✖ ')}</div>` : ''}
@@ -3961,12 +5418,26 @@ $('track').onchange = async e => {
   if (mode === 'decor') { root.visible = markers.visible = false; await loadDecor(); }
 };
 addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+// « Actualiser la vue » : piste et decor relus depuis le serveur (caches de modeles et de textures vides), camera gardee
+$('refresh3d').onclick = async () => {
+  if (dirty && !(await ask('Des modifications ne sont pas enregistrées : elles seront perdues. Actualiser quand même ?'))) return;
+  const cam = camera.position.clone(), tgt = orbit.target.clone();
+  matCatalog = null;
+  for (const c of [texMatCache, glowMatCache, geoCache]) for (const k in c) delete c[k];
+  try {
+    await loadTrack(track, true); decor = null; loadAmbiancePreview();
+    if (mode === 'decor') { root.visible = markers.visible = false; await loadDecor(true); }
+    camera.position.copy(cam); orbit.target.copy(tgt); orbit.update();
+    dirty = false; status('Vue 3D actualisée (piste et décor relus)', 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+};
 
 resize();
 await ensureGameDir();
 const tracks = await api('/api/tracks');
 $('track').innerHTML = tracks.map(t => `<option ${t === 'T111_Crash_Cove' ? 'selected' : ''}>${t}</option>`).join('');
 await loadTrack(tracks.includes('T111_Crash_Cove') ? 'T111_Crash_Cove' : tracks[0]);
+api('/api/menu_layout').then(d => labelTracks(d.tracks)).catch(() => {});   // noms des pistes creees
 resize();
 loadAmbiancePreview();
 </script>

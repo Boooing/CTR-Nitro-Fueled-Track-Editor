@@ -286,7 +286,8 @@ def export_track(track, zf, folder):
     mp['ambiance'] = amb
     mp['own_sky'] = bool(S._sky_name(S.IgzFile(S.pak_tool.read_latest(S.ARCHIVES, S.lighting_file(track), S.track_pak(track))[0])))
     mp['light'] = S.light_settings(track)
-    mm = os.path.join(S.OUT_DIR, f'{track}_minimap.json')
+    mp['lights'] = S.read_lights(track)                    # lumieres ajoutees (lampadaires...)
+    mm =os.path.join(S.OUT_DIR, f'{track}_minimap.json')
     mp['minimap'] = {'nudge': (json.load(open(mm)).get('nudge') if os.path.exists(mm) else None)}
     # survol : plans modifies, reperes par type (complet / court), rang et plan final
     shots = S.flyby_info(track)
@@ -407,7 +408,7 @@ def _clean_target(track):
     S = _S()
     S.reset_track(track, 'all')
     S.apply_flyby(track, {})
-    for p in (S.ambiance_path(track), S.light_path(track), S.road_source_path(track), S.menu_settings_path(track),
+    for p in (S.ambiance_path(track), S.light_path(track), S.lights_path(track), S.road_source_path(track), S.menu_settings_path(track),
               os.path.join(S.OUT_DIR, f'{track}_minimap.json'), S.custom_textures_path(track)):
         if os.path.exists(p):
             os.remove(p)
@@ -755,6 +756,8 @@ def import_map(zf, folder, track, report):
     light = mp.get('light') or {}
     if int(light.get('collision_cell') or 0):
         S.apply_light({'track': track, 'collision_cell': light['collision_cell']})
+    if mp.get('lights'):
+        S.write_lights(track, mp['lights'])
     # 5. parcours, caisses, teleporteurs, grille
     regen_ai = False
     if mp.get('race'):

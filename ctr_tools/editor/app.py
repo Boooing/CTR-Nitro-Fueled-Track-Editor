@@ -105,10 +105,10 @@ def _browser_fallback(url):
         os.environ.pop('LD_LIBRARY_PATH', None)
         if orig:
             os.environ['LD_LIBRARY_PATH'] = orig
-    webbrowser.open(url)
     try:
         import tkinter as tk
     except ImportError:
+        webbrowser.open(url)
         print(f"L'éditeur est ouvert dans le navigateur : {url} (Ctrl+C pour le fermer)", flush=True)
         try:
             threading.Event().wait()
@@ -118,7 +118,47 @@ def _browser_fallback(url):
     root.title(TITLE)
     tk.Label(root, text=f"L'éditeur est ouvert dans ton navigateur :\n{url}", padx=20, pady=12).pack()
     tk.Button(root, text="Fermer l'éditeur", command=root.destroy, padx=12).pack(pady=(0, 12))
+    _tk_folder_dialog(root)
+    webbrowser.open(url)
     root.mainloop()
+    import server
+    server.FOLDER_DIALOG = None
+
+
+def _tk_folder_dialog(root):
+    """Choix de dossier ouvert par la petite fenetre (fil principal). Le serveur le demandait depuis son fil avec un
+    second tkinter : deux Tk dans deux fils se bloquent, la page attendait sans fin (PC sans WebView2)."""
+    import queue
+    from tkinter import filedialog
+    import server
+    asks = queue.Queue()
+
+    def ask(title, initial):
+        if LINUX:                                       # zenity / kdialog d'abord, comme avant (processus a part)
+            path = server._ask_folder_linux(title, initial)
+            if path is not None:
+                return path
+        done, out = threading.Event(), []
+        asks.put((title, initial, done, out))
+        done.wait()
+        return out[0] if out else None
+
+    def poll():
+        try:
+            while True:
+                title, initial, done, out = asks.get_nowait()
+                root.attributes('-topmost', True)
+                root.lift()
+                try:
+                    out.append(filedialog.askdirectory(parent=root, mustexist=True, title=title, initialdir=initial) or '')
+                finally:
+                    root.attributes('-topmost', False)
+                    done.set()
+        except queue.Empty:
+            pass
+        root.after(100, poll)
+    server.FOLDER_DIALOG = ask
+    root.after(100, poll)
 
 
 def main():
