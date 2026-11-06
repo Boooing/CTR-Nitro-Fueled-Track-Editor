@@ -1,6 +1,0 @@
-# Installateur (Tkinter : inclus avec Python sous Windows ; Linux : paquet python3-tk / python3-tkinter)
-numpy>=1.24
-pillow>=10.0
-
-# Construction de l'application (build.py)
-pyinstaller>=6.0
