@@ -171,6 +171,7 @@ def _append_replace(path, replacements):
 
 
 UPDATE_ARCHIVES = ('update2.pak', 'update.pak')   # versions les plus recentes en premier
+LAYER_ARCHIVE = 'update3.pak'                     # fichiers ajoutes et menu installes par l'editeur (custom_category)
 
 
 _cache = {}                     # chemin -> (empreinte, IgaArchive, {nom minuscule: entree}, verrou)
@@ -269,7 +270,7 @@ def read_latest(archives_dir, logical_name, track_pak=None, original=True):
     original=True : si un mod est installe sur l'archive, lit la version d'origine (sauvegarde) ; un fichier
     ajoute par le mod n'existe donc pas dans cette vue.
     """
-    names = list(UPDATE_ARCHIVES) + ([track_pak] if track_pak else [])
+    names = ([] if original else [LAYER_ARCHIVE]) + list(UPDATE_ARCHIVES) + ([track_pak] if track_pak else [])
     for n in names:
         p = os.path.join(archives_dir, n)
         if not os.path.exists(p):
@@ -433,7 +434,7 @@ def _rebuild_with_files(archive, files, limit=None, moved=()):
         f.write(b'\0' * (name_off - f.tell()))
         f.write(names_blob)
         # recherche par hash : indice ~ hash // diviseur, a +/- marge pres
-        div = max(1, (1 << 32) // n)
+        div = min(0xFFFFFFFF, max(1, (1 << 32) // n))   # un seul fichier : 2^32 ne tient pas dans l'en-tete (u32)
         slop = max(abs(i - r[0] // div) for i, r in enumerate(rows)) + 1
         struct.pack_into('<II', hdr, 0x08, len(new_toc), n)
         struct.pack_into('<II', hdr, 0x14, div, slop)

@@ -104,7 +104,8 @@ def build_proto(data, layout):
             its.append(it)
         z.set_list(lst, its)
         if g.get('id') not in roots:
-            z.set_string_ref(z.find_field(lst, '_categoryName')[0], g.get('title') or TITLE)
+            # chaines IGZ ecrites octet pour octet (latin-1), le jeu les lit en UTF-8 : sinon « Été » s'affiche mal
+            z.set_string_ref(z.find_field(lst, '_categoryName')[0], (g.get('title') or TITLE).encode('utf-8').decode('latin1'))
         groups.append(lst)
     z.set_list(roots[PREFIX], groups)
     if pairs:
@@ -230,6 +231,12 @@ def extra_files(archives, arc):
     st = read_state(archives)
     if not st or os.path.basename(arc).lower() != ARCHIVE:
         return {}
+    return registration_for_state(archives, st)
+
+
+def registration_for_state(archives, st):
+    """Fichiers d'enregistrement (menu, titres, chunkInfos, liste des pistes de course, zoneInfo, .lng, images du
+    menu) d'un etat {tracks, layout} donne ; extra_files avec l'etat du jeu, l'export OCTR avec une seule piste."""
     import track_clone
     tracks = st.get('tracks', [])
     layout = current_layout(archives, st)
@@ -329,25 +336,140 @@ def own_menu_files(archives, tracks, zoneinfos):
     return out
 
 
-def _installed_files(arc):
-    """Fichiers deja installes dans l'archive (contenu actuel), sans le menu."""
-    info = pak_tool._backup_info(arc)
-    if not info:
+# -- update3.pak : fichiers AJOUTES et menu (2026-11-06) ---------------------------------------------------------
+# Le jeu charge update.pak, update2.pak, update3.pak... jusqu'au premier absent, chacun l'emportant sur les precedents.
+# Un fichier ajoute a update2.pak decale la position des autres (table triee) : les formats d'ecran du lanceur OCTR
+# (21:9, 32:9) retrouvent leurs fichiers d'interface par position et contenu d'origine et refusaient de demarrer avec
+# un mod (T901 : 8 fichiers ajoutes -> 57 fichiers attendus deplaces). update / update2 ne recoivent donc plus que des
+# REMPLACEMENTS hors menu ; les fichiers ajoutes et le menu (dont ui/Octane_LevelSelect_Proto, controle par son
+# contenu) vont dans update3.pak, que l'editeur tient a jour. Le reste de l'editeur voit toujours ces fichiers « dans
+# update2 » (_installed_files) : index ctr_update3.json = {nom logique: archive d'origine}. OCTR remplace update3.pak
+# par le sien (onglet Graphismes) : les pistes creees n'y apparaissent que par leur mod, menu et enregistrement
+# restant coherents entre eux (tous dans update3).
+LAYER = pak_tool.LAYER_ARCHIVE
+LAYER_INDEX = 'ctr_update3.json'
+LAYERED = tuple(a.lower() for a in pak_tool.UPDATE_ARCHIVES)
+
+
+def layer_path(archives):
+    return os.path.join(archives, LAYER)
+
+
+def _layer_index(archives):
+    p = os.path.join(archives, LAYER_INDEX)
+    try:
+        return json.load(open(p, encoding='utf-8')) if os.path.exists(p) else {}
+    except ValueError:
         return {}
-    a = pak_tool.IgaArchive(arc)
-    idx = {e.logical_name.lower(): e for e in a.entries}
-    out = {n: a.read(idx[n.lower()]) for n in info['files'] if n.lower() != PROTO.lower()}
-    a.f.close()
+
+
+def _menu_names():
+    import menu_assets
+    import track_clone
+    return {n.lower() for n in (PROTO, track_clone.CHUNKINFOS, GUI_DATA, menu_assets.MENU_MATERIALS, *menu_assets.MENU_PKGS)} | \
+        {proto_lng(g).lower() for g in LNG_LANGS}
+
+
+def layer_files(archives, origin=None):
+    """{nom logique: octets} installes dans update3.pak (ceux venus de l'archive `origin`, ou tous)."""
+    idx = _layer_index(archives)
+    names = {n for n, o in idx.items() if origin is None or o.lower() == origin.lower()}
+    path = layer_path(archives)
+    if not names or not os.path.exists(path):
+        return {}
+    a = pak_tool.IgaArchive(path)
+    try:
+        by = {e.logical_name.lower(): e for e in a.entries}
+        return {n: a.read(by[n.lower()]) for n in names if n.lower() in by}
+    finally:
+        a.f.close()
+
+
+def _layer_write(archives, origin, files):
+    """update3.pak : fichiers venus de `origin` remplaces par `files` ; ceux des autres archives gardes."""
+    import track_clone
+    path, idx = layer_path(archives), _layer_index(archives)
+    if os.path.exists(path) and not idx:
+        if not files:
+            return
+        raise RuntimeError(f'{LAYER} existe deja et ne vient pas de l\'editeur (un mod ?) : retire-le avant d\'installer')
+    cur = layer_files(archives)
+    want = {n: d for n, d in cur.items() if idx.get(n, '').lower() != origin.lower()}
+    owner = {n: idx[n] for n in want}
+    for n, d in files.items():
+        for old in [k for k in want if k.lower() == n.lower()]:
+            del want[old]
+            owner.pop(old, None)
+        want[n], owner[n] = d, origin
+    if want == cur and owner == idx:
+        return
+    pak_tool.invalidate_cache(path)
+    ip = os.path.join(archives, LAYER_INDEX)
+    if not want:
+        for p in (path, ip):
+            if os.path.exists(p):
+                os.remove(p)
+        return
+    template = os.path.join(archives, pak_tool.UPDATE_ARCHIVES[0])
+    full = {}
+    view = pak_tool.original_archive(template) or pak_tool.cached_archive(template)
+    for n in want:
+        e = view[1].get(n.lower())
+        full[n] = e.name if e is not None else pak_tool.FULL_PREFIX + n
+    rows = [(n, full[n], i, ('data', d)) for i, (n, d) in enumerate(sorted(want.items(), key=lambda kv: kv[0].lower()))]
+    tmp = path + '.tmp'
+    try:
+        track_clone.write_archive(tmp, rows, template)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    json.dump(owner, open(ip, 'w', encoding='utf-8'), indent=1)
+    pak_tool.invalidate_cache(path)
+
+
+def layer_has(arc):
+    """L'archive a-t-elle des fichiers installes dans update3.pak ?"""
+    return bool({o for o in _layer_index(os.path.dirname(arc)).values() if o.lower() == os.path.basename(arc).lower()})
+
+
+def store(arc, files):
+    """Installe `files` dans l'archive `arc` (remise a l'origine d'abord) ; update / update2 : fichiers ajoutes et
+    menu dans update3.pak (voir plus haut)."""
+    archives, base = os.path.dirname(arc), os.path.basename(arc).lower()
+    stay = dict(files)
+    if base in LAYERED:
+        view = pak_tool.original_archive(arc) or pak_tool.cached_archive(arc)
+        menu = _menu_names()
+        moved = {n: d for n, d in files.items() if n.lower() in menu or n.lower() not in view[1]}
+        stay = {n: d for n, d in files.items() if n not in moved}
+        _layer_write(archives, base, moved)
+    pak_tool.invalidate_cache(arc)
+    if os.path.exists(pak_tool.backup_path(arc)):
+        pak_tool.uninstall(arc)
+    if stay:
+        pak_tool.install(arc, stay)
+    pak_tool.invalidate_cache(arc)
+
+
+def _installed_files(arc):
+    """Fichiers deja installes dans l'archive (contenu actuel, update3.pak compris pour update / update2), sans le
+    menu."""
+    out = {}
+    info = pak_tool._backup_info(arc)
+    if info:
+        a = pak_tool.IgaArchive(arc)
+        idx = {e.logical_name.lower(): e for e in a.entries}
+        out = {n: a.read(idx[n.lower()]) for n in info['files'] if n.lower() != PROTO.lower()}
+        a.f.close()
+    if os.path.basename(arc).lower() in LAYERED:
+        out.update({n: d for n, d in layer_files(os.path.dirname(arc), os.path.basename(arc)).items()
+                    if n.lower() != PROTO.lower()})
     return out
 
 
 def _rewrite(arc, files):
-    pak_tool.invalidate_cache(arc)
-    if os.path.exists(pak_tool.backup_path(arc)):
-        pak_tool.uninstall(arc)
-    if files:
-        pak_tool.install(arc, files)
-    pak_tool.invalidate_cache(arc)
+    store(arc, files)
 
 
 def _write_state(archives, st):

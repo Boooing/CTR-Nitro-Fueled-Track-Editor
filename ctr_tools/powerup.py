@@ -91,10 +91,30 @@ def _set_tilt(df, ent, pos, euler, flags):
 # (permanent.pak) sont generiques. Le dessin au sol est un objet de decor separe (voir server).
 BOOST_DONOR = ('T114_Sewer_Speedway', 'GPI_SpeedBoostZone006')
 BOOST_PREFIX = 'TurboPad_'
+BOOST_OWN = 'TurboPad_Ed'     # boosters de l'editeur dans un _Design : plusieurs pistes du jeu y ont leurs TurboPad_001...
 BOOST_TDEP = [('common_TurboPad', 'vsc:/common/Race/common_TurboPad.igz'),
               ('ctr_pwrup_turboboost_rumble', 'vfx:/CTR/share/ctr_pwrup_turboboost_rumble.igz')]
 BOOST_SCRIPT = 'vsc/common/race/common_turbopad.igz'
 BOOST_DIMS = [800.0, 1000.0, 1000.0]   # profondeur (sens de course), largeur, hauteur (po) ; Sewer : 1000 x 3000 x 1000
+# Super turbo (plaque bleue, boost plus fort) : meme script, mais ses parametres (+0x00 boost, +0x10 second boost)
+# designent des CKartBoostData du fichier par handle nomme (sans : boost par defaut du script). Polar Pass : 1400
+# pendant 1,6 s + 3000 ; copies avec la plaque, sous le nom du booster, handles refaits vers le _Design de la piste.
+SUPER_DONOR = ('T143_Polar_Pass', 'TurboPad_marichard')
+BOOST_DATA_SLOTS = (0x00, 0x10)
+BOOST_DATA = '_BoostData'      # suffixe des CKartBoostData copies : « <booster>_BoostData0 »
+# reglages d'un booster (2026-11-06) : vitesse du turbo et duree (reserve, s). Classique = valeurs par defaut du script
+# common_turbopad (TurboPad_KartBoostData : 700 pendant 0,5 s) -> plaque de Sewer sans donnees ; autres valeurs ->
+# plaque de Polar Pass avec ses CKartBoostData, 1re donnee (+0x00) reglee (Polar : 1400 pendant 1,6 s)
+BOOST_CLASSIC = (700.0, 0.5)
+BOOST_SUPER = (1400.0, 1.6)
+
+
+def boost_needs_data(b):
+    """Booster a vitesse / duree propres (sinon : comportement par defaut du jeu, plaque classique)."""
+    if 'speed' not in b and 'duration' not in b:
+        return bool(b.get('super'))
+    sp, du = float(b.get('speed', BOOST_CLASSIC[0])), float(b.get('duration', BOOST_CLASSIC[1]))
+    return abs(sp - BOOST_CLASSIC[0]) > 0.5 or abs(du - BOOST_CLASSIC[1]) > 0.005
 
 
 # Autres objets du jeu, copies comme les boosters (entite complete d'un autre fichier, IgzFile.import_entity) :
@@ -157,12 +177,37 @@ def extra_kind(name):
     return next((k for k, e in EXTRAS.items() if (name or '').startswith(e['prefix'])), None)
 
 
-def boost_donor(read):
-    """(IgzFile, entite) de la plaque turbo modele. read(chemin logique, archive de piste) -> octets."""
+def boost_donor(read, super_=False):
+    """(IgzFile, entite) de la plaque turbo modele (super_ : celle du super turbo). read(chemin logique, archive de
+    piste) -> octets."""
     from igz import IgzFile
-    t, name = BOOST_DONOR
+    t, name = SUPER_DONOR if super_ else BOOST_DONOR
     z = IgzFile(read(f'maps/Octane/{t}/{t}_Design.igz', t.lower() + '.pak'))
     return z, next(o for n, o in z.root_objects() if n == name)
+
+
+def _boost_params(z, ent):
+    """Debut des parametres du script de la plaque (memoire dynamique du CVscComponentData) ou None."""
+    table = z.deref(z.deref(ent + 0x40) + 0x10)
+    for _, v in z.hash_items(table):
+        o = int(v['@ref'], 16) if isinstance(v, dict) and '@ref' in v else None
+        if o is not None and z.objects.get(o) == 'CVscComponentData':
+            return int(z.dump_object(o)['_dynamicFieldMemory']['@mem'], 16)
+    return None
+
+
+def _boost_data(z, ent):
+    """{case des parametres: nom du CKartBoostData designe} d'une plaque (vide : boost par defaut)."""
+    mem = _boost_params(z, ent)
+    if mem is None:
+        return {}
+    byname = {n: o for n, o in z.root_objects()}
+    out = {}
+    for slot in BOOST_DATA_SLOTS:
+        h = z.named_handle(z.u32(mem + slot))
+        if h and z.objects.get(byname.get(h[0])) == 'CKartBoostData':
+            out[slot] = h[0]
+    return out
 
 
 def _trigger(df, ent):
@@ -224,13 +269,86 @@ def _read_entities(data):
         if name.startswith(BOOST_PREFIX):
             tr, trig = z.deref(o + 0x30), _trigger(df, o)
             c['kind'] = 'boost'
-            c['yaw'] = round(struct.unpack_from('<3f', *z._loc(tr + 0x60))[2], 5) if tr is not None else 0.0
+            e = struct.unpack_from('<3f', *z._loc(tr + 0x60)) if tr is not None else (0.0, 0.0, 0.0)
+            c['yaw'] = round(e[2], 5)
+            c['tilt'] = [round(e[0], 5), round(e[1], 5)]             # inclinaison (X puis Y, avant le cap)
             c['dims'] = [round(v, 1) for v in z.vec3(z.find_field(trig, '_dimensions')[0])] if trig else list(BOOST_DIMS)
+            data = _boost_data(z, o)
+            c['super'] = bool(data)                                   # boost propre a la plaque : super turbo
+            c['speed'], c['duration'] = BOOST_CLASSIC
+            if 0 in data:                                             # vitesse / duree de la 1re donnee de boost
+                byname = {n: x for n, x in z.root_objects()}
+                d = z.dump_object(byname[data[0]])
+                c['speed'], c['duration'] = round(float(d['_speed']), 1), round(float(d['_boostSustainDuration']), 2)
         out.append(c)
     return out
 
 
-def write_crates(orig_data, crates, donor=None, extras=None, height_at=None, crates_only=False, keep_tilt=None):
+def _add_boosts(df, boosts, donor, prefix=BOOST_PREFIX, ns=None):
+    """Copie la plaque turbo modele pour chaque booster (b['super'] : celle du super turbo, avec ses CKartBoostData).
+    donor = {False: plaque classique, True: super turbo} (ou une seule plaque : classique) ; ns : espace de noms du
+    fichier ecrit (« <Piste>_Design »), cible des handles des CKartBoostData. -> fin du rapport."""
+    if not isinstance(donor, dict):
+        donor = {False: donor}
+    z = df.igz
+    n_super = 0
+    for k, b in enumerate(boosts, 1):
+        sup = boost_needs_data(b)
+        if donor.get(sup) is None:
+            raise ValueError('plaque turbo modele manquante')
+        src, src_ent = donor[sup]
+        name = f'{prefix}{k:03d}'
+        ent = z.import_entity(src, src_ent, name)
+        df._refresh()
+        tilt = [float(v) for v in (b.get('tilt') or [0.0, 0.0])]
+        df.set_transform(ent, [float(v) for v in b['pos']], [tilt[0], tilt[1], float(b.get('yaw', 0.0))])
+        trig = _trigger(df, ent)
+        dims = [max(50.0, float(v)) for v in (b.get('dims') or BOOST_DIMS)]
+        struct.pack_into('<3f', *z._loc(z.find_field(trig, '_dimensions')[0]), *dims)
+        struct.pack_into('<3f', *z._loc(z.find_field(trig, '_offset')[0]), 0.0, 0.0, 0.0)   # zone centree (Polar : +200 en z)
+        if sup:
+            if not ns:
+                raise ValueError('super turbo : espace de noms du fichier inconnu')
+            # donnees de boost de la plaque modele copiees sous le nom du booster, handles refaits vers ce fichier
+            src_names = {n: o for n, o in src.root_objects()}
+            mem = _boost_params(z, ent)
+            for slot, dname in _boost_data(src, src_ent).items():
+                new = f'{name}{BOOST_DATA}{slot // 0x10}'
+                nd = z.import_entity(src, src_names[dname], new)
+                struct.pack_into('<Q', *z._loc(mem + slot), 0x80000000 | z.ext_index(new, ns))
+                if slot == 0 and ('speed' in b or 'duration' in b):              # reglages du booster
+                    z.set_field(nd, '_speed', float(b.get('speed', BOOST_SUPER[0])))
+                    z.set_field(nd, '_boostSustainDuration', float(b.get('duration', BOOST_SUPER[1])))
+            df._refresh()
+            n_super += 1
+    z.add_tdep(BOOST_TDEP)
+    return f', {len(boosts)} booster(s)' + (f' dont {n_super} super turbo(s)' if n_super else '')
+
+
+def _drop_boost_data(df, prefix):
+    """Retire les CKartBoostData copies avec des boosters (« <prefixe>NNN_BoostData0 ») : racines a part (designees
+    par handle, pas par pointeur), delete_many ne les voit pas."""
+    z = df.igz
+    old = [o for o, n in df.names.items() if (n or '').startswith(prefix) and BOOST_DATA in n and z.objects.get(o) == 'CKartBoostData']
+    if old:
+        z.remove_roots(old)
+        df._refresh()
+
+
+def write_boosts(data, boosts, donor=None, ns=None):
+    """Boosters de l'editeur du fichier _Design remplaces par `boosts` ; le reste du fichier, boosters du jeu compris,
+    ne bouge pas. Toutes les pistes du jeu qui ont des boosters les rangent dans le _Design : le _Power_Up (caisses)
+    n'agit pas en contre-la-montre. ns : espace de noms du _Design (super turbos). -> (IgzFile, rapport)."""
+    df = DecorFile(data)
+    z = df.igz
+    old = [o for o, n in df.names.items() if z.objects.get(o) in ENTITY_TYPES and (n or '').startswith(BOOST_OWN)]
+    if old:
+        df.delete_many(old)
+    _drop_boost_data(df, BOOST_OWN)
+    return z, _add_boosts(df, boosts, donor, BOOST_OWN, ns) if boosts else ', aucun booster'
+
+
+def write_crates(orig_data, crates, donor=None, extras=None, height_at=None, crates_only=False, keep_tilt=None, ns=None):
     """Fichier reconstruit depuis l'original (crates_only : depuis le _Design enregistre, seules ses caisses sont
     concernees, ses autres entites restent telles quelles) : crates = [{'name' (caisse d'origine gardee, ou nouvelle / absente),
     'kind', 'pos'} | {'kind': 'boost', 'pos', 'yaw', 'dims'} | {'kind': 'tnt' | 'nitro' | 'wumpa', 'pos'}]. Caisses
@@ -294,22 +412,12 @@ def write_crates(orig_data, crates, donor=None, extras=None, height_at=None, cra
             moved += 1
     gone = [by_name[n] for n in orig if n not in kept]
     df.delete_many(gone)
+    _drop_boost_data(df, BOOST_PREFIX)                 # donnees des super turbos d'une ecriture precedente
     report = f'caisses : {len(kept) + len(added)} ({len(added)} ajoutee(s), {moved} deplacee(s), {len(gone)} retiree(s))'
     if tilted:
         report += f', {tilted} inclinee(s) selon la pente'
     if boosts:
-        if donor is None:
-            raise ValueError('plaque turbo modele manquante')
-        src, src_ent = donor
-        for k, b in enumerate(boosts, 1):
-            ent = z.import_entity(src, src_ent, f'{BOOST_PREFIX}{k:03d}')
-            df._refresh()
-            df.set_transform(ent, [float(v) for v in b['pos']], [0.0, 0.0, float(b.get('yaw', 0.0))])
-            trig = _trigger(df, ent)
-            dims = [max(50.0, float(v)) for v in (b.get('dims') or BOOST_DIMS)]
-            struct.pack_into('<3f', *z._loc(z.find_field(trig, '_dimensions')[0]), *dims)
-        z.add_tdep(BOOST_TDEP)
-        report += f', {len(boosts)} booster(s)'
+        report += _add_boosts(df, boosts, donor, ns=ns)
     counts = collections.Counter()
     for c in others:
         kind = c['kind']

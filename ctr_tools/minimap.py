@@ -28,7 +28,10 @@ A, BU, BV = 0.01491, 630.8, 414.4          # Crash Cove : pixels par pouce et de
 # recoivent donc ce reglage (taille, coins, reperes), transforme pour le nouveau trace.
 REFERENCE = {'texture_size': (300.0, 300.0), 'top_left': (6000.0, -22000.0), 'bottom_right': (-34000.0, 17000.0),
              'markers': {'MinimapTopLeft': (-23000.0, 23000.0), 'MinimapBottomRight': (13739.400390625, -24640.140625)}}
-CONTENT = (476, 64, 794, 734)             # zone dessinee de l'image d'origine (px) : on y place le nouveau trace
+# Zone ou placer le nouveau trace (px). Mesure sur 21 pistes du jeu : trace toujours cale sur le bord droit (794-795),
+# jusqu'a 670 px de large (Cortex Castle) et 60 a 740 de haut. (476, 64, 794, 734), l'emprise de Crash Cove seule, ovale
+# et etroit, limitait tout trace a 318 px de large : mini-carte trop petite en course sur les autres formes.
+CONTENT = (124, 64, 794, 734)
 # reglage fin du DESSIN seul (px) par rapport a la zone suivie par les pastilles : le calage mesure est precis a
 # ~3 px pres ; en jeu (Mario Circuit 3) les pastilles etaient un tout petit peu trop haut -> dessin remonte de 4 px,
 # puis 35 px a la demande de l'utilisateur (apres essais sur sa T111)
@@ -61,7 +64,10 @@ def layout(points):
     lo, hi = P.min(0), P.max(0)
     w, h = CONTENT[2] - CONTENT[0], CONTENT[3] - CONTENT[1]
     k = min(w / max(hi[0] - lo[0], 1.0), h / max(hi[1] - lo[1], 1.0)) * 0.92        # petite marge
-    return k, (lo + hi) / 2, np.array([(CONTENT[0] + CONTENT[2]) / 2, (CONTENT[1] + CONTENT[3]) / 2])
+    # cale a droite comme les images du jeu (sans quoi un trace etroit partirait au milieu de la zone) ; 12 px de marge :
+    # bord droit inchange par rapport a l'ancienne zone
+    right = CONTENT[2] - 12.0
+    return k, (lo + hi) / 2, np.array([right - k * (hi[0] - lo[0]) / 2, (CONTENT[1] + CONTENT[3]) / 2])
 
 
 def to_px(p, k, c_world, c_px):

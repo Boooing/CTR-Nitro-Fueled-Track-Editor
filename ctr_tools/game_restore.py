@@ -82,8 +82,13 @@ def restore_plan(archives, lang='fr'):
             mods.append(name)
     videos = sorted(f[:-len(VIDEO_OFF)] for f in os.listdir(archives) if f.endswith('.bk2' + VIDEO_OFF))
     chunks = os.path.exists(os.path.join(os.path.dirname(archives), track_clone.CHUNKS_IGX + '.ctrmod'))
+    # update3.pak de l'editeur (fichiers ajoutes et menu, custom_category) : supprime ; un update3.pak sans index
+    # n'est pas a nous (mod) et reste
+    layer = os.path.exists(os.path.join(archives, custom_category.LAYER_INDEX))
+    if layer:
+        mods.append(custom_category.LAYER)
     return {'created': created, 'categories': cats, 'installed': installed, 'archives': mods, 'videos': videos,
-            'chunks': chunks, 'problems': problems,
+            'chunks': chunks, 'problems': problems, 'layer': layer,
             'nothing': not (created or cats or installed or mods or videos or chunks or st)}
 
 
@@ -114,6 +119,12 @@ def restore_game(archives, progress=None):
     n = len(plan['archives'])
     for k, name in enumerate(plan['archives']):
         step(0.1 + 0.75 * k / max(1, n), f'archive {k + 1} / {n} : {name}')
+        if name == custom_category.LAYER:
+            for f in (custom_category.layer_path(archives), os.path.join(archives, custom_category.LAYER_INDEX)):
+                if os.path.exists(f):
+                    os.remove(f)
+            report.append(f'{name} de l\'éditeur supprimé')
+            continue
         pak_tool.uninstall(os.path.join(archives, name))
         report.append(f'archive remise d\'origine : {name}')
     # 3. menu du jeu, chunks.igx, videos, registre

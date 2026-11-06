@@ -1,6 +1,16 @@
-# Installateur (Tkinter : inclus avec Python sous Windows ; Linux : paquet python3-tk / python3-tkinter)
+# Editor (local server + web page)
 numpy>=1.24
 pillow>=10.0
 
-# Construction de l'application (build.py)
+# Desktop window: Qt WebEngine (embedded Chromium, no Edge WebView2 needed)
+PySide6-Essentials>=6.8
+PySide6-WebEngine>=6.8
+
+# Building the Windows app (build_exe.py)
 pyinstaller>=6.0
+
+# Only to regenerate schema/ctr_meta.json from the game's eboot.bin (extract_meta.py)
+# capstone>=5.0
+
+# Not a Python package: FFmpeg, only needed to import music (https://ffmpeg.org/download.html).
+# It is not included in this repository: the editor finds it on the PATH or asks where it is.

@@ -573,7 +573,11 @@ class IgzFile:
                             nv = self.exid_index(exid[v])
                         struct.pack_into('<Q', *self._loc(q), nv)
                     elif kind == 'RNEX':
-                        struct.pack_into('<Q', *self._loc(q), self._exnm_add(*flag0[src.u64(p)], 0))
+                        # rang parmi les EXNM drapeau 0, avec parfois le bit 63 pose (CollisionMaterials :
+                        # _surfaceAccumulation = 0x8000000000000000 -> rang 0) : bit garde tel quel
+                        v = src.u64(p)
+                        hi = v & 0x8000000000000000
+                        struct.pack_into('<Q', *self._loc(q), self._exnm_add(*flag0[v & 0x7FFFFFFFFFFFFFFF], 0) | hi)
                     self._mark(kind, q)
         self._sorted_cache = None
         names = {o: n for n, o in src.root_objects()}

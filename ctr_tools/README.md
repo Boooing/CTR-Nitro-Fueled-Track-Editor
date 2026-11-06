@@ -91,7 +91,10 @@ L'éditeur part toujours de la version d'origine la plus récente (update2 > upd
 
 Dossier `CTR/exe` (par défaut ; autre dossier : argument de `build_exe.py`) : `CTR Track Editor.exe` + `_internal`
 (Python, bibliothèques, éditeur, three.js, schéma IGZ), sans Python à installer. Le serveur tourne dans
-l'application et l'éditeur s'ouvre dans sa propre fenêtre (pywebview, moteur Edge WebView2 de Windows). Lanceur :
+l'application et l'éditeur s'ouvre dans sa propre fenêtre Qt WebEngine (PySide6 : Chromium embarqué, ne dépend
+plus d'Edge WebView2, absent ou cassé sur certains PC ; vue 3D sur la carte graphique, liste noire de Chromium
+ignorée ; F12 = outils de développement ; profil persistant `out/qt_profile`). Sans PySide6 (lancé depuis les
+sources) : pywebview, puis le navigateur. Lanceur :
 `editor/app.py`. Icône : `crash-team-racing-nitro-fueled_j4g2.jpg` à la racine du projet (fond blanc rendu
 transparent), sinon un drapeau à damier dessiné (dépôt GitHub sans image du jeu).
 * Données (`out/editor`, maps à importer, journal `out/ctr_editor.log`) : à côté de l'exe, ou dans le premier
@@ -108,9 +111,10 @@ transparent), sinon un drapeau à damier dessiné (dépôt GitHub sans image du 
   ```bash
   .build_venv\Scripts\python ctr_tools\editor\build_exe.py
   ```
-  (environnement `.build_venv` : pyinstaller, pywebview, numpy, pillow ; `PIP_USE_FEATURE=truststore` si pip
-  échoue sur les certificats). Piège : pywebview expose à la page tout attribut public d'un objet `js_api`
-  (une fenêtre en attribut public = parcours récursif sans fin, fenêtre figée) ; l'application n'en utilise plus.
+  (environnement `.build_venv` : pyinstaller, PySide6-Essentials, PySide6-WebEngine (paquet à part depuis
+  PySide6 6.12), numpy, pillow ; `PIP_USE_FEATURE=truststore` si pip échoue sur les certificats). `build_exe.py`
+  retire ensuite les parties de Qt inutiles (QML, 3D, graphiques, multimédia, langues de Chromium hors
+  en/fr/es/it/de, pack de débogage des DevTools) : ≈ 410 Mo au lieu de 610.
 
 ### Application Linux (`CTR/appimage/CTR_Track_Editor-<arch>.AppImage`)
 
@@ -779,8 +783,7 @@ Tests : `test_collision_edit.py`.
   les endroits sans sol sous la ligne (rien, ou sol à plus de 4 m sous la spline) et leur nombre en sortant.
 - **Présentation et langues** : barre du haut = onglets Décor / Course, piste, ↶ ↷, puis 💾 Enregistrer, ✔ Vérifier,
   🎮 Installer ; menu « ⋯ » : langue, vue filaire, guide, aide, restaurer les archives, repartir de l'original ;
-  barre d'état sous la barre. Panneau latéral : guide « Créer ta piste en 6 étapes » (chaque étape ouvre l'outil
-  dans le bon mode), sélection, sections repliables (Parcours, Objets, Boosters, Avancé ; Importer, Préparer,
+  barre d'état sous la barre. Panneau latéral (le guide en 6 étapes a été retiré le 2026-11-06) : sélection, sections repliables (Parcours, Objets, Boosters, Avancé ; Importer, Préparer,
   Affichage, Rechercher, Avancé). Tous les identifiants d'éléments d'avant sont gardés (le code n'a pas changé).
   Langues : `editor/i18n.js` (servi par `/i18n.js`) traduit à l'affichage (le français reste la langue du code) :
   dictionnaire exact + débuts de messages connus, `MutationObserver` pour les fenêtres créées ensuite, texte
@@ -955,6 +958,44 @@ Tests : `test_collision_edit.py`.
   `igStreamingChunkInfo._required`, vecteur de paires (type, chemin en minuscules) ; **le jeu ne charge que les
   fichiers listés** (un modèle ajouté sans entrée est invisible, alors que sa collision marche). L'installation y
   ajoute une entrée `model` par modèle importé utilisé. Tests : `test_pkg_manifest.py`.
+
+## Création : terrain sous une route relevée
+
+La grille du terrain (8 m) ne suit pas une route dont la hauteur change vite : sa surface passerait au-dessus (dents
+d'herbe sur la route). `_conform` part de la surface et des bords réels de la route. `_unfold` ne pince plus le bord intérieur
+d'un virage serré : les points qui reculeraient sont répartis en ligne droite, position et hauteur, entre les deux points
+valides qui les encadrent. `_clear_road` contrôle ensuite la route tous les mètres sur les mêmes triangles que le maillage et
+abaisse ce qui dépasse encore (`ROAD_CLEAR` = 25 cm). Un bord qui surplombe le sol de plus de `SKIRT_MIN` reçoit une jupe de
+roche jusqu'au sol (objet `CreatorBridge`, sans collision). `creator.js` fait de même pour l'aperçu (`realEdges`, `conform`,
+`clearRoad`). `test_creator_clear.py` : anneau d'essai, ou une création en argument.
+
+## Musique de la piste (`music.py`, menu « Piste › 🎵 Musique de la piste… »)
+
+* Fichiers du jeu : `sound_streams/wavs/Music/mus_<piste>_lp[_fl],MUS_<Piste>_bank,NoLoc,48000,40,0,1.snd`, non
+  compressés dans l'archive de la piste, appelés par leur nom depuis `sounds/banks/MUS/MUS_<Piste>_bank.igz` (`_fl` =
+  dernier tour). Une piste créée utilise la banque de sa base ; les pistes de boss ont deux musiques de chaque type.
+* Format : FSB5 version 1, codec 11 (MPEG), 48 kHz, 10 canaux = 5 flux MP3 stéréo CBR 128 kb/s entrelacés trame par trame.
+  Essai en jeu sur Crash Cove : seul le flux 0 s'entend en course, une durée différente de l'originale est acceptée, et
+  le thème du masque Aku Aku (`mus_cmn_race_akuaku_invincibility_lp`, `permanent.pak`) est un autre fichier.
+* Import : `music.decode` (ffmpeg) puis `music.build` : morceau sur le flux 0, silence sur les autres. Boucle sans blanc :
+  encodage en boucle (fin recopiée avant le début), 2 premières trames retirées (décalage de 1105 échantillons), réservoir
+  de bits coupé. `test_music.py` décode trois tours et mesure le raccord.
+* Dernier tour, musique continue (`music.continue_script`, `continue_map`) : le changement de morceau vient du script
+  commun `vsc/common/Race/common_Race_Music_Manager.igz`. La piste reçoit sa copie `common_Race_Music_Continu` (renommage
+  de `track_clone`), où le réglage du dernier tour `Game_Sound_Music_Settings_id_qw2pev6x` (`_stinger1` = jingle) a
+  `_flipStreams` à 0 : il ne bascule plus sur le flux du dernier tour. Sa carte et son manifeste la désignent, à
+  l'installation seulement, et la carte va dans toutes les archives qui l'ont (update2, update, piste). Couper le lien
+  `_out` de `Sound_id_i3m1d7qa` faisait aussi continuer la musique, mais supprimait le jingle.
+  Essais qui ne marchent pas (en jeu, même piste) : `CWorldEntityData._combatStream`
+  et réglages vers `*_lp` = pas de musique du tout ; `_combatStream` vide = plus de musique au dernier tour ; réglages seuls
+  (`CGameSoundMusicSettings._nextStream`) = sans effet ; même morceau dans les deux fichiers = repart du début.
+  `_stinger1` de ces réglages = percussion du départ (`mus_<piste>_intro`).
+* Enregistrement : `out/editor/music/<piste>/`, réglages `<piste>_music.json` ; annulable (`_tracked_files`), installé
+  par `install_plan`, exporté dans les packs de maps sans réencodage (`music/main.snd`, `music/fl.snd`).
+* ffmpeg est nécessaire seulement pour importer un morceau. Recherche : chemin indiqué par l'utilisateur (réglage `ffmpeg`),
+  à côté de l'exe, puis PATH. Introuvable : la fenêtre Musique demande où il est (dossier, sous-dossier `bin` compris) et
+  vérifie qu'il encode en MP3 (`libmp3lame`). Il n'est pas distribué avec les sources ni embarqué par `build_exe.py`.
+  Écouter, installer et rejouer un pack n'en ont pas besoin.
 
 ## Reste à faire
 Tester en jeu ; nouvelles entités (checkpoints, transitions, splines entières) ; écriture de la collision Havok

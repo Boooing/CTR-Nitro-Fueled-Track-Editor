@@ -1,6 +1,6 @@
 """Editeur de pistes CTR en application de bureau (Windows .exe ou Linux .AppImage, PyInstaller) : le serveur tourne
-dans l'application et l'editeur s'ouvre dans sa propre fenetre (pywebview : Edge WebView2 sous Windows, Qt WebEngine
-ou WebKitGTK sous Linux).
+dans l'application et l'editeur s'ouvre dans sa propre fenetre Qt WebEngine (PySide6, Chromium embarque : ne depend
+plus d'Edge WebView2, absent ou casse sur certains PC). Sans PySide6 : pywebview (WebView2...), puis le navigateur.
 
 Dossiers :
   * l'application et ses bibliotheques : dossier CTR/exe (exe + _internal) ou le fichier .AppImage,
@@ -11,7 +11,9 @@ Dossiers :
   * archives du jeu : celles memorisees dans ctr_editor_config.json, sinon la page les demande a l'ouverture ;
     dans l'editeur (guide, menu « ⋯ ») : changer de dossier, pris en compte aussitot (server.choose_archives).
 three.js est servi localement (editor/vendor) : l'editeur marche hors ligne.
-Sans pywebview (ou WebView2 absent) : l'editeur s'ouvre dans le navigateur, une petite fenetre permet de le fermer.
+Sans fenetre possible : l'editeur s'ouvre dans le navigateur, une petite fenetre permet de le fermer.
+Fenetre Qt : F12 = outils de developpement ; profil persistant dans out/qt_profile (brouillons de la Creation...) ;
+vue 3D sur la carte graphique (liste noire de Chromium ignoree).
 
 Construction : python ctr_tools/editor/build_exe.py (Windows), .build_venv/bin/python ctr_tools/editor/build_appimage.py (Linux)
 """
@@ -45,10 +47,14 @@ def _app_dir():
 
 APP_DIR = _app_dir()
 if FROZEN and LINUX:
-    # AppImage : Qt WebEngine embarque. Son bac a sable Chromium exige des espaces de noms utilisateur souvent
-    # bloques (Ubuntu 24.04, AppArmor) ; la page affichee est uniquement celle du serveur local.
+    # AppImage : son bac a sable Chromium exige des espaces de noms utilisateur souvent bloques (Ubuntu 24.04,
+    # AppArmor) ; la page affichee est uniquement celle du serveur local.
     os.environ.setdefault('PYWEBVIEW_GUI', 'qt')
     os.environ.setdefault('QTWEBENGINE_DISABLE_SANDBOX', '1')
+# Chromium de Qt : vue 3D sur la carte graphique, meme si elle est sur sa liste noire (vieux pilotes) ; WebGL
+# logiciel (SwiftShader) seulement si la carte ne peut vraiment pas servir, au lieu d'une vue 3D vide
+_flags = ['--ignore-gpu-blocklist', '--enable-gpu-rasterization', '--enable-unsafe-swiftshader']
+os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = ' '.join([os.environ.get('QTWEBENGINE_CHROMIUM_FLAGS', '')] + _flags).strip()
 
 
 def _data_dir():
@@ -95,6 +101,128 @@ def _webview_folder(window, initial):
 
     # liste des dossiers choisis ; None si annule
     return r[0] if r else ''
+
+
+def _qt_window(url):
+    """
+    Fenetre Qt WebEngine. Leve ImportError sans PySide6 (WebEngine) : main passe alors a pywebview.
+    Choix de dossier, telechargements et liens externes sont geres ici ; les <input type=file> par Qt lui-meme.
+    """
+    from PySide6.QtCore import QObject, Qt, QUrl, Signal, QCoreApplication, QFileInfo
+    from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
+    from PySide6.QtWidgets import QApplication, QFileDialog, QFileIconProvider, QMainWindow
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    import server
+
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    app.setApplicationName(TITLE)
+
+    # profil persistant : localStorage (brouillons de la Creation, reglages de la page) garde d'une session a l'autre
+    profile = QWebEngineProfile('ctr-editor', app)
+    store = os.path.join(BASE, 'out', 'qt_profile')
+    profile.setPersistentStoragePath(store)
+    profile.setCachePath(os.path.join(store, 'cache'))
+    profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)    # editeur servi en local : toujours les derniers fichiers
+    host = QUrl(url).host()
+
+    class Page(QWebEnginePage):
+        def acceptNavigationRequest(self, u, kind, main):
+            # liens vers internet (aide, depot GitHub...) : navigateur du systeme ; la fenetre reste sur l'editeur
+            if u.host() not in (host, 'localhost') and u.scheme() in ('http', 'https'):
+                QDesktopServices.openUrl(u)
+                return False
+            return super().acceptNavigationRequest(u, kind, main)
+
+        def createWindow(self, _type):                 # target=_blank / window.open : meme regle (page jetable)
+            return Page(profile, self)
+
+    win = QMainWindow()
+    win.setWindowTitle(TITLE)
+    if FROZEN:
+        win.setWindowIcon(QFileIconProvider().icon(QFileInfo(sys.executable)))
+    view = QWebEngineView(win)
+    page = Page(profile, view)
+    view.setPage(page)
+    s, A = page.settings(), QWebEngineSettings.WebAttribute
+    for a in (A.WebGLEnabled, A.Accelerated2dCanvasEnabled, A.LocalStorageEnabled, A.JavascriptCanAccessClipboard,
+              A.JavascriptCanPaste):
+        s.setAttribute(a, True)
+    win.setCentralWidget(view)
+    win.resize(1440, 900)
+    win.setMinimumSize(900, 600)
+
+    # choix de dossier demande par le serveur (autre fil) : execute dans le fil de la fenetre, le serveur attend
+    class Dialogs(QObject):
+        ask = Signal(str, str, object)
+
+        def __init__(self):
+            super().__init__()
+            self.ask.connect(self._ask, Qt.ConnectionType.QueuedConnection)
+
+        def _ask(self, title, initial, box):
+            try:
+                box['path'] = QFileDialog.getExistingDirectory(win, title, initial)
+            finally:
+                box['done'].set()
+
+    dialogs = Dialogs()
+
+    def folder(title, initial):
+        box = {'path': '', 'done': threading.Event()}
+        dialogs.ask.emit(title, initial or '', box)
+        box['done'].wait()
+        return box['path']
+    server.FOLDER_DIALOG = folder
+
+    # telechargements (pack exporte...) : enregistrer sous
+    def download(d):
+        path, _ = QFileDialog.getSaveFileName(win, 'Enregistrer', os.path.join(d.downloadDirectory(), d.downloadFileName()))
+        if not path:
+            d.cancel()
+            return
+        d.setDownloadDirectory(os.path.dirname(path))
+        d.setDownloadFileName(os.path.basename(path))
+        d.accept()
+    profile.downloadRequested.connect(download)
+
+    # F12 : outils de developpement dans une fenetre a part
+    tools = {}
+
+    def devtools():
+        if 'w' not in tools:
+            w = QWebEngineView()
+            w.setWindowTitle(TITLE + ' — DevTools')
+            w.resize(1100, 700)
+            page.setDevToolsPage(w.page())
+            tools['w'] = w
+        tools['w'].show()
+        tools['w'].raise_()
+    QShortcut(QKeySequence('F12'), win, devtools)
+
+    # fermeture : la page peut demander confirmation (modifications non enregistrees, beforeunload)
+    closing = {'ok': False}
+
+    def close_ok():
+        closing['ok'] = True
+        win.close()
+    page.windowCloseRequested.connect(close_ok)
+    base_close = win.closeEvent
+
+    def close_event(e):
+        if closing['ok']:
+            tools.get('w') and tools['w'].close()
+            base_close(e)
+            return
+        e.ignore()
+        page.triggerAction(QWebEnginePage.WebAction.RequestClose)
+    win.closeEvent = close_event
+
+    view.load(QUrl(url))
+    win.show()
+    app.exec()
+    server.FOLDER_DIALOG = None
 
 
 def _browser_fallback(url):
@@ -181,6 +309,22 @@ def main():
     if '--server-only' in sys.argv:                    # tests : serveur seul, sans fenetre
         threading.Event().wait()
     try:
+        _qt_window(url)
+    except ImportError:                                 # pas de Qt WebEngine : pywebview, puis navigateur
+        traceback.print_exc()
+        _pywebview_or_browser(url)
+    except Exception:
+        traceback.print_exc()
+        server.FOLDER_DIALOG = None
+        _browser_fallback(url)
+    httpd.shutdown()
+    httpd.server_close()
+    return 0
+
+
+def _pywebview_or_browser(url):
+    import server
+    try:
         import webview
         window = webview.create_window(TITLE, url, width=1440, height=900, min_size=(900, 600), text_select=True)
         if os.name != 'nt':                             # Linux : fenetre de dossier de pywebview (tkinter souvent absent)
@@ -190,9 +334,6 @@ def main():
         traceback.print_exc()
         server.FOLDER_DIALOG = None
         _browser_fallback(url)
-    httpd.shutdown()
-    httpd.server_close()
-    return 0
 
 
 if __name__ == '__main__':

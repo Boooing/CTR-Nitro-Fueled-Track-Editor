@@ -7,7 +7,8 @@ Autre dossier : python ctr_tools/editor/build_exe.py <dossier de sortie>
 Outils dans un environnement a part (.build_venv a la racine du projet), cree au besoin :
     python -m venv .build_venv
     set PIP_USE_FEATURE=truststore        (certificats de Windows : un antivirus qui filtre le HTTPS bloquait pip)
-    .build_venv\\Scripts\\python -m pip install pyinstaller pywebview numpy pillow
+    .build_venv\\Scripts\\python -m pip install pyinstaller PySide6-Essentials PySide6-WebEngine numpy pillow
+Fenetre : Qt WebEngine (Chromium embarque, plus besoin d'Edge WebView2 sur le PC).
 Fichiers embarques : index.html, i18n.js, vendor/three (editeur hors ligne), schema/ctr_meta.json (format IGZ).
 Icone : crash-team-racing-nitro-fueled_j4g2.jpg (racine du projet) s'il existe, fond blanc rendu transparent ;
 sinon drapeau a damier dessine.
@@ -58,6 +59,39 @@ def make_icon(path):
                                                            (128, 128), (256, 256)])
 
 
+# Qt embarque par PyInstaller mais inutile a la fenetre (QML, 3D, graphiques, multimedia, styles...) ; Qt WebEngine
+# lui-meme a besoin de Quick, Qml, QmlModels, QmlMeta, QmlWorkerScript, QuickWidgets, Positioning, WebChannel, Network
+PRUNE_DIRS = ['qml']
+PRUNE_DLL = ('Qt63D', 'Qt6Charts', 'Qt6DataVisualization', 'Qt6Graphs', 'Qt6Labs', 'Qt6Location', 'Qt6Multimedia',
+             'Qt6Quick3D', 'Qt6QuickControls2', 'Qt6QuickDialogs2', 'Qt6QuickEffects', 'Qt6QuickLayouts',
+             'Qt6QuickNativeStyle', 'Qt6QuickParticles', 'Qt6QuickShapes', 'Qt6QuickTest', 'Qt6QuickTimeline',
+             'Qt6QuickVectorImage', 'Qt6RemoteObjects', 'Qt6Scxml', 'Qt6Sensors', 'Qt6SerialPort', 'Qt6ShaderTools',
+             'Qt6SpatialAudio', 'Qt6Sql', 'Qt6StateMachine', 'Qt6Test', 'Qt6TextToSpeech', 'Qt6VirtualKeyboard',
+             'Qt6WebView', 'Qt6WebEngineQuick', 'Qt6WebChannelQuick', 'Qt6PositioningQuick', 'Qt6QmlLocalStorage',
+             'Qt6QmlXmlListModel', 'Qt6QmlDesignSupport', 'Qt6QmlNetwork', 'Qt6QmlCore')
+KEEP_LOCALES = ('en-US', 'fr', 'es', 'it', 'de')                 # langues de l'editeur
+
+
+def prune_qt(internal):
+    """Retire de _internal/PySide6 ce que la fenetre n'utilise pas (≈ 600 -> 400 Mo)."""
+    qt = os.path.join(internal, 'PySide6')
+    if not os.path.isdir(qt):
+        return
+    for d in PRUNE_DIRS:
+        shutil.rmtree(os.path.join(qt, d), ignore_errors=True)
+    for f in os.listdir(qt):
+        if f.endswith('.dll') and f.startswith(PRUNE_DLL):
+            os.remove(os.path.join(qt, f))
+    dbg = os.path.join(qt, 'resources', 'qtwebengine_devtools_resources.debug.pak')
+    if os.path.exists(dbg):
+        os.remove(dbg)
+    loc = os.path.join(qt, 'translations', 'qtwebengine_locales')
+    if os.path.isdir(loc):
+        for f in os.listdir(loc):
+            if os.path.splitext(f)[0] not in KEEP_LOCALES:
+                os.remove(os.path.join(loc, f))
+
+
 def main():
     global APP_DIR
     if len(sys.argv) > 1:
@@ -74,8 +108,10 @@ def main():
            '--add-data', f'{os.path.join(TOOLS, "schema")}{sep}schema',
            '--add-data', f'{os.path.join(HERE, "index.html")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "i18n.js")}{sep}.',
+           '--add-data', f'{os.path.join(HERE, "creator.js")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "vendor")}{sep}vendor',
-           '--hidden-import', 'server', '--collect-submodules', 'webview',
+           '--hidden-import', 'server', '--hidden-import', 'PySide6.QtWebEngineWidgets',
+           '--exclude-module', 'webview',
            os.path.join(HERE, 'app.py')]
     print(' '.join(f'"{c}"' if ' ' in c else c for c in cmd), flush=True)
     subprocess.check_call(cmd, cwd=ROOT)
@@ -85,6 +121,7 @@ def main():
     if os.path.isdir(internal):                        # ancienne version des bibliotheques (genere par ce script)
         shutil.rmtree(internal)
     shutil.copytree(os.path.join(built, '_internal'), internal)
+    prune_qt(internal)
     shutil.copy2(os.path.join(built, NAME + '.exe'), os.path.join(APP_DIR, NAME + '.exe'))
     size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(APP_DIR) for f in fs)
     print(f'\n{os.path.join(APP_DIR, NAME + ".exe")} (dossier : {size / 2 ** 20:.0f} Mo)')

@@ -146,9 +146,14 @@ def available(archives, logical, track_pak):
 
 
 def find_pak(archives, logical, prefer=()):
-    """Archive de piste qui contient le fichier (les archives preferees d'abord), sinon None."""
+    """Archive de piste qui contient le fichier d'origine (les archives preferees d'abord), sinon None. Une archive
+    installee contient aussi des copies d'objets d'autres pistes, absentes de sa version d'origine, celle que lit
+    read_latest : elles ne comptent pas."""
     for pak in list(prefer) + track_paks(archives):
         p = os.path.join(archives, pak)
-        if os.path.exists(p) and logical.lower() in pak_tool.cached_archive(p)[1]:
+        if not os.path.exists(p):
+            continue
+        view = pak_tool.original_archive(p)
+        if logical.lower() in (view[1] if view else pak_tool.cached_archive(p)[1]):
             return pak
     return None

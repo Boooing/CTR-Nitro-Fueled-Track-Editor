@@ -304,6 +304,123 @@ def set_material(z, name, ns, dep_path):
     z.set_string_ref(vals + 8 * slot, f'{ns}.{name}')
 
 
+def build_model_multi(template, parts, model_name):
+    """Modele a PLUSIEURS textures (2026-11-06) : un draw call par partie, comme les modeles du jeu a plusieurs
+    materiaux (T111_WoodPost : 2 draw calls, chacun ses tampons de sommets / indices, handle de materiau 0, 1...).
+    parts = [{'pos', 'nrm', 'uvs', 'tan', 'tris', 'material': (nom, espace, chemin TDEP)}] ; meme format de sommet
+    (40 o) que le gabarit. igModelData : +0x70 nombre / +0x78 taille / +0x80 tableau des draw calls ; +0x88 / +0x90 /
+    +0x98 : un u32 par draw call (0 dans les modeles du jeu). Draw call : +0x10 nom « .igb (i/N) », +0x20 / +0x30
+    bornes, +0x40 handle du materiau, +0x48 / +0x50 tampons de sommets / indices. -> octets."""
+    parts = [p for p in parts if len(p['tris'])]
+    if not parts:
+        raise ValueError('modele vide')
+    if len(parts) == 1:
+        p = parts[0]
+        return build_model(template, p['pos'], p['nrm'], p['uvs'], p['tan'], p['tris'], model_name, p.get('material'))
+    for p in parts:
+        if len(p['pos']) > 0xFFFF:
+            raise ValueError(f"{len(p['pos'])} sommets dans une partie : maximum 65535")
+    z = IgzFile(template)
+    dc0 = next(o for o, t in z.objects.items() if t == 'igModelDrawCallData')
+    md = next(o for o, t in z.objects.items() if t == 'igModelData')
+    vb0 = z.deref(z.deref(dc0 + 0x48) + 0x20)
+    sec = (z.deref(vb0 + 0x28) or 0) >> 27                    # section des donnees GPU
+    # draw calls supplementaires : copies du draw call du gabarit (objets et blocs propres, hors donnees GPU)
+    objs, mem = z.reachable(dc0)
+    mem = {m: s for m, s in mem.items() if m >> 27 != sec}
+    names = {o: n for n, o in z.root_objects()}
+    dcs = [dc0]
+    for k in range(1, len(parts)):
+        new, pairs = z.clone_owned(dc0, f'dc{k}', (objs, mem), names)
+        if pairs:
+            z.add_roots(pairs)
+        dcs.append(new)
+    # donnees GPU : sommets puis indices de chaque partie, a la suite
+    gpu = bytearray()
+    base = sec << 27
+    spans = []
+    for p in parts:
+        voff = len(gpu)
+        for q, n, uv, t in zip(p['pos'], p['nrm'], p['uvs'], p['tan']):
+            gpu += struct.pack('<3f3fHH3f', *q, *n, _half(uv[0]), _half(1.0 - uv[1]), *t)
+        gpu += b'\0' * (-len(gpu) % 16)
+        ioff = len(gpu)
+        idx = [i for t in p['tris'] for i in t]
+        gpu += struct.pack(f'<{len(idx)}H', *idx)
+        gpu += b'\0' * (-len(gpu) % 16)
+        spans.append((voff, ioff, len(idx)))
+    z.data[sec] = bytearray(gpu)
+
+    def memref(off, size, data_off):
+        flags = z.u32(off) & 0xF8000000
+        struct.pack_into('<I', *z._loc(off), flags | size)
+        z.set_ptr(off + 8, base | data_off)
+    igb = f'data/octane/models/{model_name}.igb'
+    n = len(parts)
+    lo_all, hi_all = [float('inf')] * 3, [float('-inf')] * 3
+    for i, (dc, p, (voff, ioff, nidx)) in enumerate(zip(dcs, parts, spans)):
+        vb = z.deref(z.deref(dc + 0x48) + 0x20)
+        ib = z.deref(z.deref(dc + 0x50) + 0x20)
+        struct.pack_into('<I', *z._loc(vb + 0x0C), len(p['pos']))
+        struct.pack_into('<I', *z._loc(z.deref(vb + 0x18)), len(p['pos']))
+        memref(vb + 0x20, len(p['pos']) * 40, voff)
+        struct.pack_into('<I', *z._loc(ib + 0x0C), nidx)
+        struct.pack_into('<I', *z._loc(z.deref(ib + 0x18)), nidx)
+        memref(ib + 0x20, nidx * 2, ioff)
+        lo = [min(q[k] for q in p['pos']) for k in range(3)]
+        hi = [max(q[k] for q in p['pos']) for k in range(3)]
+        lo_all = [min(a, b) for a, b in zip(lo_all, lo)]
+        hi_all = [max(a, b) for a, b in zip(hi_all, hi)]
+        struct.pack_into('<3f', *z._loc(dc + 0x20), *lo)
+        struct.pack_into('<3f', *z._loc(dc + 0x30), *hi)
+        z.set_string_ref(dc + 0x10, f'{igb} ({i}/{n})')
+        struct.pack_into('<I', *z._loc(dc + 0x40), 0x80000000 | i)          # materiau i (EXNM drapeau 1)
+    struct.pack_into('<3f', *z._loc(md + 0x20), *lo_all)
+    struct.pack_into('<3f', *z._loc(md + 0x30), *hi_all)
+    z.set_string_ref(md + 0x10, igb)
+    # liste des draw calls et liste d'un u32 par draw call
+    arr = z.alloc(n * 8, 16)
+    for i, dc in enumerate(dcs):
+        z.set_ptr(arr + 8 * i, dc)
+    struct.pack_into('<Q', *z._loc(md + 0x70), n)
+    struct.pack_into('<I', *z._loc(md + 0x78), (z.u32(md + 0x78) & 0xF8000000) | n * 8)
+    z.set_ptr(md + 0x80, arr)
+    ints = z.alloc(max(n * 4, 8), 16)
+    struct.pack_into('<Q', *z._loc(md + 0x88), n)
+    struct.pack_into('<I', *z._loc(md + 0x90), (z.u32(md + 0x90) & 0xF8000000) | n * 4)
+    z.set_ptr(md + 0x98, ints)
+    # materiaux : une entree EXNM (handle nomme) par partie, dependances TDEP, table « bibliotheque.materiau »
+    mats = [p['material'] for p in parts]
+    z.ext_names = [(m[0], m[1]) for m in mats]
+    z._exnm_raw = [(z.add_string(m[0]), z.add_string(m[1]) | 0x80000000) for m in mats]
+    deps = list(dict.fromkeys((m[1], m[2]) for m in mats))
+    z.fixups['TDEP'] = (len(deps), encode_tdep(deps))
+    ht = next(o for o, t in z.objects.items() if t == 'igStringInsensitiveStringHashTable')
+    cap = z.u32(ht + 0x10) // 8
+    want = max(cap, 2 * n + 1)
+    if want > cap:                                           # table agrandie (2 cases par entree au moins)
+        cap = want
+        for fo in (0x10, 0x20):                              # _values, _keys : memoires de cap * 8 octets
+            blk = z.alloc(cap * 8, 16)
+            struct.pack_into('<I', *z._loc(ht + fo), (z.u32(ht + fo) & 0xF8000000) | cap * 8)
+            z.set_ptr(ht + fo + 8, blk)
+    vals, keys = z.deref(ht + 0x18), z.deref(ht + 0x28)
+    for i in range(cap):
+        z.set_string_ref(vals + 8 * i, None)
+        z.set_string_ref(keys + 8 * i, None)
+    used = set()
+    for name, ns, _ in dict.fromkeys(mats):
+        key = f"{ns.split(',')[0]}.{name}"
+        slot = fnv1a_lower(key) % cap
+        while slot in used:                                  # case prise : la suivante
+            slot = (slot + 1) % cap
+        used.add(slot)
+        z.set_string_ref(keys + 8 * slot, key)
+        z.set_string_ref(vals + 8 * slot, f'{ns}.{name}')
+    struct.pack_into('<I', *z._loc(z.find_field(ht, '_hashItemCount')[0]), len(used))
+    return z.to_bytes()
+
+
 def build_model(template, pos, nrm, uvs, tan, tris, model_name, material=None):
     """Octets du nouveau .igz. model_name : chemin logique sans extension, ex. 'Levels/Octane/Custom/Rampe'.
 

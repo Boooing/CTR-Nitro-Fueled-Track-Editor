@@ -54,6 +54,9 @@ import pkg_manifest  # noqa: E402
 import powerup  # noqa: E402
 import progress  # noqa: E402
 import minimap  # noqa: E402
+import music  # noqa: E402
+import race_times
+import collision_materials  # noqa: E402
 import preview  # noqa: E402
 import route_gen  # noqa: E402
 import flyby  # noqa: E402
@@ -61,8 +64,12 @@ import lights  # noqa: E402
 import custom_category  # noqa: E402
 import menu_assets  # noqa: E402
 import track_clone  # noqa: E402
+import quick_test  # noqa: E402
+import track_creator  # noqa: E402
 import mappack  # noqa: E402
 mappack.bind(sys.modules[__name__])                    # ce module, meme lance en script (__main__)
+import octr_export  # noqa: E402
+octr_export.bind(sys.modules[__name__])                # export en mod pour le portage PC (OCTR)
 import start_finish  # noqa: E402
 import teleport  # noqa: E402
 import texture_build  # noqa: E402
@@ -72,7 +79,7 @@ from collision_edit import CollisionFile  # noqa: E402
 from collision_region import GroundEditor, apply, mat_inv_rigid_scale, mat_mul, object_matrix  # noqa: E402
 from decor import ENTITY_TYPES, DecorFile, model_logical_path, model_mesh  # noqa: E402
 from igz import IgzFile  # noqa: E402
-from model_build import (TEMPLATE, build_model, complete_mesh, model_materials, obj_extents, obj_material_extents,  # noqa: E402
+from model_build import (TEMPLATE, build_model, build_model_multi, complete_mesh, model_materials, obj_extents, obj_material_extents,  # noqa: E402
                          obj_summary, parse_mtl,
                          parse_obj_groups, set_material)
 from havok import Packfile  # noqa: E402
@@ -202,6 +209,10 @@ def load_track(track):
         crates = read_track_crates(track)
     except KeyError:
         crates = []
+    cols = iter(boost_colors(track))                   # couleur de la plaque au sol de chaque booster
+    for c in crates:
+        if c['kind'] == 'boost':
+            c['color'] = next(cols, 'bleu' if c.get('super') else 'orange')
     return {'track': track, 'source': src, 'saved': src.startswith(OUT_DIR), 'splines': splines,
             'transitions': transitions, 'forks': rs['fork_checkers'], 'player_starts': rs['player_starts'],
             'starting_splines': starting, 'start_grid': grid, 'player_start': player_start, 'crates': crates,
@@ -456,6 +467,29 @@ def flyby_auto(req):
     return {'models': models}
 
 
+FLYBY_FINAL_MAX = 100 * 39.37    # fin du dernier plan <-> centre de la grille : 28 a 67 m sur toutes les pistes du jeu
+
+
+def flyby_far_from_grid(track, tr=None):
+    """Distance (m) entre la grille et la fin du dernier plan le plus eloigne, si elle depasse FLYBY_FINAL_MAX ; 0 sinon."""
+    tr = tr or load_track(track)
+    grid = tr.get('start_grid') or []
+    if not grid:
+        return 0
+    gc = np.mean([g['pos'] for g in grid], axis=0)
+    d = max((float(np.linalg.norm(np.asarray(s['model']['end']['pos']) - gc)) for s in tr.get('flyby') or [] if s['final']),
+            default=0.0)
+    return d / 39.37 if d > FLYBY_FINAL_MAX else 0
+
+
+def fix_flyby(track):
+    """Plans generes d'apres le parcours. Les plans deja refaits restent, sauf si le survol ne finit plus sur la grille."""
+    models = flyby_auto({'track': track, 'mode': 'auto'})['models']
+    if not flyby_far_from_grid(track):
+        models.update(load_flyby(track))
+    return apply_flyby(track, models)[0]
+
+
 def flyby_install_files(track):
     """{archive: {camera: octets}} des plans modifies (archives de survol de la piste, et mises a jour qui les
     contiendraient). Cameras recalculees a chaque installation depuis les poses memorisees : les fichiers ecrits
@@ -601,14 +635,18 @@ def route_layout(req):
     note = None
     max_gap = max(0.0, float(req.get('max_jump', 40))) * 39.37     # trous franchis (sauts), en m
     guide = req.get('guide')                            # trace dessine sur l'apercu de dessus (editeur)
+    exact = req.get('exact')                            # ligne centrale connue (onglet Creation : [[x, y, z, largeur]])
     try:
-        if bad:
-            raise bad
-        with progress.span(0.15, 0.9):
-            loop = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=max_gap, min_z=kz,
-                                       guide=guide)
+        if exact:
+            loop = exact_loop(exact)
+        else:
+            if bad:
+                raise bad
+            with progress.span(0.15, 0.9):
+                loop = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=max_gap,
+                                           min_z=kz, guide=guide)
     except ValueError as e:
-        if guide:
+        if guide or exact:
             raise
         # selection qui n'est pas la route (ex. « START_LINE2 », le decor de la ligne de depart, ou les surfaces du
         # sol d'une map importee) : essai avec la route importee (materiau « road »)
@@ -631,8 +669,9 @@ def route_layout(req):
         note = f"{what} ne forme pas un circuit ferme : route utilisee a la place : {src['objects'][0]['name']}"
     # boucle qui ne couvre qu'une petite partie de la route (route coupee par des trous : petite boucle d'une place
     # ou d'un rond-point, 333 m sur une route de 1,6 km) : second essai en franchissant des trous plus grands
-    ext = lambda P: float((np.asarray(P)[..., :2].reshape(-1, 2).max(0) - np.asarray(P)[..., :2].reshape(-1, 2).min(0)).max())
-    if ext(loop['points']) < 0.5 * ext(tris) and max_gap < 80 * 39.37 and not guide:
+    ext = lambda P: float((np.asarray(P)[..., :2].reshape(-1, 2).max(0) - np.asarray(P)[..., :2].reshape(-1, 2).min(0)).max()) \
+        if len(P) else 0.0
+    if ext(loop['points']) < 0.5 * ext(tris) and max_gap < 80 * 39.37 and not guide and not exact:
         try:
             with progress.span(0.9, 0.97, 'boucle trop petite : essai en franchissant des trous jusqu\'à 80 m'):
                 wide = route_gen.road_loop(tris, start[:2], heading, ground=ground, start_z=z0, max_gap=80 * 39.37, min_z=kz)
@@ -643,7 +682,7 @@ def route_layout(req):
                 loop = wide
         except ValueError:
             pass
-    if ext(loop['points']) < 0.5 * ext(tris) and not guide:
+    if ext(loop['points']) < 0.5 * ext(tris) and not guide and not exact:
         note = (note + ' ; ' if note else '') + (f"ATTENTION : le tour trouvé ({loop['length'] / 39.37:.0f} m) ne couvre qu'une "
                                                  f"petite partie de la route choisie ({ext(tris) / 39.37:.0f} m d'un bout à l'autre) : "
                                                  f"coche aussi les morceaux qui bouchent ses trous (pont, autre matériau) ou augmente "
@@ -673,6 +712,23 @@ def route_layout(req):
     return {'loop': loop['points'], 'length': round(loop['length']), 'sections': lay['sections'], 'note': note,
             'transitions': lay['transitions'], 'respawns': respawns, 'design_moves': design_moves,
             'race_moves': race_moves, 'jumps': loop.get('jumps', 0), 'preview': loop.get('preview')}
+
+
+def exact_loop(line, step=300.0):
+    """Boucle de route_gen.road_loop tiree d'une ligne centrale connue (onglet Creation) : [[x, y, z, largeur]]
+    (pouces, depart en premier, sens de course) -> points tous les ~step po, demi-largeurs, rien en l'air."""
+    E = np.asarray(line, np.float64)
+    if len(E) < 4:
+        raise ValueError('ligne centrale trop courte')
+    Q = np.vstack([E, E[:1]])
+    cum = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(Q[:, :2], axis=0), axis=1))])
+    total = float(cum[-1])
+    s = np.arange(0, total, step)
+    R = np.stack([np.interp(s, cum, Q[:, j]) for j in range(Q.shape[1])], 1)
+    pts = R[:, :3].tolist()
+    air = (R[:, 4] > 0.5).tolist() if R.shape[1] > 4 else [False] * len(pts)          # 5e colonne : saut
+    return {'points': pts, 'half_widths': (R[:, 3] / 2).tolist(), 'length': total, 'air': air,
+            'jumps': sum(1 for i in range(len(air)) if air[i] and not air[i - 1]), 'obstacles': 0}
 
 
 # -- point de depart du parcours : objet « Start / Finish », sinon damier, sinon ligne d'arrivee actuelle -----------
@@ -1046,12 +1102,72 @@ def crates_in_design(track):
     return crate_file(track) == start_finish.design_file(track)
 
 
+BOOST_COLORS = ('orange', 'bleu', 'vert', 'violet', 'rouge', 'rose')
+
+
+def boost_settings(c):
+    """Reglages d'un booster recu de l'editeur : couleur de la plaque, vitesse du turbo, duree (s) ; anciens boosters
+    (« super » seul) : bleu 1400 / 1,6 s, sinon orange 700 / 0,5 s."""
+    sup = bool(c.get('super'))
+    dsp, ddu = powerup.BOOST_SUPER if sup and 'speed' not in c else powerup.BOOST_CLASSIC
+    sp = min(10000.0, max(0.0, float(c.get('speed', dsp))))
+    du = min(30.0, max(0.05, float(c.get('duration', ddu))))
+    col = c.get('color') if c.get('color') in BOOST_COLORS else ('bleu' if sup else 'orange')
+    out = {'color': col, 'speed': round(sp, 1), 'duration': round(du, 2)}
+    out['super'] = powerup.boost_needs_data(out)
+    return out
+
+
+def boost_colors(track):
+    """Couleur de chaque booster de l'editeur, dans l'ordre, d'apres le modele de sa plaque au sol."""
+    try:
+        df = DecorFile(base_file(track, main_art(track))[0])
+    except KeyError:
+        return []
+    vis = sorted((o for o in df.objects() if (o['name'] or '').startswith(BOOST_VISUAL_PREFIX)), key=lambda o: o['name'])
+    return [boost_color_of_model(o['model']) for o in vis]
+
+
+def boost_color_of_model(model):
+    base = os.path.basename((model or '').replace('\\', '/'))[:-4].lower()
+    if base == 'boostpadsuper':
+        return 'bleu'
+    if base.startswith('boostpad_') and base[9:] in BOOST_COLORS:
+        return base[9:]
+    return 'orange'
+
+
 def read_track_crates(track):
     """Caisses du fichier en cours (enregistre, sinon d'origine) ; [] si la piste n'en a pas."""
     logical = crate_file(track)
     if logical is None:
         return []
-    return powerup.read_crates(base_file(track, logical)[0], crates_in_design(track))
+    out = powerup.read_crates(base_file(track, logical)[0], crates_in_design(track))
+    return out if crates_in_design(track) else out + design_boosts(track)
+
+
+def design_boosts(track):
+    """Boosters ajoutes par l'editeur dans le _Design ; ceux du jeu (TurboPad_001, GPI_SpeedBoostZone...) n'en font pas partie."""
+    try:
+        data = base_file(track, start_finish.design_file(track))[0]
+    except KeyError:
+        return []
+    return [c for c in powerup.read_crates(data, True) if c['name'].startswith(powerup.BOOST_OWN)]
+
+
+def migrate_boosters(track):
+    """Boosters enregistres par une version precedente dans le _Power_Up : passes dans le _Design, sinon ils
+    n'agissent pas en contre-la-montre. -> True si le fichier a ete refait."""
+    if not crates_supported(track) or crates_in_design(track):
+        return False
+    logical = crate_file(track)
+    p = saved_path(logical)
+    if not os.path.exists(p) or not any(c['kind'] == 'boost' for c in powerup.read_crates(open(p, 'rb').read())):
+        return False
+    z, _ = write_crates_file(track, read_track_crates(track))
+    safe_compact(track, logical, z)
+    z.save(p)
+    return True
 
 
 def crates_tilt_outdated(track, data):
@@ -1068,21 +1184,31 @@ def crates_supported(track):
 
 def write_crates_file(track, want):
     """Fichier des caisses reconstruit (caisses, boosters, TNT / Nitro / fruits), caisses inclinees comme la pente du
-    sol : _Power_Up depuis l'original ; _Design depuis le fichier enregistre, seules ses caisses changent.
-    -> (IgzFile, rapport)."""
+    sol : _Power_Up depuis l'original ; _Design depuis le fichier enregistre, seules ses caisses changent. Boosters
+    toujours dans le _Design (enregistre ici quand le fichier des caisses est le _Power_Up) : c'est la que le jeu
+    range les siens, et ils agissent alors aussi en contre-la-montre. -> (IgzFile du fichier des caisses, rapport)."""
     if not crates_supported(track):
         raise ValueError(f'{track} : fichier des caisses introuvable (ni _Power_Up ni _Design)')
     read = lambda p, pak: pak_tool.read_latest(ARCHIVES, p, pak)[0]
-    donor = powerup.boost_donor(read) if any(c['kind'] == 'boost' for c in want) else None
+    boosts = [c for c in want if c['kind'] == 'boost']
+    # plaques modeles : classique (Sewer Speedway) et / ou super turbo (Polar Pass), seulement celles utilisees
+    donor = {s: powerup.boost_donor(read, s) for s in {powerup.boost_needs_data(c) for c in boosts}} if boosts else None
     extras = {k: powerup.extra_donor(k, read) for k in {c['kind'] for c in want} if k in powerup.EXTRAS}
     logical = crate_file(track)
+    ns = lambda lg: os.path.splitext(os.path.basename(lg))[0]          # espace de noms du fichier (handles)
     orig = read(logical, track_pak(track))
     if crates_in_design(track):
         keep = {(c['name'], tuple(c['pos'])) for c in powerup.read_crates(orig, True)}
         z, msg, _ = powerup.write_crates(base_file(track, logical)[0], want, donor, extras, _crate_height_at(track),
-                                         crates_only=True, keep_tilt=keep)
-    else:
-        z, msg, _ = powerup.write_crates(orig, want, donor, extras, _crate_height_at(track))
+                                         crates_only=True, keep_tilt=keep, ns=ns(logical))
+        return z, msg
+    z, msg, _ = powerup.write_crates(orig, [c for c in want if c['kind'] != 'boost'], None, extras, _crate_height_at(track))
+    if boosts or design_boosts(track):
+        design = start_finish.design_file(track)
+        dz, more = powerup.write_boosts(base_file(track, design)[0], boosts, donor, ns(design))
+        safe_compact(track, design, dz)
+        dz.save(saved_path(design))
+        msg += more
     return z, msg
 
 
@@ -1436,11 +1562,15 @@ def save_track(req):
             w = {'name': c.get('name'), 'kind': c['kind'], 'pos': [round(float(v), 2) for v in c['pos']]}
             if c['kind'] == 'boost':
                 w['yaw'] = round(float(c.get('yaw') or 0.0), 5)
+                w['tilt'] = [round(float(v), 5) for v in (c.get('tilt') or [0.0, 0.0])]   # inclinaison X, Y
                 w['dims'] = [round(float(v), 1) for v in (c.get('dims') or powerup.BOOST_DIMS)]
+                w.update(boost_settings(c))                     # couleur, vitesse, duree (+ super : donnees propres)
             want.append(w)
         named = lambda c: c['kind'] in ('question', 'fruit')             # copies d'origine : le nom compte
-        key = lambda lst: [(c['name'] if named(c) else None, c['kind'], c['pos'], c.get('yaw'), c.get('dims'))
-                           for c in lst]
+        key = lambda lst: [(c['name'] if named(c) else None, c['kind'], c['pos'], c.get('yaw'), c.get('dims'),
+                            [round(v, 4) for v in c['tilt']] if c.get('tilt') else None, c.get('super'),
+                            round(float(c['speed']), 1) if 'speed' in c else None,
+                            round(float(c['duration']), 2) if 'duration' in c else None) for c in lst]
         if key(cur) != key(want) or crates_tilt_outdated(track, base_file(track, logical)[0]):
             z, msg = write_crates_file(track, want)
             safe_compact(track, logical, z)
@@ -1566,6 +1696,8 @@ def load_decor(track):
             if info:
                 o['custom_material'] = labels.get(info.get('material'), 'roche du gabarit')
                 o['surface'] = lk.get('surface', 'auto') if isinstance(lk, dict) else 'auto'
+                o['phys'] = lk.get('phys') if isinstance(lk, dict) else None       # vitesse / glissade propres
+                o['double'] = bool(info.get('double'))          # visible des deux cotes (faces doublees)
                 o['alpha'] = alpha.get(info.get('material'))
                 o['glow'] = glow.get(info.get('material'))           # None : texture du jeu (non modifiable)
                 if info.get('invisible'):                # mur invisible : 'auto' | 'manual' | 'obj'
@@ -1574,6 +1706,7 @@ def load_decor(track):
             elif isinstance(lk, dict) and lk.get('library'):  # objet de la bibliotheque : piste d'origine, surface
                 o['library'] = library.nice(lk['library'])
                 o['surface'] = lk.get('surface', 'auto')
+                o['phys'] = lk.get('phys')
         files.append({'file': logical, 'label': os.path.basename(logical)[len(track) + 1:-4],
                       'source': os.path.basename(src), 'saved': src.startswith(OUT_DIR), 'objects': objs})
     groups = move_away_files(track)
@@ -2128,8 +2261,29 @@ def apply_newmap(req):
         n1 = len(DecorFile(open(saved_path(art), 'rb').read()).objects())
         report.append(f'{os.path.basename(art)[len(track) + 1:-4]} : {n0} -> {n1} objets'
                       + (f' dont {len(remove[art])} ajout(s) supprime(s)' if remove[art] else ''))
+    if s['strip_ground'] or s['strip_art']:              # map videe : boosters de l'ancien sol retires (apres les
+        msg = remove_boosters(track)                     # fichiers de decor : leurs ids d'ajouts sont remappes)
+        if msg:
+            report.append(msg)
     report.append(sync_collision(track))
     return {'report': report, 'settings': s, 'remaining': remaining_elements(track)}
+
+
+def remove_boosters(track):
+    """Boosters ajoutes par l'editeur (zones du _Design, ou d'un ancien _Power_Up) et leurs plaques au sol retires :
+    « Nouvelle map », generation de l'onglet Creation (le sol change, ils restaient poses sur l'ancien). Caisses et
+    boosters du jeu inchanges. -> rapport ou None."""
+    if not crates_supported(track):
+        return None
+    cur = read_track_crates(track)
+    n = sum(c['kind'] == 'boost' for c in cur)
+    if n:
+        logical = crate_file(track)
+        z, _ = write_crates_file(track, [c for c in cur if c['kind'] != 'boost'])
+        safe_compact(track, logical, z)
+        z.save(saved_path(logical))
+    vis = sync_boost_visuals(track, [])
+    return f'{n} booster(s) retiré(s)' if n else (None if vis == 'aucun booster' else 'plaques de booster retirées')
 
 
 def write_art(track, logical, df, restore_originals=False):
@@ -2330,7 +2484,7 @@ def boosts_from_decor(track):
     if not os.path.exists(p):
         return None
     vis = sorted((o for o in DecorFile(open(p, 'rb').read()).objects()
-                  if (o['model'] or '').lower().endswith('\\boostpad.igb')), key=lambda o: o['name'])
+                  if re.search(r'\\boostpad(super|_[a-z]+)?\.igb$', (o['model'] or '').lower())), key=lambda o: o['name'])
     logical = crate_file(track)
     if logical is None:
         return None
@@ -2341,10 +2495,17 @@ def boosts_from_decor(track):
     new = []
     for k, v in enumerate(vis):
         h = old[k]['dims'][2] if k < len(old) else powerup.BOOST_DIMS[2]
+        # reglages (vitesse, duree) gardes : la plaque ne les porte pas ; couleur = celle de la plaque
+        prev = {x: old[k][x] for x in ('speed', 'duration') if k < len(old) and x in old[k]}
         new.append({'kind': 'boost', 'pos': [round(v['pos'][0], 2), round(v['pos'][1], 2), round(v['pos'][2] - BOOST_VISUAL_LIFT, 2)],
-                    'yaw': round(v['euler'][2], 5), 'dims': [round(abs(v['scale'][0]) * 100, 1), round(abs(v['scale'][1]) * 100, 1), h]})
+                    'yaw': round(v['euler'][2], 5), 'tilt': [round(v['euler'][0], 5), round(v['euler'][1], 5)],
+                    'dims': [round(abs(v['scale'][0]) * 100, 1), round(abs(v['scale'][1]) * 100, 1), h],
+                    **boost_settings({**prev, 'color': boost_color_of_model(v['model']),
+                                      'super': boost_color_of_model(v['model']) == 'bleu' and not prev})})
     same = len(new) == len(old) and all(
-        max(abs(a - b) for a, b in zip(n['pos'] + [n['yaw']] + n['dims'], o['pos'] + [o['yaw']] + o['dims'])) < 1.0
+        n['super'] == bool(o.get('super')) and
+        max(abs(a - b) for a, b in zip(n['pos'] + [n['yaw']] + n['tilt'] + n['dims'],
+                                       o['pos'] + [o['yaw']] + list(o.get('tilt') or [0.0, 0.0]) + o['dims'])) < 1.0
         for n, o in zip(new, old))
     if same:
         return None
@@ -2397,11 +2558,442 @@ def _tracked_files(track):
             (f'{track}_light.json', light_path(track)),
             (f'{track}_menu.json', menu_settings_path(track)),
             (f'{track}_lights.json', lights_path(track)),
-            (f'{track}_ambiance.json', ambiance_path(track))]
+            (f'{track}_ambiance.json', ambiance_path(track)),
+            (f'{track}_music.json', music_settings_path(track)),
+            (f'{track}_times.json', times_path(track))]
+    out += [('music_'+ os.path.basename(lg), music_path(track, lg)) for lg, _ in music_streams(track)]
     reg = custom_models(track)
     out += [('models/' + os.path.basename(k), custom_model_path(k)) for k in reg]
     out += [('models/' + os.path.basename(wall_mesh_path(k)), wall_mesh_path(k)) for k, v in reg.items() if v.get('invisible')]
     return out
+
+
+# -- musique de la piste (voir music.py) ------------------------------------------------------
+# Fichiers par piste dans out/editor/music/<piste>/ : deux pistes creees sur la meme base ont les memes noms de fichiers.
+MUSIC_KINDS = ('main', 'fl')
+MUSIC_FAST = 1.06                                       # « un peu plus rapide » : ecart habituel du jeu au dernier tour
+_music_cache = {}
+
+
+def _music_bank(track):
+    """Banque de musique de la piste, designee par sa carte (une piste creee utilise celle de sa base)."""
+    main = base_file(track, start_finish.main_map_file(track))[0]
+    m = re.search(rb'sounds:/(banks/MUS/[^\0]+?\.igz)', main, re.I)
+    bank = 'sounds/' + (m.group(1).decode('latin1') if m else f'banks/MUS/MUS_{track}_bank.igz')
+    return pak_tool.read_latest(ARCHIVES, bank, track_pak(track))[0]
+
+
+def music_streams(track):
+    """[(fichier .snd, 'main' | 'fl')] references par la banque de musique de la piste (les pistes de boss en ont deux
+    de chaque)."""
+    if track in _music_cache:
+        return _music_cache[track]
+    out = []
+    try:
+        data = _music_bank(track)
+        for raw in dict.fromkeys(re.findall(rb'data:/(sound_streams/[^\0]+?\.snd)', data, re.I)):
+            lg = raw.decode('latin1')
+            if pak_tool.archives_with(ARCHIVES, lg, track_pak(track)):
+                out.append((lg, 'fl' if os.path.basename(lg).split(',')[0].lower().endswith('_fl') else 'main'))
+    except (KeyError, OSError, ValueError):             # piste sans musique propre : fonction indisponible
+        traceback.print_exc()
+    _music_cache[track] = out
+    return out
+
+
+def music_path(track, logical):
+    return os.path.join(OUT_DIR, 'music', track, os.path.basename(logical))
+
+
+def music_settings_path(track):
+    return os.path.join(OUT_DIR, f'{track}_music.json')
+
+
+def music_settings(track):
+    p = music_settings_path(track)
+    return json.load(open(p, encoding='utf-8')) if os.path.exists(p) else {}
+
+
+def _music_write_settings(track, st):
+    if st:
+        json.dump(st, open(music_settings_path(track), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+    elif os.path.exists(music_settings_path(track)):
+        os.remove(music_settings_path(track))
+
+
+def _music_original(track, logical):
+    return pak_tool.read_latest(ARCHIVES, logical, track_pak(track))[0]
+
+
+def music_install_files(track):
+    return {lg: open(music_path(track, lg), 'rb').read() for lg, _ in music_streams(track) if os.path.exists(music_path(track, lg))}
+
+
+def music_continues(track):
+    """Dernier tour : la musique de la course continue (copie du script de musique, voir music.py) ?"""
+    return music_settings(track).get('fl', {}).get('mode') == 'continue'
+
+
+def music_continue_files(track):
+    """-> (fichier de la carte, carte qui utilise la copie du script, copie du script)."""
+    script = pak_tool.read_latest(ARCHIVES, music.MANAGER_SCRIPT, track_pak(track))[0]
+    logical = start_finish.main_map_file(track)
+    return logical, music.continue_map(base_file(track, logical)[0], script), music.continue_script(script)
+
+
+def music_info(track):
+    st, kinds = music_settings(track), {}
+    for k in MUSIC_KINDS:
+        files = [lg for lg, x in music_streams(track) if x == k]
+        info = {'available': bool(files), 'custom': False, 'name': None, 'seconds': None}
+        if files:
+            custom = os.path.exists(music_path(track, files[0]))
+            data = open(music_path(track, files[0]), 'rb').read(4096) if custom else _music_original(track, files[0])   # en-tetes jusqu'a 17 Ko
+            info.update(custom=custom, seconds=round(music.read_header(data)['seconds'], 1), name=st.get(k, {}).get('name') if custom else None)
+        kinds[k] = info
+    exe = find_ffmpeg()
+    return {'ffmpeg': bool(exe), 'ffmpeg_path': exe, 'continues': music_continues(track), **kinds}
+
+
+def find_ffmpeg():
+    """ffmpeg : celui indique dans la fenetre Musique (reglage 'ffmpeg'), sinon a cote de l'exe, sinon dans le PATH."""
+    music.FFMPEG_PATH = load_config().get('ffmpeg')
+    return music.find_ffmpeg()
+
+
+def pick_ffmpeg(req):
+    """POST /api/pick_ffmpeg {track, path?} : ffmpeg n'est pas distribue avec l'editeur. path (dossier ou programme),
+    sinon fenetre de choix du dossier ; verifie (se lance, sait encoder en MP3) puis retenu.
+    -> etat de la musique, {'cancelled': True} si la fenetre est fermee sans choix."""
+    path = (req.get('path') or '').strip()
+    if not path:
+        path = ask_folder('Dossier qui contient ffmpeg (ffmpeg.exe, ou son dossier bin)', os.path.dirname(find_ffmpeg() or '') or None)
+        if not path:
+            return {'cancelled': True}
+    exe = music.ffmpeg_in(path)
+    if not exe:
+        return {'invalid': 'Aucun ffmpeg à cet endroit (ni dans son dossier bin)'}
+    try:
+        music.check_ffmpeg(exe)
+    except ValueError as e:
+        return {'invalid': str(e)}
+    save_config(ffmpeg=os.path.normpath(exe))
+    return music_info(req['track'])
+
+
+def music_audio(track, kind):
+    """Flux joue en course, en MP3, pour l'ecoute dans la page."""
+    lg = next((x for x, k in music_streams(track) if k == kind), None)
+    if lg is None:
+        raise KeyError(kind)
+    p = music_path(track, lg)
+    return music.stream_mp3(open(p, 'rb').read() if os.path.exists(p) else _music_original(track, lg))
+
+
+def _music_upload_dir():
+    return os.path.join(OUT_DIR, 'music', '_uploads')
+
+
+def music_upload(data, filename, keep=False):
+    """Fichier audio recu de la page, en attente de « music_apply » ; -> {id}. keep : 2e fichier du meme import."""
+    d = _music_upload_dir()
+    if not keep:
+        shutil.rmtree(d, ignore_errors=True)            # envois abandonnes
+    os.makedirs(d, exist_ok=True)
+    ext = re.sub(r'[^a-z0-9.]', '', os.path.splitext(filename)[1].lower())[:8]
+    name = f'{time.time_ns()}{ext}'
+    open(os.path.join(d, name), 'wb').write(data)
+    return {'id': name}
+
+
+def _music_upload_file(upload):
+    if not upload or not re.fullmatch(r'\d+(\.[a-z0-9]+)?', upload):
+        raise ValueError('fichier audio manquant')
+    p = os.path.join(_music_upload_dir(), upload)
+    if not os.path.exists(p):
+        raise ValueError('fichier audio envoyé introuvable : recommence')
+    return p
+
+
+def _music_store(track, kind, pcm, name, extra=None):
+    """Encode et enregistre une musique sur tous les fichiers de ce type ; -> duree."""
+    files = [lg for lg, k in music_streams(track) if k == kind]
+    if not files:
+        raise ValueError('cette piste n\'a pas ce type de musique')
+    first = None
+    os.makedirs(os.path.dirname(music_path(track, files[0])), exist_ok=True)
+    for lg in files:
+        orig = _music_original(track, lg)
+        first = music.build(orig, pcm) if first is None else music.rebuild_for(orig, first)
+        open(music_path(track, lg), 'wb').write(first)
+    st = music_settings(track)
+    st[kind] = {'name': name, **(extra or {})}
+    _music_write_settings(track, st)
+    return music.read_header(first)['seconds']
+
+
+def music_apply(req):
+    """req = {track, main: envoi ou null (garder), fl: {mode: 'keep' | 'continue' | 'same' | 'fast' | 'file', upload},
+    main_name, fl_name, fade (bool), normalize (bool)} ; enregistre les .snd de la piste."""
+    find_ffmpeg()                                     # chemin retenu (nouvelle session : la fenetre n'est pas toujours rouverte)
+    track, fl = req['track'], req.get('fl') or {'mode': 'keep'}
+    fade = 2.0 if req.get('fade', True) else 0.0
+    normalize = req.get('normalize', True)
+    if not music_streams(track):
+        raise ValueError('musique de cette piste introuvable')
+    report = []
+    src = _music_upload_file(req['main']) if req.get('main') else None
+    if fl.get('mode') in ('same', 'fast') and not src:
+        raise ValueError('choisis d\'abord le morceau principal')
+    try:
+        if src:
+            progress.step('décodage du morceau', 0.05)
+            pcm = music.prepare(music.decode(src, normalize=normalize), fade)
+            progress.step('encodage du morceau', 0.25)
+            s = _music_store(track, 'main', pcm, req.get('main_name') or 'morceau importé')
+            report.append(f'musique : {s:.0f} s')
+        mode = fl.get('mode')
+        if mode == 'continue':
+            music_continue_files(track)                 # erreur ici si la piste ne s'y prete pas : rien d'enregistre
+            music_clear(track, ['fl'])                  # plus de morceau a part
+            _music_write_settings(track, {**music_settings(track), 'fl': {'mode': 'continue'}})
+            report.append('dernier tour : la musique continue')
+        elif mode == 'keep' and music_continues(track):  # retour au changement de morceau, la carte reste d'origine
+            music_clear(track, ['fl'])
+            report.append('dernier tour : musique d\'origine')
+        elif mode != 'keep' and any(k == 'fl' for _, k in music_streams(track)):
+            path = src if mode in ('same', 'fast') else _music_upload_file(fl.get('upload'))
+            progress.step('dernier tour', 0.55)
+            pcm = music.prepare(music.decode(path, MUSIC_FAST if mode == 'fast' else 1.0, normalize), fade)
+            name = req.get('fl_name') if mode == 'file' else req.get('main_name')
+            s = _music_store(track, 'fl', pcm, name or 'morceau importé', {'mode': mode})
+            report.append(f'dernier tour : {s:.0f} s' + (f' (+{round((MUSIC_FAST - 1) * 100)} %)' if mode == 'fast' else ''))
+    finally:
+        shutil.rmtree(_music_upload_dir(), ignore_errors=True)
+    if not report:
+        raise ValueError('aucun morceau choisi')
+    return {'report': report, **music_info(track)}
+
+
+def music_clear(track, kinds):
+    """Retire les musiques importees de ces types ; -> fichiers retires."""
+    removed, st = [], music_settings(track)
+    for lg, k in music_streams(track):
+        p = music_path(track, lg)
+        if k in kinds and os.path.exists(p):
+            os.remove(p)
+            removed.append(os.path.basename(p))
+    for k in kinds:
+        st.pop(k, None)
+    _music_write_settings(track, st)
+    return removed
+
+
+def music_reset(req):
+    n = music_clear(req['track'], [k for k in (req.get('kinds') or MUSIC_KINDS) if k in MUSIC_KINDS])
+    return {'removed': n, **music_info(req['track'])}
+
+
+# -- temps des reliques et des fantomes du contre-la-montre (race_times.py) -----------------------
+# Reglages dans out/editor/<piste>_times.json : {'relic': {palier: [4 valeurs]}, 'ghosts': {'unlock': s, 'times': [4]}}
+# (seulement ce qui differe du jeu). Appliques a l'installation : zoneinfo de la piste et GhostData (partage par toutes
+# les pistes : il recoit les reglages de toutes les pistes de ce dossier), enregistrements .igb du dossier ghosts du jeu
+# (copie d'origine gardee a cote : <fichier>.ctrmod).
+GHOST_BACKUP = '.ctrmod'
+
+
+def times_path(track):
+    return os.path.join(OUT_DIR, f'{track}_times.json')
+
+
+def times_settings(track):
+    p = times_path(track)
+    try:
+        return json.load(open(p, encoding='utf-8')) if os.path.exists(p) else {}
+    except ValueError:
+        return {}
+
+
+def ghost_dir():
+    return os.path.join(os.path.dirname(ARCHIVES), 'ghosts')
+
+
+def _times_source(track):
+    """Piste dont le zoneinfo d'origine sert (piste creee : celle d'ou elle vient)."""
+    for t in (custom_category.read_state(ARCHIVES) or {}).get('tracks', []):
+        if t['id'].lower() == track.lower():
+            return t['source']
+    return track
+
+
+def _relic_original(track):
+    try:
+        return race_times.read_relic(pak_tool.read_latest(ARCHIVES, race_times.zoneinfo_logical(_times_source(track)),
+                                                          race_times.zoneinfo_pak())[0])
+    except KeyError:
+        return {}
+
+
+def _ghost_data_original():
+    return pak_tool.read_latest(ARCHIVES, race_times.GHOST_DATA, race_times.GHOST_PAK)[0]
+
+
+def _ghost_original_time(f):
+    p = os.path.join(ghost_dir(), f)
+    for q in (p + GHOST_BACKUP, p):
+        if os.path.exists(q):
+            return race_times.igb_time(open(q, 'rb').read(4096))
+    return race_times.name_time(f)
+
+
+def times_info(track):
+    st = times_settings(track)
+    orig = _relic_original(track)
+    relic = {k: (st.get('relic') or {}).get(k) or v for k, v in orig.items()}
+    g = race_times.read_ghosts(_ghost_data_original(), track)
+    ghosts = None
+    if g:
+        want = (st.get('ghosts') or {}).get('times') or []
+        rows = []
+        for i, x in enumerate(g['ghosts']):
+            o = _ghost_original_time(x['file'])
+            rows.append({'driver': x['driver'], 'file': x['file'], 'original': round(o, 3) if o else None,
+                         'time': want[i] if i < len(want) and want[i] is not None else (round(o, 3) if o else None),
+                         'found': os.path.exists(os.path.join(ghost_dir(), x['file']))})
+        ghosts = {'unlock_original': g['unlock'], 'unlock': (st.get('ghosts') or {}).get('unlock') or g['unlock'], 'ghosts': rows}
+    return {'relic': relic, 'relic_original': orig, 'ghosts': ghosts, 'custom': bool(st)}
+
+
+def times_apply(req):
+    track = req['track']
+    info = times_info(track)
+    st = {}
+    relic = {}
+    for tier, vals in (req.get('relic') or {}).items():
+        if tier in race_times.TIERS and vals:
+            vals = [round(race_times._clean(v), 3) for v in vals]
+            if vals != [round(v, 3) for v in info['relic_original'].get(tier, [])]:
+                relic[tier] = vals
+    if relic:
+        if not info['relic_original']:
+            raise RuntimeError('temps des reliques introuvables pour cette piste')
+        st['relic'] = relic
+    g, gi = req.get('ghosts') or {}, info['ghosts']
+    if g and gi:
+        out = {}
+        if g.get('unlock') is not None and round(race_times._clean(g['unlock']), 3) != gi['unlock_original']:
+            out['unlock'] = round(float(g['unlock']), 3)
+        times = []
+        for row, t in zip(gi['ghosts'], g.get('times') or []):
+            t = None if t is None else round(race_times._clean(t), 3)
+            times.append(t if t is not None and row['original'] is not None and abs(t - row['original']) > 0.0005 else None)
+        if any(t is not None for t in times):
+            out['times'] = times
+        if out:
+            st['ghosts'] = out
+    if st:
+        json.dump(st, open(times_path(track), 'w', encoding='utf-8'), indent=1)
+    elif os.path.exists(times_path(track)):
+        os.remove(times_path(track))
+    return {**times_info(track), 'report': [('temps modifiés' if st else 'temps du jeu')]}
+
+
+def times_reset(req):
+    if os.path.exists(times_path(req['track'])):
+        os.remove(times_path(req['track']))
+    return times_info(req['track'])
+
+
+def _all_ghost_settings():
+    """{piste: reglages des fantomes} de toutes les pistes de ce dossier de travail."""
+    out = {}
+    for f in os.listdir(OUT_DIR) if os.path.isdir(OUT_DIR) else []:
+        if f.endswith('_times.json'):
+            tr = f[:-len('_times.json')]
+            g = times_settings(tr).get('ghosts')
+            if g:
+                out[tr.lower()] = g
+    return out
+
+
+def times_install_files(track):
+    """{nom logique: octets d'origine} a poser dans les archives (zoneinfo, GhostData) ; modifies par _apply_times."""
+    st, out = times_settings(track), {}
+    if st.get('relic') and _times_source(track) == track:      # piste creee : zoneinfo fait par custom_category
+        try:
+            out[race_times.zoneinfo_logical(track)] = pak_tool.read_latest(
+                ARCHIVES, race_times.zoneinfo_logical(track), race_times.zoneinfo_pak())[0]
+        except KeyError:
+            pass
+    if st.get('ghosts'):
+        out[race_times.GHOST_DATA] = _ghost_data_original()
+    return out
+
+
+def _apply_times(reps):
+    """Fichiers a ecrire dans une archive : zoneinfo des pistes aux reliques modifiees et GhostData recoivent les
+    temps enregistres (pour toutes les pistes : un fichier garde d'une autre piste est refait a l'identique)."""
+    out = dict(reps)
+    for lg in list(out):
+        low = lg.lower()
+        if low.endswith('_zoneinfo.igz'):
+            tr = low.rsplit('/', 1)[-1][:-len('_zoneinfo.igz')]
+            relic = next((times_settings(f[:-len('_times.json')]).get('relic') for f in os.listdir(OUT_DIR)
+                          if f.lower() == f'{tr}_times.json'), None) if os.path.isdir(OUT_DIR) else None
+            if relic:
+                out[lg] = race_times.write_relic(out[lg], relic)
+        elif low == race_times.GHOST_DATA.lower():
+            # toujours depuis l'original : un reglage retire revient au temps du jeu
+            out[lg] = race_times.write_ghosts(_ghost_data_original(), _all_ghost_settings())
+    return out
+
+
+def apply_ghost_files(track, on=True):
+    """Enregistrements .igb des fantomes de la piste : temps reglé (on) ou remis d'origine. -> textes du rapport."""
+    g = race_times.read_ghosts(_ghost_data_original(), track)
+    if not g:
+        return []
+    want = ((times_settings(track).get('ghosts') or {}).get('times') or []) if on else []
+    done = []
+    for i, x in enumerate(g['ghosts']):
+        p = os.path.join(ghost_dir(), x['file'])
+        bak = p + GHOST_BACKUP
+        t = want[i] if i < len(want) else None
+        if t is not None:
+            if not os.path.exists(p):
+                continue
+            if not os.path.exists(bak):
+                shutil.copy2(p, bak)
+            open(p, 'wb').write(race_times.igb_with_time(open(bak, 'rb').read(), t))
+            done.append(f'fantôme {x["driver"]} : {t:.2f} s')
+        elif os.path.exists(bak):
+            os.replace(bak, p)
+            done.append(f'fantôme {x["driver"]} remis d\'origine')
+    return done
+
+
+def music_export(track):
+    """Musiques importees pour un pack de maps : {type: .snd} (le premier fichier de chaque type)."""
+    out = {}
+    for lg, k in music_streams(track):
+        if k not in out and os.path.exists(music_path(track, lg)):
+            out[k] = open(music_path(track, lg), 'rb').read()
+    return out
+
+
+def music_import(track, kinds, names):
+    """Musiques d'un pack posees sur les fichiers de la piste cible (sans reencodage) ; -> types poses."""
+    st, done = music_settings(track), []
+    for lg, k in music_streams(track):
+        if k in kinds:
+            os.makedirs(os.path.dirname(music_path(track, lg)), exist_ok=True)
+            open(music_path(track, lg), 'wb').write(music.rebuild_for(_music_original(track, lg), kinds[k]))
+            st[k] = {'name': (names.get(k) or {}).get('name') or 'morceau importé'}
+            done.append(k)
+    if (names.get('fl') or {}).get('mode') == 'continue':
+        st['fl'] = {'mode': 'continue'}
+    _music_write_settings(track, st)
+    return sorted(set(done))
 
 
 def snapshot_saved(track, label):
@@ -2420,7 +3012,7 @@ def snapshot_saved(track, label):
             # modele importe inchange depuis la copie precedente : lien vers elle (les copies ne sont jamais
             # modifiees) au lieu de recopier des dizaines de Mo a chaque enregistrement
             old = os.path.join(prev, name)
-            if name.startswith('models/') and os.path.exists(old) and os.path.getmtime(p) < prev_t \
+            if name.startswith(('models/', 'music_')) and os.path.exists(old) and os.path.getmtime(p) < prev_t \
                     and os.path.getsize(old) == os.path.getsize(p):
                 try:
                     os.link(old, os.path.join(snap, name))
@@ -3063,8 +3655,76 @@ def surface_params():
     return _surface_params
 
 
+# -- types de sol a vitesse / glissade propres (collision_materials) ---------------------------------------------
+# Registre commun a toutes les pistes (le fichier du jeu est commun) : [{base, speed, slide}], valeur de surface =
+# 1re valeur libre du jeu + rang. Une entree n'est jamais retiree (une piste installee peut encore s'en servir).
+def custom_surfaces_path():
+    return os.path.join(OUT_DIR, 'custom_surfaces.json')
+
+
+def custom_surfaces():
+    p = custom_surfaces_path()
+    return json.load(open(p)) if os.path.exists(p) else []
+
+
+_first_custom = []
+
+
+def first_custom_surface():
+    if not _first_custom:
+        _first_custom.append(collision_materials.first_value(
+            pak_tool.read_latest(ARCHIVES, collision_materials.LOGICAL, collision_materials.PAK)[0]))
+    return _first_custom[0]
+
+
+def surface_defaults(value):
+    """{'speed', 'slide'} d'un type de sol du jeu (vitesse constatee en jeu pour l'herbe)."""
+    p = surface_params().get(int(value)) or {}
+    b = collision_materials.base_params(pak_tool.read_latest(ARCHIVES, collision_materials.LOGICAL,
+                                                             collision_materials.PAK)[0], int(value)) or {'speed': 1.0, 'slide': 0.0}
+    return {'speed': round(float(p.get('speed') or b['speed']), 3), 'slide': b['slide']}
+
+
+def clean_phys(base, phys):
+    """Reglages propres d'un objet, ou None s'ils sont ceux du type de sol (rien a ajouter)."""
+    if not isinstance(phys, dict) or base in ('auto', 'none', None):
+        return phys if isinstance(phys, dict) and base == 'auto' else None
+    d = surface_defaults(base)
+    sp = round(max(0.05, min(3.0, float(phys.get('speed', d['speed'])))), 3)
+    sl = round(max(0.0, min(1.0, float(phys.get('slide', d['slide'])))), 3)
+    return None if abs(sp - d['speed']) < 1e-3 and abs(sl - d['slide']) < 1e-3 else {'speed': sp, 'slide': sl}
+
+
+def custom_surface_value(base, phys):
+    """Valeur de surface a ecrire dans la collision : celle du type de sol, ou celle du type ajoute pour ses
+    reglages propres (ajoute au registre si nouveau)."""
+    phys = clean_phys(int(base), phys)
+    if not phys:
+        return int(base)
+    reg = custom_surfaces()
+    want = {'base': int(base), 'speed': phys['speed'], 'slide': phys['slide']}
+    for k, c in enumerate(reg):
+        if c == want:
+            return first_custom_surface() + k
+    reg.append(want)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    json.dump(reg, open(custom_surfaces_path(), 'w'), indent=1)
+    return first_custom_surface() + len(reg) - 1
+
+
+def _apply_custom_surfaces(reps):
+    """CollisionMaterials ecrit dans une archive : depuis l'original, avec TOUS les types ajoutes (fichier commun)."""
+    out = dict(reps)
+    for lg in list(out):
+        if lg.lower() == collision_materials.LOGICAL.lower() and custom_surfaces():
+            orig = pak_tool.read_latest(ARCHIVES, collision_materials.LOGICAL, collision_materials.PAK)[0]
+            out[lg] = collision_materials.build(orig, custom_surfaces())
+    return out
+
+
 def set_surface(req, sync=True):
-    """Type de sol des objets importes : req = {track, objects: [{file, id}], surface: 'auto' | 'none' | valeur}.
+    """Type de sol des objets importes : req = {track, objects: [{file, id}], surface: 'auto' | 'none' | valeur,
+    phys: {speed, slide} | None (vitesse / glissade propres ; absent : reglages gardes)}.
     Memorise dans les liens du decor, puis collision recalculee (sync=False : par l'enregistrement du decor)."""
     track, surf = req['track'], req.get('surface')
     if surf not in ('auto', 'none'):
@@ -3076,6 +3736,14 @@ def set_surface(req, sync=True):
         lk = links.get(ref['file'], {}).get(str(ref['id']))
         if isinstance(lk, dict) and 'custom' in lk:
             lk['surface'] = surf
+            if 'phys' in req:                              # reglages propres choisis (ou remis a ceux du type)
+                ph = clean_phys(surf, req.get('phys'))
+                if ph:
+                    lk['phys'] = ph
+                else:
+                    lk.pop('phys', None)
+            elif surf == 'none':
+                lk.pop('phys', None)
             n += 1
     if not n:
         raise ValueError('aucun modèle importé dans la sélection (le sol des objets d\'origine ne se change pas ici)')
@@ -3149,6 +3817,176 @@ def set_custom_material(req):
         reg[logical]['material'] = m['id']
         save_custom_models(track, reg)
     return {'model': logical, 'material': m['id'], 'label': m['label']}
+
+
+# -- edition de forme d'un objet du decor (2026-11-06) : points deplaces, texture par face ------------------------
+# L'objet modifie recoit un NOUVEAU modele importe, a plusieurs textures (model_build.build_model_multi : un draw call
+# par texture), au format de sommet du gabarit. Objets du jeu compris : l'objet d'origine est remplace par une copie
+# importee (sa collision suit alors la nouvelle forme, surface « comme le sol dessous »).
+def model_parts(track, file_name):
+    """Textures (draw calls) d'un modele, dans l'ordre des groupes de l'apercu : [{material (id du catalogue ou
+    nom|espace), label, compatible (format de sommet du gabarit : reutilisable tel quel)}]."""
+    logical = model_logical_path(file_name)
+    data = model_bytes(track, logical)
+    ref = model_materials(read_game_file(track, TEMPLATE))[0][4]
+    catalog = material_catalog(track)
+    by = {(m['name'], m['ns']): m for m in catalog}
+    out = []
+    for _, name, ns, dep, sig, _ in model_materials(data):
+        m = by.get((name, ns))
+        out.append({'material': m['id'] if m else f'{name}|{ns}', 'label': m['label'] if m else name,
+                    'compatible': sig == ref and bool(dep), 'name': name, 'ns': ns, 'dep': dep})
+    return {'model': logical, 'parts': out}
+
+
+def _part_material(track, mid, originals):
+    """(nom, espace, dependance) d'un id de texture : catalogue, sinon texture d'origine compatible du modele."""
+    m = next((m for m in material_catalog(track) if m['id'] == mid), None)
+    if m:
+        return m['name'], m['ns'], m['dep']
+    o = next((p for p in originals if p['material'] == mid and p['compatible']), None)
+    if o:
+        return o['name'], o['ns'], o['dep']
+    return None                                              # texture du gabarit (roche de Crash Cove)
+
+
+def mesh_save(req):
+    """req = {track, file (_Art), id, scope 'one' | 'all', parts: [{material, positions [x,y,z...], uvs [u,v...] |
+    None, indices [...]}]} (positions locales au modele, pouces). Nouveau modele importe ; l'objet (scope 'one') ou
+    tous les objets du meme modele (scope 'all') le recoivent. -> {report, ids, file, model}."""
+    track, art, oid = req['track'], req['file'], int(req['id'])
+    df0 = DecorFile(base_file(track, art)[0])
+    obj = next((o for o in df0.objects() if o['id'] == oid), None)
+    if obj is None:
+        raise ValueError('objet introuvable : enregistre le décor puis recommence')
+    old_logical = model_logical_path(obj['model'])
+    originals = model_parts(track, obj['model'])['parts']
+    template = read_game_file(track, TEMPLATE)
+    parts, n_v, n_t, mats = [], 0, 0, []
+    for p in req.get('parts') or []:
+        P = [tuple(map(float, p['positions'][i:i + 3])) for i in range(0, len(p['positions']), 3)]
+        T = [tuple(map(int, p['indices'][i:i + 3])) for i in range(0, len(p['indices']) // 3 * 3, 3)]
+        if not T:
+            continue
+        # UV de l'apercu = valeurs stockees dans le modele (v vers le bas) ; build_model attend la convention OBJ
+        # (il ecrit 1 - v) : v retourne ici, sinon la texture d'origine ressortait a l'envers
+        U = [(float(p['uvs'][i]), 1.0 - float(p['uvs'][i + 1])) for i in range(0, len(p['uvs']) - 1, 2)] if p.get('uvs') else None
+        if U is not None and len(U) != len(P):
+            U = None
+        # sommets de cette partie seulement (bornes propres : model_mesh ecarte deux draw calls de memes bornes et
+        # meme nombre d'indices, pris pour des niveaux de detail)
+        used = sorted({i for t in T for i in t})
+        remap = {v: k for k, v in enumerate(used)}
+        P = [P[i] for i in used]
+        U = [U[i] for i in used] if U is not None else None
+        T = [tuple(remap[i] for i in t) for t in T]
+        q, n, u, t = complete_mesh(P, None, U, T)
+        mat = _part_material(track, p.get('material'), originals)
+        parts.append({'pos': q, 'nrm': n, 'uvs': u, 'tan': t, 'tris': T,
+                      'material': mat or (lambda m: (m[1], m[2], m[3]))(model_materials(template)[0])})
+        mats.append(p.get('material') if mat else 'gabarit')
+        n_v += len(q)
+        n_t += len(T)
+    if not parts:
+        raise ValueError('forme vide')
+    reg = custom_models(track)
+    base = _clean_name(os.path.basename(old_logical)[:-4].replace('_Forme', ''))[:30] + '_Forme'
+    name, k = base, 1
+    while os.path.exists(custom_model_path(f'{name}.igz')) or f'models/{CUSTOM_DIR}/{name}.igz' in reg:
+        k += 1
+        name = f'{base}{k}'
+    logical = f'models/{CUSTOM_DIR}/{name}.igz'
+    os.makedirs(os.path.join(OUT_DIR, 'models'), exist_ok=True)
+    open(custom_model_path(logical), 'wb').write(build_model_multi(template, parts, f'{CUSTOM_DIR}/{name}'))
+    _forget_model(logical)
+    reg[logical] = {'name': name, 'vertices': n_v, 'triangles': n_t, 'material': mats[0], 'parts': mats,
+                    'edited_from': old_logical}
+    save_custom_models(track, reg)
+    # objets a remplacer : celui-ci, ou tous ceux du meme modele (tous les fichiers de decor)
+    igb = 'models:\\' + CUSTOM_DIR.replace('/', '\\') + f'\\{name}.igb'
+    every = req.get('scope') == 'all'
+    arts = art_files(track) if every else [art]
+    ids, n_obj = [], 0
+    for a in arts:
+        links = load_links(track)                         # relu : write_art remappe les liens a chaque fichier
+        df = df0 if a == art else DecorFile(base_file(track, a)[0])
+        targets = [o for o in df.objects() if model_logical_path(o['model']).lower() == old_logical.lower()
+                   and (every or o['id'] == oid)]
+        if not targets:
+            continue
+        tmpl = template_object(track, a)
+        if tmpl is None:
+            raise ValueError(f'{os.path.basename(a)} : pas d\'objet modèle pour la copie')
+        old_links = links.get(a, {})
+        keep = [{k2: v for k2, v in (old_links.get(str(o['id'])) or {}).items() if k2 not in ('custom', 'library')}
+                for o in targets]
+        df.delete_many([o['id'] for o in targets])
+        specs = [(tmpl, o['name'], o['pos'], o['euler'], o['scale']) for o in targets]
+        created = df.duplicate_many(specs)
+        for nid, kp in zip(created, keep):
+            df.set_model(nid, igb)
+            links.setdefault(a, {})[str(nid)] = {'surface': 'auto', **kp, 'custom': logical}
+        for o in targets:
+            old_links.pop(str(o['id']), None)
+        save_links(track, links)
+        idmap = write_art(track, a, df)
+        if a == art:
+            ids = [idmap.get(i, i) for i in created]
+        n_obj += len(targets)
+    report = [f'{name} : {len(parts)} texture(s), {n_v} sommets, {n_t} triangles ; {n_obj} objet(s) remplacé(s)']
+    with progress.span(0.5, 1.0):
+        report.append(sync_collision(track))
+    return {'report': report, 'ids': ids, 'file': art, 'model': logical}
+
+
+def set_double_sided(req):
+    """Modele importe visible des deux cotes en jeu (2026-11-06) : le jeu n'affiche que la face avant des triangles
+    (panneau, banderole vus de dos : invisibles). req = {track, model, on}. on : chaque triangle double d'un triangle
+    retourne (sommets copies, normales opposees), meme texture ; l'original est garde (<modele>.single.igz) et remis
+    a off. Toutes les copies du modele changent."""
+    track = req['track']
+    logical = req['model'] if req['model'].startswith('models/') else model_logical_path(req['model'])
+    p = custom_model_path(logical)
+    if not logical.startswith(f'models/{CUSTOM_DIR}/') or not os.path.exists(p):
+        raise ValueError('seulement pour les modèles importés')
+    reg = custom_models(track)
+    info = reg.setdefault(logical, {'name': os.path.basename(logical)[:-4]})
+    keep = p[:-4] + '.single.igz'
+    name = os.path.basename(logical)[:-4]
+    if not req.get('on'):
+        if os.path.exists(keep):
+            shutil.copyfile(keep, p)
+        info.pop('double', None)
+        msg = f'{name} : visible d\'un seul côté (comme le modèle d\'origine)'
+    else:
+        if info.get('double'):
+            return {'report': [f'{name} est déjà visible des deux côtés'], 'double': True}
+        data = open(p, 'rb').read()
+        shutil.copyfile(p, keep)
+        pv = preview.model_preview(data, lambda lg: preview_read(track, lg))
+        mats = model_materials(data)
+        P, U, I = np.asarray(pv['positions'], float), np.asarray(pv['uvs'], float), np.asarray(pv['indices'], int)
+        template = read_game_file(track, TEMPLATE)
+        parts = []
+        for k, (start, count, _) in enumerate(pv['groups']):
+            tris = I[start:start + count].reshape(-1, 3)
+            used = np.unique(tris)
+            remap = {int(v): j for j, v in enumerate(used)}
+            pos = [tuple(P[v]) for v in used]
+            uvs = [(float(U[v][0]), 1.0 - float(U[v][1])) for v in used]       # convention OBJ (build_model : 1 - v)
+            front = [tuple(remap[int(v)] for v in t) for t in tris]
+            n = len(pos)
+            back = [(a + n, c + n, b + n) for a, b, c in front]                  # copies retournees
+            q, nrm, u, t = complete_mesh(pos + pos, None, uvs + uvs, front + back)
+            m = mats[k] if k < len(mats) else mats[0]
+            parts.append({'pos': q, 'nrm': nrm, 'uvs': u, 'tan': t, 'tris': front + back,
+                          'material': (m[1], m[2], m[3]) if m[3] else (lambda x: (x[1], x[2], x[3]))(model_materials(template)[0])})
+        open(p, 'wb').write(build_model_multi(template, parts, f'{CUSTOM_DIR}/{name}'))
+        info['double'] = True
+        msg = f'{name} : visible des deux côtés en jeu ({sum(len(x["tris"]) for x in parts)} triangles)'
+    _forget_model(logical)
+    save_custom_models(track, reg)
+    return {'report': [msg], 'double': bool(info.get('double'))}
 
 
 def _clean_name(s, default='Modele'):
@@ -3298,6 +4136,45 @@ def library_files(track, model, pak):
     return out
 
 
+def place_library_many(track, items, tag):
+    """Pose plusieurs objets de la bibliotheque en UNE ecriture du decor et UN recalcul de la collision (semis de
+    l'onglet Creation). items = [{model, pak, pos [x, y, z], yaw, scale}]. Les objets marques `tag` (liens) d'un semis
+    precedent sont d'abord supprimes ; les autres objets de la bibliotheque (poses a la main) ne bougent pas."""
+    art = main_art(track)
+    df = DecorFile(base_file(track, art)[0])
+    links = load_links(track)
+    fl = links.setdefault(art, {})
+    old = [oid for oid, lk in fl.items() if isinstance(lk, dict) and lk.get('tag') == tag]
+    present = set(df.names)
+    df.delete_many([int(oid) for oid in old if int(oid) in present])
+    for oid in old:
+        fl.pop(oid, None)
+    for model, pak in {(it['model'], it['pak']) for it in items}:
+        library_files(track, model, pak)                    # erreur ici si un fichier manque : rien n'est ecrit
+    specs, used, tmpl = [], set(df.names.values()), template_object(track, art)
+    for it in items:
+        base = os.path.basename(it['model'])[:-4]
+        name, k = base, 1
+        while name in used:
+            k += 1
+            name = f'{base}_{k}'
+        used.add(name)
+        s = max(0.05, float(it.get('scale') or 1.0))
+        specs.append((tmpl, name, [float(v) for v in it['pos']], [0.0, 0.0, float(it.get('yaw') or 0.0)], [s, s, s]))
+    ids = df.duplicate_many(specs) if specs else []
+    for nid, it, sp in zip(ids, items, specs):
+        df.set_model(nid, library.file_name(it['model']))
+        # collision grossiere (forme generale, COARSE_DIV) : 500 objets semes = plus d'un million de triangles en
+        # pleine definition, la collision ne pouvait plus etre encodee (plus de 65 535 sommets partages)
+        fl[str(nid)] = {'custom': it['model'], 'library': it['pak'], 'tag': tag, 'coarse': True,
+                        'surface': 'none' if NO_COLLISION_HINT.search(sp[1]) else 'auto'}
+    save_links(track, links)
+    write_art(track, art, df)
+    with progress.span(0.5, 1.0):
+        rep = sync_collision(track)
+    return {'placed': len(ids), 'removed': len(old), 'report': rep}
+
+
 def place_library(req):
     """Place un objet de la bibliotheque : req = {track, model (chemin logique), pak, pos [x,y,z], yaw (radians),
     scale (uniforme, defaut 1), file (fichier _Art, defaut Art_Core)}. Entite = copie de l'objet minimal du fichier d'origine (comme un modele
@@ -3362,16 +4239,33 @@ BOOST_VISUAL_LIFT = 3.0        # po au-dessus du point du booster (pas de scinti
 BOOST_MODEL_VERSION = 2        # change -> le modele « BoostPad » deja cree est reconstruit (2 : sens des chevrons)
 
 
-def boost_pad_png(track):
-    """Image de la plaque : chevrons du masque d'emission du jeu (oct_turbo_pad_ec, canal vert), jaune -> orange sur
-    fond bleu nuit, bord clair ; pointe vers le bas de l'image (= sens de course apres le placage UV)."""
+# couleurs des plaques : (haut des chevrons, bas des chevrons, fond) ; orange = BoostPad, bleu = BoostPadSuper
+BOOST_PALETTE = {'orange': ((255, 230, 40), (255, 110, 40), (18, 28, 70)),
+                 'bleu': ((150, 240, 255), (40, 150, 255), (8, 16, 48)),
+                 'vert': ((200, 255, 90), (40, 200, 60), (10, 36, 20)),
+                 'violet': ((235, 160, 255), (150, 60, 255), (28, 10, 52)),
+                 'rouge': ((255, 140, 110), (230, 30, 30), (50, 10, 14)),
+                 'rose': ((255, 190, 230), (255, 70, 170), (52, 12, 40))}
+
+
+def boost_base(color):
+    """Nom du modele de plaque d'une couleur (orange et bleu : noms d'origine, plaques deja creees)."""
+    return {'orange': 'BoostPad', 'bleu': 'BoostPadSuper'}.get(color, f'BoostPad_{color}')
+
+
+def boost_pad_png(track, super_=False):
+    """Image de la plaque : chevrons du masque d'emission du jeu (oct_turbo_pad_ec, canal vert), degrade de la
+    couleur choisie (BOOST_PALETTE ; super_ = True : bleu, False : orange, ou nom de couleur) sur fond sombre, bord
+    clair ; pointe vers le bas de l'image (= sens de course apres le placage UV)."""
     from PIL import Image
     rgba, _ = preview.decode_texture(read_game_file(track, BOOST_MASK_TEX), 512)
     m = rgba[:, :, 1].astype(np.float32) / 255.0
     h, w = m.shape
     t = np.linspace(0, 1, h)[:, None]
-    hot = np.stack([255 + 0 * t, 230 - 120 * t, 40 + 0 * t], -1)               # jaune en haut, orange en bas
-    bg = np.array([18, 28, 70], np.float32)
+    color = super_ if isinstance(super_, str) else ('bleu' if super_ else 'orange')
+    top, bot, bgc = (np.array(v, np.float32) for v in BOOST_PALETTE.get(color, BOOST_PALETTE['orange']))
+    hot = top * (1 - t[..., None]) + bot * t[..., None]
+    bg = bgc
     img = bg * (1 - m[..., None]) + hot * m[..., None]
     img[:, :6] = img[:, -6:] = (250, 250, 250)                                   # bords lateraux
     buf = io.BytesIO()
@@ -3379,13 +4273,16 @@ def boost_pad_png(track):
     return buf.getvalue()
 
 
-def ensure_boost_model(track):
-    """Modele importe « BoostPad » : plaque de 100 x 100 po (X = sens de course), texture generee. Cree une fois."""
-    logical = f'models/{CUSTOM_DIR}/BoostPad.igz'
+def ensure_boost_model(track, super_=False):
+    """Modele importe « BoostPad » (super_ : « BoostPadSuper », plaque bleue) : plaque de 100 x 100 po (X = sens de
+    course), texture generee. Cree une fois. super_ : True / False ou nom de couleur (BOOST_PALETTE)."""
+    color = super_ if isinstance(super_, str) else ('bleu' if super_ else 'orange')
+    base = boost_base(color)
+    logical = f'models/{CUSTOM_DIR}/{base}.igz'
     reg = custom_models(track)
     if logical in reg and os.path.exists(custom_model_path(logical)) and reg[logical].get('version') == BOOST_MODEL_VERSION:
         return logical
-    tex = create_texture(track, 'BoostPad', boost_pad_png(track), source=['boostpad', 1])
+    tex = create_texture(track, base, boost_pad_png(track, color), source=[base.lower(), 1])
     m = next(x for x in custom_material_entries(track) if x['id'] == tex['id'])
     pos = [(-50.0, -50.0, 0.0), (50.0, -50.0, 0.0), (50.0, 50.0, 0.0), (-50.0, 50.0, 0.0)]
     tris = [(0, 1, 2), (0, 2, 3)]
@@ -3394,48 +4291,49 @@ def ensure_boost_model(track):
     uvs = [((p[1] + 50) / 100, (50 - p[0]) / 100) for p in pos]
     pos, nrm, uvs, tan = complete_mesh(pos, [(0.0, 0.0, 1.0)] * 4, uvs, tris)
     data = build_model(read_game_file(track, TEMPLATE), pos, nrm, uvs, tan, tris,
-                       f'{CUSTOM_DIR}/BoostPad', (m['name'], m['ns'], m['dep']))
+                       f'{CUSTOM_DIR}/{base}', (m['name'], m['ns'], m['dep']))
     os.makedirs(os.path.join(OUT_DIR, 'models'), exist_ok=True)
     open(custom_model_path(logical), 'wb').write(data)
     for cache in (_model_cache, _preview_cache, _visual_cache):
         cache.pop(logical, None)
-    reg[logical] = {'name': 'BoostPad', 'vertices': 4, 'triangles': 2, 'material': tex['id'],
-                    'obj_object': 'BoostPad', 'obj_material': 'BoostPad', 'version': BOOST_MODEL_VERSION}
+    reg[logical] = {'name': base, 'vertices': 4, 'triangles': 2, 'material': tex['id'],
+                    'obj_object': base, 'obj_material': base, 'version': BOOST_MODEL_VERSION}
     save_custom_models(track, reg)
     return logical
 
 
 def sync_boost_visuals(track, boosts):
-    """Un objet de decor « BoostPad_Visual_NNN » (sans collision) par booster : position, cap, taille = celles de
-    sa zone (profondeur x largeur). Les anciens sont remplaces."""
+    """Un objet de decor « BoostPad_Visual_NNN » (sans collision) par booster : position, inclinaison et cap, taille =
+    celles de sa zone (profondeur x largeur) ; plaque bleue pour un super turbo. Les anciens sont remplaces."""
     art = main_art(track)
     df = DecorFile(base_file(track, art)[0])
     olds = [o for o in df.objects() if (o['name'] or '').startswith(BOOST_VISUAL_PREFIX)]
     old = [o['id'] for o in olds]
     if not old and not boosts:
         return 'aucun booster'
-    if boosts:
-        ensure_boost_model(track)                      # (re)construit le modele si sa version a change
+    col = lambda b: b.get('color') if b.get('color') in BOOST_COLORS else ('bleu' if b.get('super') else 'orange')
+    for s in {col(b) for b in boosts}:
+        ensure_boost_model(track, s)                   # (re)construit le modele si sa version a change
     ground = ground_for(track)
     zs = [(lambda t: t if t is not None else b['pos'][2])(ground.top(b['pos'][0], b['pos'][1], b['pos'][2])) for b in boosts]
-    want = [([b['pos'][0], b['pos'][1], z + BOOST_VISUAL_LIFT], float(b.get('yaw') or 0.0), [b['dims'][0] / 100.0, b['dims'][1] / 100.0])
-            for b, z in zip(boosts, zs)]
-    have = [(o['pos'], o['euler'][2], o['scale'][:2]) for o in sorted(olds, key=lambda o: o['name'])]
-    if len(have) == len(want) and all(max(abs(a - b) for a, b in zip(h[0] + [h[1]] + h[2], w[0] + [w[1]] + w[2])) < 0.05
+    euler = lambda b: [float(v) for v in (b.get('tilt') or [0.0, 0.0])] + [float(b.get('yaw') or 0.0)]
+    want = [([b['pos'][0], b['pos'][1], z + BOOST_VISUAL_LIFT], euler(b), [b['dims'][0] / 100.0, b['dims'][1] / 100.0],
+             col(b)) for b, z in zip(boosts, zs)]
+    have = [(o['pos'], o['euler'], o['scale'][:2], boost_color_of_model(o['model'])) for o in sorted(olds, key=lambda o: o['name'])]
+    if len(have) == len(want) and all(h[3] == w[3] and max(abs(a - b) for a, b in zip(h[0] + h[1] + h[2], w[0] + w[1] + w[2])) < 0.05
                                       for h, w in zip(have, want)):
         return None                                    # deja a jour
     df.delete_many(old)
     links = load_links(track)
     if boosts:
-        logical = ensure_boost_model(track)
         tmpl = {'id': template_object(track, art)}
         # plaque sur la surface la plus haute sous le booster (la route), pas sur un niveau enfoui dessous (sable
         # 1 m sous la route de Mario Circuit 3 : la plaque y etait invisible)
-        specs = [(tmpl['id'], f'{BOOST_VISUAL_PREFIX}{k:03d}', pos, [0.0, 0.0, yaw], scale + [1.0])
-                 for k, (pos, yaw, scale) in enumerate(want, 1)]
-        for nid in df.duplicate_many(specs):
-            df.set_model(nid, 'models:\\' + CUSTOM_DIR.replace('/', '\\') + '\\BoostPad.igb')
-            links.setdefault(art, {})[str(nid)] = {'custom': logical, 'surface': 'none'}
+        specs = [(tmpl['id'], f'{BOOST_VISUAL_PREFIX}{k:03d}', pos, e, scale + [1.0])
+                 for k, (pos, e, scale, _) in enumerate(want, 1)]
+        for nid, (*_, color) in zip(df.duplicate_many(specs), want):
+            df.set_model(nid, 'models:\\' + CUSTOM_DIR.replace('/', '\\') + f'\\{boost_base(color)}.igb')
+            links.setdefault(art, {})[str(nid)] = {'custom': ensure_boost_model(track, color), 'surface': 'none'}
         save_links(track, links)
     write_art(track, art, df)
     return f'dessin au sol : {len(boosts)} plaque(s)'
@@ -4060,6 +4958,9 @@ def subdivide_array(T, max_edge=MAX_COLLISION_EDGE):
     return np.concatenate([T[~big]] + parts)
 
 
+COARSE_DIV, COARSE_MIN, COARSE_MAX = 6.0, 0.5 * 39.37, 6 * 39.37   # collision des objets semes (pouces)
+
+
 def add_custom_collision(ge, track, customs, mesh_index=None):
     """Collision des modeles importes (leur maillage, par surface) ajoutee au sol ; retourne (nb de triangles,
     noms des decors de fond ignores, nb de triangles avant simplification). Les grands triangles sont decoupes
@@ -4074,15 +4975,20 @@ def add_custom_collision(ge, track, customs, mesh_index=None):
             continue
         T = object_world_array(track, cur)
         T = T[np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1) > 1e-2]   # sans degeneres
-        objs.append((cur['name'], info.get('surface', 'auto'), T))
-    skipped = _background_objects(track, [(n, T) for n, s, T in objs if s == 'auto'])
+        coarse = bool(info.get('coarse')) or info.get('tag') == 'creator'      # semis d'avant le drapeau compris
+        objs.append((cur['name'], info.get('surface', 'auto'), coarse, T, info.get('phys')))
+    skipped = _background_objects(track, [(n, T) for n, s, _, T, _ in objs if s == 'auto'])
     n_before = n_after = 0
-    for name, surf, T in progress.items(objs, 'collision : découpage {i} / {n}', 0.4, 1.0):
+    for name, surf, coarse, T, phys in progress.items(objs, 'collision : découpage {i} / {n}', 0.4, 1.0):
         if name in skipped or not len(T):
             continue
         n_before += len(T)
-        if cell > 0 and not is_flat(name, T):
-            T = simplify_tris(T, cell)
+        c = cell
+        if coarse:                                       # objet seme : grille a 1/COARSE_DIV de sa taille
+            ext = float((T.reshape(-1, 3).max(0) - T.reshape(-1, 3).min(0)).max())
+            c = max(c, min(COARSE_MAX, max(COARSE_MIN, ext / COARSE_DIV)))
+        if c > 0 and not is_flat(name, T):
+            T = simplify_tris(T, c)
         n_after += len(T)
         if not len(T):
             continue
@@ -4090,7 +4996,8 @@ def add_custom_collision(ge, track, customs, mesh_index=None):
         if surf == 'auto':
             P = T.reshape(-1, 3)
             surf = ge.surface_under(P.min(0).tolist(), P.max(0).tolist())
-        by_surface[int(surf)].append(T)
+        by_surface[custom_surface_value(int(surf), phys)].append(T)     # vitesse / glissade propres : type ajoute
+
     n_custom = 0
     for surf, parts in by_surface.items():
         T = np.concatenate(parts)
@@ -4548,7 +5455,7 @@ def _menu_archives_index():
         tracks = {p.lower() for p in library.track_paks(ARCHIVES)}
         for p in sorted(os.listdir(ARCHIVES)):
             low = p.lower()
-            if low.endswith('.pak') and (low.startswith(MENU_ARCHIVE_PREFIXES) or low in tracks):
+            if low.endswith('.pak') and low != pak_tool.LAYER_ARCHIVE and (low.startswith(MENU_ARCHIVE_PREFIXES) or low in tracks):
                 try:
                     _menu_arc_cache[p] = pak_tool.cached_archive(os.path.join(ARCHIVES, p))[1].keys()
                 except Exception:  # noqa: BLE001 - archive illisible : ignoree
@@ -5022,7 +5929,8 @@ def minimap_orientation(track):
     return _minimap_orient_cache[track]
 
 
-MINIMAP_META_VERSION = 2       # 2 : Crash Cove et ses copies retournees par defaut (avant : « Miroir vertical » a la main)
+MINIMAP_MIRROR_VERSION = 2     # 2 : Crash Cove et ses copies retournees par defaut (avant : « Miroir vertical » a la main)
+MINIMAP_META_VERSION = 3       # 3 : trace plus grand, comme les images du jeu (minimap.CONTENT)
 
 
 def minimap_crash_cove_family(track):
@@ -5038,18 +5946,16 @@ def minimap_meta(track):
     miroir vertical a la main valait le retournement desormais par defaut -> miroir vertical retire."""
     p = os.path.join(OUT_DIR, f'{track}_minimap.json')
     meta = json.load(open(p)) if os.path.exists(p) else {}
-    if meta and meta.get('v', 1) < MINIMAP_META_VERSION and minimap_crash_cove_family(track):
+    if meta and meta.get('v', 1) < MINIMAP_MIRROR_VERSION and minimap_crash_cove_family(track):
         meta['mirror_v'] = False
     return meta
 
 
 def minimap_outdated(track):
-    """Mini-carte generee par une ancienne version sur Crash Cove / piste creee (image a l'envers en jeu sans le miroir
-    vertical a la main) : a refaire."""
+    """Mini-carte generee par une ancienne version (trace trop petit ; Crash Cove / piste creee : image a l'envers en
+    jeu sans le miroir vertical a la main) : a refaire, reglages du dessin gardes."""
     p = os.path.join(OUT_DIR, f'{track}_minimap.json')
-    if not os.path.exists(p) or json.load(open(p)).get('v', 1) >= MINIMAP_META_VERSION:
-        return False
-    return minimap_crash_cove_family(track)
+    return os.path.exists(p) and json.load(open(p)).get('v', 1) < MINIMAP_META_VERSION
 
 
 def generate_minimap(track, move=None, flip=None):
@@ -5074,7 +5980,11 @@ def generate_minimap(track, move=None, flip=None):
     src = json.load(open(road_source_path(track))) if os.path.exists(road_source_path(track)) else \
         {'objects': imported_road_objects(track)}
     progress.step('lecture de la route', 0.1)
-    tris = road_tris(track, src) if src.get('objects') else None
+    try:
+        tris = road_tris(track, src) if src.get('objects') else None
+    except ValueError:                                    # objet de route supprime depuis : dessin d'apres le trace
+        traceback.print_exc()
+        tris = None
     progress.step('orientation de la mini-carte', 0.3)
     orient, sure = minimap_orientation(track)
     progress.step('dessin et encodage de l\'image', 0.4)
@@ -5133,7 +6043,7 @@ def minimap_logicals(track):
 # Chaque controle peut porter une correction : 'fix' (automatique, sur la version ENREGISTREE, dans l'historique :
 # « Annuler » la defait) ou 'ui' (ouvre l'outil a utiliser dans l'editeur). Ordre de « Tout corriger » : les fichiers
 # dont dependent les suivants d'abord (la mini-carte, dessinee d'apres le parcours, en dernier).
-FIX_ORDER = ['occlusion', 'sky', 'splines', 'transitions', 'grid', 'crates', 'boosters', 'falls', 'minimap']
+FIX_ORDER = ['occlusion', 'sky', 'splines', 'transitions', 'grid', 'crates', 'boosters', 'falls', 'minimap', 'flyby']
 # -- hauteur des splines (parcours et IA) au-dessus de la route ----------------------------------------
 # Mesure sur la courbe suivie (Catmull-Rom entre les points), par rapport a la route memorisee (« Creer le parcours »)
 # sinon au sol. Splines generees : position sur la route (0), IA 2 m au-dessus. Jeu d'origine : creux jusqu'a -3,7 m,
@@ -5291,7 +6201,8 @@ FIX_LABELS = {'occlusion': 'Retirer les zones d\'occultation', 'sky': 'Appliquer
               'transitions': 'Replacer sur le parcours',
               'grid': 'Replacer la grille derrière la ligne', 'crates': 'Tout poser au sol',
               'boosters': 'Refaire les plaques des boosters', 'falls': 'Refaire chutes et réapparitions',
-              'minimap': 'Générer la mini-carte', 'splines': 'Poser les splines sur la route'}
+              'minimap': 'Générer la mini-carte', 'splines': 'Poser les splines sur la route',
+              'flyby': 'Générer le survol'}
 UI_LABELS = {'mkroute': 'Recréer le parcours…', 'regenall': 'Régénérer les splines IA…', 'dambiance': 'Choisir un ciel…'}
 
 
@@ -5396,7 +6307,7 @@ def fix_occlusion(track):
 
 FIXES = {'splines': fix_spline_heights, 'transitions': fix_transitions, 'grid': fix_grid, 'crates': fix_crates, 'boosters': fix_boosters, 'sky': fix_sky, 'occlusion': fix_occlusion,
          'falls': lambda t: '; '.join(auto_falls({'track': t}).get('report') or ['chutes et réapparitions refaites']),
-         'minimap': lambda t: generate_minimap(t)['report'][0]}
+         'minimap': lambda t: generate_minimap(t)['report'][0], 'flyby': fix_flyby}
 
 
 def apply_fixes(req):
@@ -5583,7 +6494,8 @@ def preinstall_check(track):
     boosts = [c for c in crates if c['kind'] == 'boost']
     if boosts:
         art = main_art(track)
-        vis = [o for o in DecorFile(base_file(track, art)[0]).objects() if (o['model'] or '').lower().endswith('\\boostpad.igb')]
+        vis = [o for o in DecorFile(base_file(track, art)[0]).objects()
+               if (o['model'] or '').lower().endswith(('\\boostpad.igb', '\\boostpadsuper.igb'))]
         if len(vis) != len(boosts):
             add('attention', 'Boosters', f'{len(boosts)} booster(s) mais {len(vis)} plaque(s) au sol → enregistre en mode Course', fix='boosters')
         else:
@@ -5639,6 +6551,24 @@ def preinstall_check(track):
         add('attention', 'Mini-carte', 'le parcours a changé depuis sa génération → « Générer la mini-carte » à nouveau', fix='minimap')
     elif os.path.exists(mm):
         add('ok', 'Mini-carte', 'dessinée d\'après le parcours')
+    # survol d'introduction : cameras refaites pour cette map ?
+    shots = tr.get('flyby') or []
+    if shots:
+        done = sum(s['custom'] for s in shots)
+        far = flyby_far_from_grid(track, tr)
+        if not done and (new_course or far):
+            add('attention', 'Survol d\'introduction', f'caméras d\'origine ({len(shots)} plans) : elles filment l\'ancienne '
+                                                       'piste → « Générer depuis le parcours » (mode Course › Survol)', fix='flyby')
+        elif far:
+            add('attention', 'Survol d\'introduction', f'le survol finit à {far:.0f} m de la grille : le parcours ou la grille '
+                                                       'ont bougé depuis → à refaire', fix='flyby')
+        elif done < len(shots) and new_course:
+            add('attention', 'Survol d\'introduction', f'{len(shots) - done} plan(s) sur {len(shots)} encore d\'origine : ils '
+                                                       'filment l\'ancienne piste', fix='flyby')
+        elif done:
+            add('ok', 'Survol d\'introduction', f'{done} plan(s) sur {len(shots)} refait(s), fin près de la grille')
+        else:
+            add('ok', 'Survol d\'introduction', 'caméras d\'origine, sur la piste d\'origine')
     return {'checks': out, 'errors': sum(c['level'] == 'erreur' for c in out),
             'warnings': sum(c['level'] == 'attention' for c in out)}
 
@@ -5662,6 +6592,7 @@ def install_plan(track):
     """{archive: {fichier: octets}} de tout ce que la piste installe (fichiers enregistres, ajouts, manifeste,
     menu). Rien n'est ecrit."""
     per_archive = defaultdict(dict)
+    migrate_boosters(track)
     moved = set(moved_away_logicals(track))
     stripped = set(newmap_settings(track).get('strip_art') or [])
     if minimap_outdated(track):
@@ -5724,7 +6655,7 @@ def install_plan(track):
     pu = saved_path(crate_file(track)) if crates_supported(track) else None
     kinds = {c['kind'] for c in powerup.read_crates(open(pu, 'rb').read(), crates_in_design(track))} \
         if pu and os.path.exists(pu) else set()
-    if 'boost' in kinds:
+    if 'boost' in kinds or design_boosts(track):
         entries.append(('vsc', powerup.BOOST_SCRIPT))
     # TNT / Nitro / fruits : scripts, modeles et materiaux a declarer ; fichiers absents des archives communes copies
     for kind in sorted(kinds & set(powerup.EXTRAS)):
@@ -5751,6 +6682,16 @@ def install_plan(track):
             del per_archive[arc][lg]
     per_archive[os.path.join(ARCHIVES, track_pak(track))].update(ri_files)
     entries += [e for e in ri_entries if e not in entries]
+    # musique importee : memes noms que les originaux, dans les archives qui les contiennent
+    for logical, data in music_install_files(track).items():
+        for arc in pak_tool.archives_with(ARCHIVES, logical, track_pak(track)):
+            per_archive[arc][logical] = data
+    if music_continues(track):                          # dernier tour sans changement de morceau : la carte enregistree ne change pas
+        logical, data, script = music_continue_files(track)
+        for arc in pak_tool.archives_with(ARCHIVES, logical, track_pak(track)):
+            per_archive[arc][logical] = data
+        per_archive[os.path.join(ARCHIVES, track_pak(track))][music.CONTINUE_SCRIPT] = script
+        entries.append(('vsc', music.CONTINUE_SCRIPT))
     # ...et declares dans le manifeste de streaming, sinon le jeu ne les charge pas (invisibles)
     if entries:
         man = pkg_manifest.manifest_logical(track)
@@ -5763,6 +6704,16 @@ def install_plan(track):
         data = open(p, 'rb').read()
         for arc in menu_archives(track, logical):
             per_archive[arc][logical] = data
+    # temps des reliques / des fantomes : fichiers d'origine, temps poses a l'ecriture (_apply_times)
+    for logical, data in times_install_files(track).items():
+        pak = race_times.GHOST_PAK if logical == race_times.GHOST_DATA else race_times.zoneinfo_pak()
+        for arc in pak_tool.archives_with(ARCHIVES, logical, pak):
+            per_archive[arc].setdefault(logical, data)
+    # types de sol a vitesse / glissade propres : CollisionMaterials (commun a tout le jeu) avec les types ajoutes
+    if custom_surfaces():
+        orig = pak_tool.read_latest(ARCHIVES, collision_materials.LOGICAL, collision_materials.PAK)[0]
+        for arc in pak_tool.archives_with(ARCHIVES, collision_materials.LOGICAL, collision_materials.PAK):
+            per_archive[arc].setdefault(collision_materials.LOGICAL, orig)
     return per_archive
 
 
@@ -5870,14 +6821,84 @@ def _others_for(archives, track, report, plan=None):
 
 def _rewrite(arc, reps):
     # categorie « Custom » du menu (custom_category.py), si elle est active : gardee a chaque reecriture d'update2
-    reps = {**custom_category.extra_files(ARCHIVES, arc), **reps}
-    if os.path.exists(pak_tool.backup_path(arc)):
-        pak_tool.uninstall(arc)
-    if reps:
-        pak_tool.install(arc, reps)
+    reps = _apply_custom_surfaces(_apply_times({**custom_category.extra_files(ARCHIVES, arc), **reps}))
+    custom_category.store(arc, reps)                    # update / update2 : ajouts et menu dans update3.pak
+
+
+FALL_CLEAR = 10 * 39.37            # po : une zone de chute qui touchait la course est redescendue 10 m sous elle
+KART_H = 3 * 39.37                 # po : hauteur du kart (une zone a moins de ca au-dessus de la route le touche)
+
+
+def check_race_zones(track):
+    """Verification avant installation (2026-11-06) : le kart ne doit rien toucher qui le fasse reapparaitre sur la
+    course (trace des splines de position + places de la grille) :
+      * zones de chute (boites du _Design) qui contiennent un point de la course -> redescendues FALL_CLEAR sous le
+        point le plus bas de la course dans leur emprise (enregistre) ;
+      * surfaces « Reapparition » (16) de modeles importes au niveau de la route (de 1 m dessous a KART_H dessus) ->
+        signalees. -> lignes du rapport."""
+    report = []
+    try:
+        path, tr = race_path_points(track)
+    except Exception:  # noqa: BLE001 - pas de parcours : rien a verifier
+        return report
+    pts = [list(p) for p in path] + [list(g['pos']) for g in (tr.get('start_grid') or [])]
+    if not pts:
+        return report
+    P = np.asarray(pts, np.float64)
+    ground = ground_for(track)
+    for i in range(len(P)):                              # trace pose sur la route
+        h = ground.top(P[i, 0], P[i, 1], P[i, 2] + 300)
+        if h is not None and abs(h - P[i, 2]) < 600:
+            P[i, 2] = h
+    moved = []
+    for z in read_fall_zones(track):
+        c, d = np.asarray(z['pos']), np.asarray(z['dims']) / 2
+        inside = (np.abs(P[:, 0] - c[0]) <= d[0]) & (np.abs(P[:, 1] - c[1]) <= d[1]) & \
+                 (P[:, 2] + KART_H >= c[2] - d[2]) & (P[:, 2] - 39.37 <= c[2] + d[2])
+        if inside.any():
+            foot = (np.abs(P[:, 0] - c[0]) <= d[0]) & (np.abs(P[:, 1] - c[1]) <= d[1])
+            top = float(P[foot, 2].min()) - FALL_CLEAR
+            moved.append({'name': z['name'], 'pos': [c[0], c[1], round(top - d[2], 1)], 'dims': z['dims']})
+    if moved:
+        write_fall_zones(track, moved)
+        report.append(f'{len(moved)} zone(s) de chute sur la course redescendue(s) 10 m sous la route : '
+                      + ', '.join(m['name'] for m in moved[:5]) + (' …' if len(moved) > 5 else ''))
+    # surfaces « Reapparition » au niveau de la route
+    hits = defaultdict(int)
+    for art, o, lk in _imported_objects(track):
+        if str(lk.get('surface')) != '16':
+            continue
+        try:
+            T = object_world_array(track, o)
+        except Exception:  # noqa: BLE001 - modele introuvable : rien a verifier
+            continue
+        lo, hi = T.reshape(-1, 3).min(0), T.reshape(-1, 3).max(0)
+        near = P[(P[:, 0] >= lo[0]) & (P[:, 0] <= hi[0]) & (P[:, 1] >= lo[1]) & (P[:, 1] <= hi[1])]
+        for x, y, zr in near[::2]:
+            a, b, cc = T[:, 0], T[:, 1], T[:, 2]
+            den = (b[:, 1] - cc[:, 1]) * (a[:, 0] - cc[:, 0]) + (cc[:, 0] - b[:, 0]) * (a[:, 1] - cc[:, 1])
+            ok = np.abs(den) > 1e-9
+            sd = np.where(ok, den, 1)
+            w0 = np.where(ok, ((b[:, 1] - cc[:, 1]) * (x - cc[:, 0]) + (cc[:, 0] - b[:, 0]) * (y - cc[:, 1])) / sd, -1)
+            w1 = np.where(ok, ((cc[:, 1] - a[:, 1]) * (x - cc[:, 0]) + (a[:, 0] - cc[:, 0]) * (y - cc[:, 1])) / sd, -1)
+            w2 = 1 - w0 - w1
+            m = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+            zz = (w0 * a[:, 2] + w1 * b[:, 2] + w2 * cc[:, 2])[m]
+            if ((zz > zr - 39.37) & (zz < zr + KART_H)).any():
+                hits[o['name']] += 1
+    for name, n in hits.items():
+        report.append(f'ATTENTION : {name} (type de sol « Réapparition ») touche la course en {n} endroit(s) : '
+                      f'le kart y réapparaît — change son type de sol ou déplace-le')
+    return report
 
 
 def install_track(track):
+    progress.step('vérification de la course', 0.0)
+    try:
+        checked = check_race_zones(track)
+    except Exception as e:  # noqa: BLE001 - la verification ne doit pas empecher l'installation
+        traceback.print_exc()
+        checked = [f'vérification de la course impossible : {e}']
     progress.step('préparation des fichiers', 0.0)
     per_archive = install_plan(track)
     if not per_archive:
@@ -5889,8 +6910,8 @@ def install_track(track):
         for lg in [x for x in per_archive[arc] if any(r.search(x) for r in skip)]:
             del per_archive[arc][lg]
             skipped.append(lg)
-    kept = [f'DIAGNOSTIC : {len(skipped)} fichier(s) non installé(s) ({", ".join(sorted({os.path.basename(s) for s in skipped})[:6])})'] \
-        if skipped else []
+    kept = checked + ([f'DIAGNOSTIC : {len(skipped)} fichier(s) non installé(s) ({", ".join(sorted({os.path.basename(s) for s in skipped})[:6])})']
+                      if skipped else [])
     # diagnostic : « install_override » {motif: fichier} = version de test installee a la place
     for pat, src in (load_config().get('install_override') or {}).items():
         for arc in per_archive:
@@ -5902,7 +6923,7 @@ def install_track(track):
     # fichiers des autres pistes qui s'y trouvaient)
     # (idem pour les archives de survol quand les plans d'origine sont revenus)
     stale = [a for a in menu_track_archives(track) + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)]
-             if a not in per_archive and os.path.exists(pak_tool.backup_path(a))]
+             if a not in per_archive and (os.path.exists(pak_tool.backup_path(a)) or custom_category.layer_has(a))]
     others = _others_for(list(per_archive) + stale, track, kept, plan=per_archive)
     for arc in stale:
         _rewrite(arc, others.get(arc, {}))
@@ -5917,7 +6938,272 @@ def install_track(track):
     _set_installed(track, True, per_archive)
     if video:
         files.add(video)
+    try:                                                # enregistrements des fantomes (dossier ghosts du jeu)
+        kept += apply_ghost_files(track, True)
+    except OSError as e:
+        kept.append(f'ATTENTION : fantômes non modifiés ({e})')
     return {'installed_in': done, 'files': sorted(files), 'kept': kept}
+
+
+def _ask_shadps4():
+    """Fenetre de choix de shadPS4.exe (Windows : tkinter ; ailleurs : zenity)."""
+    if sys.platform.startswith('linux') and shutil.which('zenity'):
+        r = subprocess.run(['zenity', '--file-selection', '--title', 'shadPS4 (exécutable de l\'émulateur)'],
+                           capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    try:
+        return filedialog.askopenfilename(parent=root, title='shadPS4.exe (exécutable de l\'émulateur)',
+                                          filetypes=[('shadPS4', 'shadPS4*.exe *shadps4*'), ('*', '*')]) or None
+    finally:
+        root.destroy()
+
+
+def test_in_game(req):
+    """POST /api/test_in_game : piste installee (comme « Installer »), ecran titre -> course unique sur la piste,
+    shadPS4 lance ; choix perso / kart valide automatiquement ; jeu normal remis a la fermeture de shadPS4."""
+    track = req['track']
+    if quick_test.emulator_running():
+        raise RuntimeError('shadPS4 est ouvert : ferme-le avant de tester')
+    exe = quick_test.find_shadps4(load_config().get('shadps4'))
+    if not exe or req.get('choose_exe'):
+        exe = _ask_shadps4()
+        if not exe:
+            return {'ok': False, 'cancelled': True}
+        save_config(shadps4=os.path.normpath(exe))
+    report = []
+    if req.get('install', True):
+        try:
+            r = install_track(track)
+            report.append(f'piste installée ({len(r["files"])} fichiers)')
+        except RuntimeError as e:
+            if 'rien a installer' not in str(e):
+                raise
+            report.append('rien d\'enregistré : piste du jeu telle quelle')
+    progress.step('écran titre de test', 0.98)
+    _release_archives()
+    report += quick_test.install(ARCHIVES, track)
+    clear_caches()
+
+    def restore():
+        with WRITE_LOCK:
+            try:
+                _release_archives()
+                quick_test.uninstall(ARCHIVES)
+                clear_caches()
+                quick_test._status('idle', 'jeu normal remis (écran titre et intros)')
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc()
+                quick_test._status('error', f'jeu normal NON remis : {e!r}')
+
+    quick_test.launch(exe, os.path.dirname(ARCHIVES), track, on_exit=restore, auto_ready=req.get('auto_ready', True))
+    return {'ok': True, 'exe': exe, 'report': report}
+
+
+def creator_path(track):
+    return os.path.join(OUT_DIR, f'{track}_creator.json')
+
+
+def creator_info(track):
+    """GET /api/creator : trace du paveur enregistre ({points, closed, ground_z, kit}) et kits disponibles."""
+    saved = json.load(open(creator_path(track))) if os.path.exists(creator_path(track)) else None
+    return {'saved': saved, 'kits': {k: v['label'] for k, v in track_creator.KITS.items()}, 'order': list(track_creator.KITS),
+            'materials': {k: [{'label': m[4], 'color': m[5], 'png': m[1]} for m in v['materials']] for k, v in track_creator.KITS.items()},
+            'kitinfo': {k: {'road_repeat': v['road_repeat'], 'ground_repeat': v['ground_repeat']} for k, v in track_creator.KITS.items()},
+            'props': {k: {pk: {'label': p['label'], 'spacing': p['spacing'], 'scale': p['scale'], 'n': len(p['models']),
+                               'dims': kit_prop_dims(k).get(pk, []), 'clear': track_creator.PROP_CLEAR,
+                               'foot': track_creator.foot_share({**p, 'rock': pk in track_creator.ROCK_KINDS}),
+                               'big': bool(p.get('big')), 'big_min': track_creator.BIG_MIN,
+                               'level': track_creator.PROP_LEVEL, 'deck': track_creator.DECK,
+                               'names': [os.path.basename(m)[:-4] for m in p['models']]}
+                          for pk, p in (v.get('props') or {}).items()} for k, v in track_creator.KITS.items()}}
+
+
+def create_build(req):
+    """POST /api/create_build : piste generee depuis le trace du paveur. req = {track, points: [[x, y, z, largeur]]
+    (pouces), closed, ground_z (pouces), kit, terrain: {x0, y0, cell, n, h, paint} | null}. Map videe (« Nouvelle map »
+    complete, creation precedente retiree), route + terrain raccorde importes (collision par matiere) ;
+    -> {report, road: [{file, id}], guide, exact, start, yaw, killz}
+    pour « Créer le parcours » (page)."""
+    track = req['track']
+    pts = req.get('points') or []
+    if len(pts) < 8:
+        raise ValueError('tracé trop court : roule un peu plus avec le paveur')
+    kit = req.get('kit') or 'sable'
+    if kit not in track_creator.KITS:
+        raise ValueError(f'thème inconnu : {kit}')
+    ground_z = float(req.get('ground_z') or 0.0)
+    progress.step('géométrie de la piste', 0.0)
+    terrain = req.get('terrain')
+    barriers = req.get('barriers') or 'curves'
+    obj, mtl, info = track_creator.build(pts, bool(req.get('closed')), ground_z, kit, terrain, barriers)
+    folder = os.path.join(OUT_DIR, 'creator', track)
+    os.makedirs(folder, exist_ok=True)
+    for name, data in track_creator.kit_textures(lambda lg, pak: pak_tool.read_latest(ARCHIVES, lg, pak)[0], kit,
+                                                 used=info['materials']).items():
+        p = os.path.join(folder, name)
+        if not os.path.exists(p) or open(p, 'rb').read() != data:
+            open(p, 'wb').write(data)
+    open(os.path.join(folder, track_creator.OBJ_NAME), 'w', encoding='utf-8').write(obj)
+    open(os.path.join(folder, track_creator.MTL_NAME), 'w', encoding='utf-8').write(mtl)
+    json.dump({'points': pts, 'closed': bool(req.get('closed')), 'ground_z': ground_z, 'kit': kit, 'terrain': terrain,
+               'barriers': barriers, 'props': req.get('props') or []},
+              open(creator_path(track), 'w'))
+    # map vide : tout le decor et le sol d'origine retires, creation precedente supprimee ; wipe (« Repartir de
+    # zéro ») : aussi tous les ajouts faits dans Edition (imports, objets de la bibliotheque, copies)
+    progress.step('nouvelle map (vider la piste)', 0.05)
+    prefix = 'imp:' + os.path.splitext(track_creator.OBJ_NAME)[0] + ' —'
+    with progress.span(0.05, 0.3):
+        apply_newmap({'track': track, 'strip_ground': True, 'strip_art': art_files(track),
+                      'move_away': [k for k, _, _ in MOVE_AWAY_GROUPS],
+                      'remove': [g['key'] for g in added_groups(track) if req.get('wipe') or g['key'].startswith(prefix)]})
+    surf = {m: {'collision': s is not None, 'surface': s if s is not None else 'none'}
+            for m, s in track_creator.surfaces(kit).items()}
+    with progress.span(0.3, 0.85):
+        res = import_folder({'track': track, 'folder': folder, 'files': [track_creator.OBJ_NAME], 'scale': 39.37,
+                             'up': 'z', 'placement': 'absolute', 'materials': surf, 'road_material': 'Road',
+                             'texture_size': '1024', 'force': True})
+    # decor seme (onglet Creation, mode Decor) : objets du jeu poses sur le sol genere, semis precedent remplace
+    items, dropped = track_creator.props_items(kit, req.get('props'), info.pop('_ground'), kit_prop_dims)
+    with progress.span(0.85, 1.0, 'décor semé'):
+        sown = place_library_many(track, items, 'creator')
+    road = [{'file': o['file'], 'id': o['id']} for o in route_objects(track)['objects']
+            if 'CreatorRoad' in (o['name'] or '')]               # nom prefixe du lot : « Createur_CreatorRoad »
+    if not road:
+        raise ValueError('route générée introuvable dans le décor après l\'import')
+    return {'report': [f"piste de {info['length']:.0f} m, terrain {info['ground_tiles']} carreau(x) : {', '.join(info['materials'])}"
+                      + (f", {info['bridges']} pont(s)" if info['bridges'] else '')
+                      + (f", {info['jumps']} saut(s)" if info['jumps'] else '')
+                      + (f", barrières {info['walls_m']} m" if info['walls_m'] else '')
+                      + (f", {sown['placed']} objet(s) de décor" if sown['placed'] else '')
+                      + (f" ({dropped} trop près de la route ou au-dessus d'un saut, écarté(s))" if dropped else '')]
+                      + res.get('report', []),
+            'road': road, 'guide': info['guide'], 'exact': info['exact'], 'start': info['start'], 'yaw': info['yaw'],
+            # plancher de chute 30 m sous le point le plus bas (celui enregistre peut venir d'une ancienne map plus haute :
+            # T905 a z 9512 au-dessus d'un sol a 6812 -> les karts « tombaient » des le depart)
+            'killz': info['min_z'] - 30 * 39.37}
+
+
+# paveuse de l'onglet Creation : kart de l'equipe Crash (carrosserie : acteur ; roues : modeles de personnalisation,
+# centrees sur le moyeu, essieu selon x)
+CREATOR_KART_PAKS = ('kartteamcrash.pak', 'kartcustomization_wheels_kartteamcrash.pak')
+CREATOR_KART = {'body': 'actors/Karts/KartTeamCrash/KartTeamCrash_Lod3.igz',
+                'wheel_l': 'models/Karts/wheels/KartTeamCrash_Wheel_L_Lod1.igz',
+                'wheel_r': 'models/Karts/wheels/KartTeamCrash_Wheel_R_Lod1.igz'}
+_kart_cache = {}
+
+
+def _kart_read(lg):
+    for pak in CREATOR_KART_PAKS:
+        try:
+            return pak_tool.read_latest(ARCHIVES, lg, pak)[0]
+        except KeyError:
+            continue
+    raise KeyError(lg)
+
+
+def kart_preview(part='body'):
+    """GET /api/kart?part=body|wheel_l|wheel_r : kart de l'equipe Crash (echelle 1:1, avant = +x) au format de
+    model_preview_binary."""
+    if part not in _kart_cache:
+        pv = preview.model_preview(_kart_read(CREATOR_KART[part]), _kart_read)
+        texs = sorted({g[2] for g in pv['groups'] if g[2]})
+        head = struct.pack('<III', len(pv['positions']), len(pv['indices']), len(pv['groups']))
+        groups = b''.join(struct.pack('<III', s, n, texs.index(t) + 1 if t else 0) for s, n, t in pv['groups'])
+        js = json.dumps([{'ns': ns, 'decal': decal} for ns, decal in texs]).encode()
+        _kart_cache[part] = (head + pv['positions'].astype('<f4').tobytes() + pv['uvs'].astype('<f4').tobytes()
+                                + pv['indices'].astype('<u4').tobytes() + groups + struct.pack('<I', len(js)) + js)
+    return _kart_cache[part]
+
+
+def kart_texture(ns):
+    """GET /api/kart_texture : texture du kart (PNG)."""
+    from PIL import Image
+    if ns not in _kart_cache:
+        rgba, _ = preview.decode_texture(_kart_read(f'textures/{ns}.igz'), 512)
+        buf = io.BytesIO()
+        Image.fromarray(rgba, 'RGBA').save(buf, 'PNG')
+        _kart_cache[ns] = buf.getvalue()
+    return _kart_cache[ns]
+
+
+_kit_model_cache = {}
+
+
+def _kit_read(lg, pak):
+    """Fichier d'un objet du kit : son archive, sinon la piste qui le contient (bibliotheque)."""
+    try:
+        return pak_tool.read_latest(ARCHIVES, lg, pak)[0]
+    except KeyError:
+        src = library.find_pak(ARCHIVES, lg, (pak,))
+        if src is None:
+            raise
+        return pak_tool.read_latest(ARCHIVES, lg, src)[0]
+
+
+def _kit_model(kit, kind, m):
+    d = track_creator.KITS[kit]['props'][kind]
+    model = d['models'][int(m) % len(d['models'])]
+    if model not in _kit_model_cache:
+        _kit_model_cache[model] = preview.model_preview(_kit_read(model, d['pak']), lambda lg: _kit_read(lg, d['pak']))
+    return _kit_model_cache[model]
+
+
+def kit_prop_dims(kit):
+    """{type: [{r (rayon d'emprise depuis l'origine), zmin, zmax} en metres, par modele]} des objets du kit."""
+    out = {}
+    for kind, d in (track_creator.KITS[kit].get('props') or {}).items():
+        out[kind] = []
+        for m in range(len(d['models'])):
+            try:
+                P = np.asarray(_kit_model(kit, kind, m)['positions'], np.float64).reshape(-1, 3) / 39.37
+                out[kind].append({'r': round(float(np.hypot(P[:, 0], P[:, 1]).max()), 2),
+                                  'zmin': round(float(P[:, 2].min()), 2), 'zmax': round(float(P[:, 2].max()), 2)})
+            except Exception:  # noqa: BLE001 - modele illisible : emprise par defaut
+                traceback.print_exc()
+                out[kind].append({'r': 3.0, 'zmin': 0.0, 'zmax': 5.0})
+    return out
+
+
+def kit_model_binary(kit, kind, m):
+    """GET /api/kit_model : objet du kit au format de model_preview_binary (apercu de l'onglet Creation)."""
+    pv = _kit_model(kit, kind, m)
+    texs = sorted({g[2] for g in pv['groups'] if g[2]})
+    head = struct.pack('<III', len(pv['positions']), len(pv['indices']), len(pv['groups']))
+    groups = b''.join(struct.pack('<III', st, n, texs.index(t) + 1 if t else 0) for st, n, t in pv['groups'])
+    js = json.dumps([{'ns': ns, 'decal': decal} for ns, decal in texs]).encode()
+    return (head + pv['positions'].astype('<f4').tobytes() + pv['uvs'].astype('<f4').tobytes()
+            + pv['indices'].astype('<u4').tobytes() + groups + struct.pack('<I', len(js)) + js)
+
+
+_creator_tex = {}
+
+
+def creator_texture(kit, fname):
+    """GET /api/creator_texture : texture du theme (route, matieres du sol) decodee comme a la generation (512)."""
+    if kit not in _creator_tex:
+        _creator_tex[kit] =track_creator.kit_textures(lambda lg, pak: pak_tool.read_latest(ARCHIVES, lg, pak)[0], kit, 512)
+    return _creator_tex[kit][fname]
+
+
+def kit_texture(kit, kind, ns):
+    """GET /api/kit_texture : texture d'un objet du kit (PNG 256)."""
+    from PIL import Image
+    key = ('tex', ns)
+    if key not in _kit_model_cache:
+        rgba, _ = preview.decode_texture(_kit_read(f'textures/{ns}.igz', track_creator.KITS[kit]['props'][kind]['pak']), 256)
+        buf = io.BytesIO()
+        Image.fromarray(rgba, 'RGBA').save(buf, 'PNG')
+        _kit_model_cache[key] = buf.getvalue()
+    return _kit_model_cache[key]
+
+
+def test_status():
+    return dict(quick_test.STATUS)
 
 
 def restore_game_all():
@@ -5944,7 +7230,7 @@ def uninstall_track(track):
     done, kept = [], []
     arcs = [os.path.join(ARCHIVES, n) for n in pak_tool.UPDATE_ARCHIVES + (track_pak(track),)] + menu_track_archives(track) \
         + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)]
-    arcs = [a for a in arcs if os.path.exists(pak_tool.backup_path(a))]
+    arcs = [a for a in arcs if os.path.exists(pak_tool.backup_path(a)) or custom_category.layer_has(a)]
     others = _others_for(arcs, track, kept)                 # avant de l'oublier : ses fichiers sont dans le registre
     _set_installed(track, False)
     for arc in arcs:
@@ -5952,6 +7238,10 @@ def uninstall_track(track):
         done.append(os.path.basename(arc))
     if set_menu_video(track, False):
         done.append(os.path.basename(menu_video(track)))
+    try:
+        done += apply_ghost_files(track, False)
+    except OSError as e:
+        kept.append(f'ATTENTION : fantômes non remis ({e})')
     return {'restored': done, 'kept': kept}
 
 
@@ -6079,6 +7369,8 @@ def reset_track(track, what='all'):
         if os.path.exists(p):
             os.remove(p)
             removed.append(os.path.basename(p))
+    if what == 'all':
+        removed += music_clear(track, MUSIC_KINDS)
     return {'removed': removed}
 
 
@@ -6124,6 +7416,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, archives_info())
             elif u.path == '/api/pack_tracks':                # pistes exportables en pack de maps
                 self._send(200, {'tracks': mappack.exportable_tracks(), 'all': list_tracks()})
+            elif u.path == '/api/octr_tracks':                # pistes exportables en mod pour le portage PC
+                self._send(200, octr_export.tracks_info())
             elif u.path == '/api/pack_download':              # pack exporte (dossier exports du projet seulement)
                 p = mappack.export_file(parse_qs(u.query).get('name', [''])[0])
                 if p is None:
@@ -6149,6 +7443,9 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == '/api/decor_collision':
                 q = parse_qs(u.query)
                 self._send(200, decor_collision_preview(q['track'][0], q['file'][0], int(q['id'][0])))
+            elif u.path == '/api/model_parts':               # edition de forme : textures du modele
+                q = parse_qs(u.query)
+                self._send(200, model_parts(q['track'][0], q['file'][0]))
             elif u.path == '/api/materials':
                 self._send(200, material_catalog(parse_qs(u.query)['track'][0]))
             elif u.path == '/api/model_preview':
@@ -6164,16 +7461,46 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, library_catalog())
             elif u.path == '/api/route_objects':
                 self._send(200, route_objects(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/test_status':               # « Tester en jeu » : etape en cours
+                self._send(200, test_status())
+            elif u.path == '/api/creator':                   # onglet Creation : trace du paveur enregistre
+                self._send(200, creator_info(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/kart':                      # onglet Creation : kart du jeu (paveuse)
+                self._send(200, kart_preview(parse_qs(u.query).get('part', ['body'])[0]), 'application/octet-stream')
+            elif u.path == '/api/kit_model':                 # onglet Creation : objet a semer (apercu)
+                q = parse_qs(u.query)
+                self._send(200, kit_model_binary(q['kit'][0], q['type'][0], q.get('m', ['0'])[0]), 'application/octet-stream')
+            elif u.path == '/api/creator_texture':
+                q = parse_qs(u.query)
+                self._send(200, creator_texture(q['kit'][0], q['f'][0]), 'image/png')
+            elif u.path == '/api/kit_texture':
+                q = parse_qs(u.query)
+                self._send(200, kit_texture(q['kit'][0], q['type'][0], q['ns'][0]), 'image/png')
+            elif u.path == '/api/kart_texture':
+                self._send(200, kart_texture(parse_qs(u.query)['ns'][0]), 'image/png')
+            elif u.path == '/creator.js':                    # onglet Creation : paveur (module de la page)
+                self._send(200, open(os.path.join(HERE, 'creator.js'), 'rb').read(), 'text/javascript; charset=utf-8')
             elif u.path == '/api/route_start':               # depart propose : objet Start / Finish, sinon damier
                 self._send(200, route_start_guess(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/music':                      # musique de la piste : etat
+                self._send(200, music_info(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/times':                      # temps des reliques et des fantomes
+                self._send(200, times_info(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/music_audio':                # ecoute : flux joue en course, en MP3
+                q = parse_qs(u.query)
+                self._send(200, music_audio(q['track'][0], q['kind'][0]), 'audio/mpeg')
+            elif u.path == '/api/old_route_moves':            # vider la scene : entites de l'ancien trace sous la carte
+                d, r = old_route_moves(parse_qs(u.query)['track'][0])
+                self._send(200, {'design_moves': d, 'race_moves': r})
             else:
                 self._send(404, {'error': 'introuvable'})
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
             self._send(500, {'error': repr(e)})
 
-    PROGRESS_LABELS = {'/api/pack_export': 'Export des maps', '/api/pack_import': 'Import des maps',
+    PROGRESS_LABELS = {'/api/octr_export': 'Export pour le PC (OCTR)', '/api/pack_export': 'Export des maps', '/api/pack_import': 'Import des maps',
                        '/api/save': 'Enregistrement de la course', '/api/install': 'Installation dans le jeu',
+                       '/api/test_in_game': 'Tester en jeu', '/api/create_build': 'Création de la piste',
                        '/api/uninstall': 'Désinstallation', '/api/reset': "Retour à l'original",
                        '/api/decor_save': 'Enregistrement du décor', '/api/import_model': 'Import du modèle',
                        '/api/set_custom_material': 'Texture du modèle', '/api/import_texture': "Import de l'image",
@@ -6185,7 +7512,7 @@ class Handler(BaseHTTPRequestHandler):
                        '/api/import_folder': 'Import du dossier', '/api/export_obj': 'Export OBJ',
                        '/api/light_info': 'Analyse du poids de la map', '/api/apply_light': 'Allègement de la map',
                        '/api/auto_falls': 'Chutes et réapparitions', '/api/menu_info': 'Lecture du nom et des images',
-                       '/api/apply_menu': 'Nom et images de la piste', '/api/set_surface': 'Type de sol',
+                       '/api/apply_menu': 'Nom et images de la piste', '/api/set_surface': 'Type de sol', '/api/mesh_save': 'Forme de l\'objet',
                        '/api/object_alpha': 'Transparence de la texture', '/api/surfaces': 'Types de sol',
                        '/api/ambiance_info': "Lecture de l'éclairage", '/api/set_ambiance': 'Ambiance',
                        '/api/place_library': "Ajout d'un objet de la bibliothèque", '/api/fix': 'Corrections',
@@ -6193,7 +7520,8 @@ class Handler(BaseHTTPRequestHandler):
                        '/api/walls_zone': 'Murs invisibles autour de la sélection',
                        '/api/set_invisible': 'Mur invisible', '/api/menu_layout_save': 'Menu du jeu',
                        '/api/menu_track_create': 'Nouvelle piste',
-                       '/api/menu_track_delete': 'Suppression de la piste'}
+                       '/api/menu_track_delete': 'Suppression de la piste',
+                       '/api/music_apply': 'Import de la musique'}
 
     def do_POST(self):
         try:
@@ -6203,9 +7531,24 @@ class Handler(BaseHTTPRequestHandler):
                 name = unquote(parse_qs(urlparse(self.path).query).get('name', ['pack.zip'])[0])
                 self._send(200, mappack.save_upload(data, name))
                 return
+            if urlparse(self.path).path == '/api/music_upload':     # musique a importer : octets bruts
+                from urllib.parse import unquote
+                data = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                q = parse_qs(urlparse(self.path).query)
+                self._send(200, music_upload(data, unquote(q.get('name', ['musique'])[0]), bool(q.get('keep'))))
+                return
             req = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             routes = {'/api/save': lambda: with_history(req['track'], 'course', lambda: save_track(req)),
+                      '/api/music_apply': lambda: with_history(req['track'], 'musique de la piste', lambda: music_apply(req)),
+                      '/api/music_reset': lambda: with_history(req['track'], 'musique d\'origine', lambda: music_reset(req)),
+                      '/api/pick_ffmpeg': lambda: pick_ffmpeg(req),
+                      '/api/times_apply': lambda: with_history(req['track'], 'temps des reliques et des fantômes',
+                                                               lambda: times_apply(req)),
+                      '/api/times_reset': lambda: with_history(req['track'], 'temps du jeu', lambda: times_reset(req)),
                       '/api/install': lambda: install_track(req['track']),
+                      '/api/test_in_game': lambda: test_in_game(req),
+                      '/api/create_build': lambda: with_history(req['track'], 'création de la piste (paveur)',
+                                                                lambda: create_build(req)),
                       '/api/uninstall': lambda: uninstall_track(req['track']),
                       '/api/reset': lambda: with_history(req['track'], f"repartir de l'original ({req.get('what', 'all')})",
                                                          lambda: reset_track(req['track'], req.get('what', 'all'))),
@@ -6233,10 +7576,12 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/light_info': lambda: light_info(req['track']),
                       '/api/ambiance_info': lambda: ambiance_info(req['track']),
                       '/api/set_ambiance': lambda: with_history(req['track'], 'ambiance', lambda: set_ambiance(req)),
-                      '/api/surfaces': lambda: {'surfaces': [{'value': s, 'label': l, 'safe': ok, **surface_params().get(s, {})}
-                                                             for s, l, ok in SURFACES]},
+                      '/api/surfaces': lambda: {'surfaces': [{'value': s, 'label': l, 'safe': ok, **surface_params().get(s, {}),
+                                                              'defaults': surface_defaults(s)} for s, l, ok in SURFACES]},
                       '/api/set_surface': lambda: with_history(req['track'], 'type de sol', lambda: set_surface(req)),
                       '/api/object_alpha': lambda: with_history(req['track'], 'transparence', lambda: set_object_alpha(req)),
+                      '/api/mesh_save': lambda: with_history(req['track'], 'forme d\'un objet', lambda: mesh_save(req)),
+                      '/api/double_sided': lambda: with_history(req['track'], 'faces des deux côtés', lambda: set_double_sided(req)),
                       '/api/object_glow': lambda: with_history(req['track'], 'texture lumineuse', lambda: set_object_glow(req)),
                       '/api/menu_info': lambda: menu_info(req['track']),
                       '/api/apply_menu': lambda: with_history(req['track'], 'nom et images de menu', lambda: apply_menu(req)),
@@ -6250,6 +7595,7 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/pick_folder': lambda: pick_folder(req),
                       '/api/flyby_auto': lambda: flyby_auto(req),
                       '/api/pack_export': lambda: mappack.export_pack(req),
+                      '/api/octr_export': lambda: octr_export.build(req),
                       '/api/pack_import': lambda: mappack.import_pack(req),
                       '/api/fix': lambda: with_history(req['track'], 'corrections : ' + ', '.join(req.get('fixes') or []),
                                                        lambda: apply_fixes(req)),

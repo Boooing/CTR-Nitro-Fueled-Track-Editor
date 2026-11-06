@@ -395,7 +395,7 @@ def write_archive(path, files, template):
         name_off += -name_off % 16
         f.write(b'\0' * (name_off - f.tell()))
         f.write(names_blob)
-        div = max(1, (1 << 32) // n)
+        div = min(0xFFFFFFFF, max(1, (1 << 32) // n))   # un seul fichier : 2^32 ne tient pas dans l'en-tete (u32)
         slop = max(abs(i - r[0] // div) for i, r in enumerate(rows)) + 1
         toc = (b''.join(struct.pack('<I', r[0]) for r in rows) + b''.join(r[1] for r in rows)
                + struct.pack(f'<{len(tables["large"])}I', *tables['large'])

@@ -316,6 +316,12 @@ def export_track(track, zf, folder):
     except Exception as e:  # noqa: BLE001
         report.append(f'menu non exporté ({e})')
     mp['menu'] = menu
+    # musique importee : fichiers deja encodes
+    tunes = S.music_export(track)
+    for k, data in tunes.items():
+        zf.writestr(f'{folder}/music/{k}.snd', data)
+    if tunes or S.music_continues(track):
+        mp['music'] = {'files': {k: f'music/{k}.snd' for k in tunes}, 'names': S.music_settings(track)}
     zf.writestr(f'{folder}/map.json', json.dumps(mp, indent=1, ensure_ascii=False))
     report.append(f"{mp['title']} ({track}) : {len(objects)} objet(s), {len(mp['models'])} modèle(s), "
                   f"{len(mp['textures'])} texture(s)" + (f", {len(chain)} section(s)" if chain else ', sans parcours')
@@ -356,8 +362,13 @@ def export_file(name):
     """Chemin d'un pack du dossier exports du projet (nom de fichier .zip seul), ou None."""
     S = _S()
     name = os.path.basename(name or '')
-    p = os.path.join(S.PROJECT_DIR, 'exports', name)
-    return p if name.lower().endswith('.zip') and os.path.isfile(p) else None
+    if not name.lower().endswith('.zip'):
+        return None
+    for sub in ('', 'octr'):                             # packs de maps, mods pour le portage PC (octr_export)
+        p = os.path.join(S.PROJECT_DIR, 'exports', sub, name)
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 # -- import ---------------------------------------------------------------------------------------------
@@ -787,6 +798,11 @@ def import_map(zf, folder, track, report):
         S.progress.step('nom et images', 0.92)
         S.apply_menu({'track': track, 'names': menu.get('names') or {}, 'hide_video': menu.get('hide_video'),
                       'images': {k: _data_url(zf, f'{folder}/{p}') for k, p in (menu.get('images') or {}).items()}})
+    # 7. musique
+    tunes = mp.get('music') or {}
+    if tunes.get('files') or (tunes.get('names') or {}).get('fl', {}).get('mode') == 'continue':
+        S.progress.step('musique', 0.96)
+        S.music_import(track, {k: zf.read(f'{folder}/{p}') for k, p in (tunes.get('files') or {}).items()}, tunes.get('names') or {})
     return regen_ai
 
 
