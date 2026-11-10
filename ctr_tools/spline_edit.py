@@ -68,7 +68,8 @@ class SplineEditor:
 
     def entities_with_spline(self):
         return sorted(n for n, o in self.by_name.items()
-                      if self.igz.objects.get(o) in ('CEntity', 'igEntity') and self._spline_component(o) is not None)
+                      if (self.igz.objects.get(o) in ('CEntity', 'igEntity') and self._spline_component(o) is not None)
+                      or (self.igz.objects.get(o) == 'CGameEntity' and self.component(o, 'CRaceTrackSplineComponentData') is not None))
 
     def _parts(self, entity):
         ent = self.by_name[entity]
@@ -117,6 +118,28 @@ class SplineEditor:
         self._names()
         self._update_length(entity)
         return cp
+
+    def extend_points(self, entity, worlds):
+        """Ajoute des points en fin de spline (clones du dernier), racines en une seule ecriture : insert_point recopie toute
+        la liste a chaque point (fichier en memoire > 128 Mo quand beaucoup de voies sont recreees d'un coup)."""
+        if not worlds:
+            return
+        _, _, cps = self._parts(entity)
+        base = entity + SPLINE_SUFFIX + '_spline_data_'
+        k = len(self.igz.object_list(cps))
+        pairs, taken = [], set(self.by_name)
+        for world in worlds:
+            items = self.igz.object_list(cps)
+            cp = self.igz.clone_object(items[-1])
+            self.igz.set_field(cp, '_position', self._local(entity, world))
+            self.igz.list_insert(cps, len(items), cp)
+            while f'{base}{k}' in taken:
+                k += 1
+            taken.add(f'{base}{k}')
+            pairs.append((cp, f'{base}{k}'))
+        self.igz.add_roots(pairs)
+        self._names()
+        self._update_length(entity)
 
     def remove_point(self, entity, index):
         """Retire le point de la spline (l'objet reste dans le fichier mais n'est plus reference)."""

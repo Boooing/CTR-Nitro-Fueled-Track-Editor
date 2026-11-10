@@ -110,7 +110,7 @@ def main():
            '--add-data', f'{os.path.join(HERE, "i18n.js")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "creator.js")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "vendor")}{sep}vendor',
-           '--hidden-import', 'server', '--hidden-import', 'PySide6.QtWebEngineWidgets',
+           '--hidden-import', 'server', '--hidden-import', 'updater', '--hidden-import', 'PySide6.QtWebEngineWidgets',
            '--exclude-module', 'webview',
            os.path.join(HERE, 'app.py')]
     print(' '.join(f'"{c}"' if ' ' in c else c for c in cmd), flush=True)

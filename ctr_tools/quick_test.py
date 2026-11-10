@@ -139,18 +139,55 @@ def set_intro_videos(archives, hidden):
     return report
 
 
+PATCH_MARK = b'CtrTest_SetTrack'  # nom ajoute par patch_manager
+
+
+def _saved_manager(archives):
+    return os.path.join(archives, os.path.basename(MANAGER) + '.ctrmod-orig')
+
+
+def original_manager(archives):
+    """Script d'ecran titre d'origine, meme si le patch est encore en place : essai precedent jamais remis (editeur ferme,
+    plantage) sur un update2 SANS sauvegarde de TOC (les ajouts vont dans update3 ; « script de l'ecran titre
+    inattendu », et la remise a l'etat normal reecrivait le script patche). Copie gardee par install, sinon version d'update."""
+    data, _ = pak_tool.read_latest(archives, MANAGER)
+    if PATCH_MARK not in data:
+        return data
+    p = _saved_manager(archives)
+    if os.path.exists(p):
+        return open(p, 'rb').read()
+    upd = os.path.join(archives, 'update.pak')
+    if os.path.exists(upd):
+        arc, idx, lock = pak_tool.cached_archive(upd)
+        e = idx.get(MANAGER.lower())
+        if e is not None:
+            with lock:
+                data = arc.read(e)
+            if PATCH_MARK not in data:
+                return data
+    raise ValueError('script de l\'écran titre d\'origine introuvable : vérifie les fichiers du jeu')
+
+
 def install(archives, track):
     """Ecran titre -> course unique sur `track` + intros sautees. Le fichier remplace est ajoute en fin d'update2
     (sauvegarde d'origine de l'archive inchangee : desinstallation / « Remettre le jeu d'origine » le retirent)."""
-    data, _ = pak_tool.read_latest(archives, MANAGER)
+    data = original_manager(archives)
+    p = _saved_manager(archives)
+    if not os.path.exists(p):
+        with open(p, 'wb') as f:
+            f.write(data)
     pak_tool._append_replace(os.path.join(archives, 'update2.pak'), {MANAGER: patch_manager(data, track)})
     return [f'écran titre : course unique sur {track}'] + set_intro_videos(archives, True)
 
 
 def uninstall(archives):
-    """Ecran titre d'origine (version d'update2 d'origine) + videos d'introduction remises."""
-    data, _ = pak_tool.read_latest(archives, MANAGER)
-    pak_tool._append_replace(os.path.join(archives, 'update2.pak'), {MANAGER: data})
+    """Ecran titre d'origine + videos d'introduction remises."""
+    data = original_manager(archives)
+    if pak_tool.read_latest(archives, MANAGER, original=False)[0] != data:
+        pak_tool._append_replace(os.path.join(archives, 'update2.pak'), {MANAGER: data})
+    p = _saved_manager(archives)
+    if os.path.exists(p):
+        os.remove(p)
     return ['écran titre d\'origine'] + set_intro_videos(archives, False)
 
 

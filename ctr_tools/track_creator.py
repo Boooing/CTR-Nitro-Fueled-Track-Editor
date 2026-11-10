@@ -12,6 +12,8 @@ import math
 
 import numpy as np
 
+from track_creator_extra import EXTRA as _EXTRA, HIDDEN as HIDDEN_MODELS, LABELS as _EXTRA_LABELS
+
 INCH = 39.37
 STEP = 2.0                       # m : pas de la ligne centrale lissee
 OBJ_NAME, MTL_NAME = 'Createur.obj', 'Createur.mtl'      # nom du lot d'import : « Createur — date »
@@ -19,6 +21,7 @@ ROAD_LIFT = 0.05                 # m : route au-dessus du sol (evite le scintill
 UNDER_ROAD = 0.25                # m : terrain aplani juste sous la route
 BLEND_SLOPE = 1.5                # raccord route -> relief : 1,5 m a l'horizontale par metre de denivele
 BLEND_MIN = 6.0                  # m : raccord minimal
+SCULPT_FULL = 3.0                # m : sol sculpte d'au moins cette hauteur : il garde sa hauteur jusqu'a BLEND_MIN de la route
 Z_SMOOTH = 6.0                   # m : ecart-type du lissage de la hauteur de route (crete / creux trop secs)
 GROUND_MARGIN = 150.0            # m autour du trace
 GROUND_CELL = 10.0               # m : maille du sol quand rien n'est sculpte
@@ -732,6 +735,15 @@ _add('mines', 'big', _m('Octane/T142_Dragon_Mines', 'T142_Dragon_Mines_Pillar_01
 _add('tubes', 'big', _m('Crash3/Sea', 'C3_Sea_RockWall02'))
 _add('jungle', 'big', _m('Octane/T132_Tiger_Temple', 'T132_Tiger_Temple_JungleCliffWall'))
 _add('pyramide', 'big', _m('Octane/T133_Papus_Pyramid/Papus_Pyramid_Assets', 'Papus_Pyramid_cliff04', 'Papus_Pyramid_cliff08'))
+# objets d'autres maps (2026-11-07) : toujours ajoutes en dernier, voir track_creator_extra.py
+for _kit, _kind, _models in _EXTRA:
+    _add(_kit, _kind, _models, **(dict(label=_EXTRA_LABELS['big'], **_BIG) if _kind == 'big' else
+                                  dict(label=_EXTRA_LABELS.get(_kind, _kind), scale=(0.8, 1.2), spacing=10.0)))
+
+
+def hidden_models(kit, kind):
+    """Numeros des modeles de la famille masques de la liste (vignette grise ou vide)."""
+    return [m for m, model in enumerate(KITS[kit]['props'][kind]['models']) if model in HIDDEN_MODELS]
 
 
 def _catmull(P, closed, step):
@@ -779,21 +791,22 @@ def _smooth(v, sigma, closed):
 
 
 def _edge_cols(p):
-    """Point du paveur -> [x, y, z, largeur, saut, demi-largeur gauche, droite, relevement du bord gauche, droit]
-    (bords edites dans l'onglet Creation ; par defaut route symetrique et a plat)."""
+    """Point du paveur -> [x, y, z, largeur, saut, demi-largeur gauche, droite, relevement du bord gauche, droit, sans talus]
+    (bords edites dans l'onglet Creation ; par defaut route symetrique et a plat, avec talus)."""
     p = list(p) + [14.0 * INCH, 0.0][len(p) - 3:] if len(p) < 5 else list(p)
     w = p[3]
     d = [w / 2, w / 2, 0.0, 0.0]
-    return p[:5] + [float(v) if v is not None else d[k] for k, v in enumerate((p[5:9] + [None] * 4)[:4])]
+    return p[:5] + [float(v) if v is not None else d[k] for k, v in enumerate((p[5:9] + [None] * 4)[:4])] \
+        + [1.0 if len(p) > 9 and p[9] else 0.0]
 
 
 def centerline(points_in, closed):
     """Points du paveur (pouces, [x, y, z, largeur, saut, (demi-largeur gauche, droite, relevement gauche, droit)])
-    -> ligne lissee (metres, colonnes x, y, z, largeur, saut, devers) : centre et largeur reels de la route (bords
-    edites), devers = hauteur du bord gauche au-dessus du centre (le droit est autant en dessous)."""
+    -> ligne lissee (metres, colonnes x, y, z, largeur, saut, devers, sans talus) : centre et largeur reels de la route
+    (bords edites), devers = hauteur du bord gauche au-dessus du centre (le droit est autant en dessous)."""
     P = np.asarray([_edge_cols(p) for p in points_in], np.float64)
     P[:, :4] /= INCH                                          # colonne 4 : saut (0 / 1), sans unite
-    P[:, 5:] /= INCH
+    P[:, 5:9] /= INCH                                         # colonne 9 : sans talus (0 / 1), sans unite
     if closed and len(P) > 2 and np.linalg.norm(P[0, :2] - P[-1, :2]) < 0.5:
         P = P[:-1]
     C = _catmull(P, closed, STEP)
@@ -812,7 +825,7 @@ def centerline(points_in, closed):
     # bords edites : le centre se decale vers le cote elargi, le devers vient de la difference de relevement
     _, L = _frames(C, closed)
     wl, wr, hl, hr = C[:, 5], C[:, 6], C[:, 7], C[:, 8]
-    out = C[:, :6].copy()
+    out = np.column_stack([C[:, :6], C[:, 9] > 0.5])
     out[:, :2] += L * ((wl - wr) / 2)[:, None]
     out[:, 2] += (hl + hr) / 2
     out[:, 3] = wl + wr
@@ -949,16 +962,20 @@ def _dig_mask(terrain, xs, ys):
     return D[j0:j0 + len(ys), i0:i0 + len(xs)]
 
 
-def _conform(xs, ys, H, C, closed, left, right, dig=None):
+def _conform(xs, ys, H, C, closed, left, right, dig=None, slope=BLEND_SLOPE, sculpt=None):
     """Terrain raccorde a la route : juste sous sa surface reelle (left, right : ses bords, pinces dans les virages serres,
     releves dans les virages inclines), aplani une maille au-dela du bord a la hauteur de ce bord, puis pente douce jusqu'au
     relief (enterre la route quand le relief est plus haut : tranchee ; la soutient quand il est plus bas : remblai).
     Chaque passage de la route est traite a part (morceaux de WINDOW echantillons, seul celui qui contient la
     projection du point compte) et le terrain suit le passage le PLUS BAS : la ou la route repasse au-dessus d'elle-
-    meme, le sol reste au niveau de la route du dessous et celle du dessus devient un pont."""
+    meme, le sol reste au niveau de la route du dessous et celle du dessus devient un pont.
+    slope : largeur du talus par metre de denivele (reglage de l'editeur). sculpt : relief sculpte (m, memes dimensions que H) :
+    la ou il y en a, le raccord se resserre, sinon il ecrasait le relief pose pres de la route."""
     X, Y = np.meshgrid(xs, ys)
     P = np.stack([X.ravel(), Y.ravel()], 1)
     h0 = H.ravel().copy()
+    # part du raccord en pente : 1 sur le sol d'origine, 0 sur un relief sculpte d'au moins SCULPT_FULL m
+    free = 1.0 - np.clip(np.abs(sculpt.ravel()) / SCULPT_FULL, 0.0, 1.0) if sculpt is not None else np.ones(len(h0))
     out = np.full(len(P), np.inf)
     n = len(C)
     cell = xs[1] - xs[0] if len(xs) > 1 else GROUND_CELL
@@ -972,10 +989,14 @@ def _conform(xs, ys, H, C, closed, left, right, dig=None):
         seg = C[idx]
         lo_edge = 0 if (not closed and st == 0) else 2                     # projection hors du morceau : ignore
         hi_edge = len(idx) - 1 if (not closed and idx[-1] == n - 1) else len(idx) - 3
-        reach = seg[:, 3].max() / 2 + cell + BLEND_MIN + 60.0              # au-dela : hors de portee de ce morceau
-        box = (np.abs(P[:, 0] - seg[:, 0].mean()) < np.ptp(seg[:, 0]) / 2 + reach) & \
-              (np.abs(P[:, 1] - seg[:, 1].mean()) < np.ptp(seg[:, 1]) / 2 + reach)
-        sel = np.nonzero(box)[0]
+        # portee du raccord d'apres l'ecart de hauteur de CHAQUE sommet. Une portee fixe coupait le talus : falaise de 283 m a
+        # cote d'une route a +300 m, absente de l'apercu
+        e_z = np.concatenate([left[idx, 2], right[idx, 2]])
+        gap_z = np.maximum(np.abs(h0 - e_z.min()), np.abs(h0 - e_z.max())) + below
+        reach = seg[:, 3].max() / 2 + cell + np.maximum(BLEND_MIN, gap_z * slope * free) + STEP
+        out_x = np.maximum(np.maximum(seg[:, 0].min() - P[:, 0], P[:, 0] - seg[:, 0].max()), 0.0)
+        out_y = np.maximum(np.maximum(seg[:, 1].min() - P[:, 1], P[:, 1] - seg[:, 1].max()), 0.0)
+        sel = np.nonzero(out_x * out_x + out_y * out_y < reach * reach)[0]
         if not len(sel):
             continue
         Q = P[sel]
@@ -1014,8 +1035,11 @@ def _conform(xs, ys, H, C, closed, left, right, dig=None):
                 inside[u] = True
         dist = np.where(inside, 0.0, dist)
         rz = rz - below
-        blend = np.maximum(BLEND_MIN, np.abs(rz - h0[sel]) * BLEND_SLOPE)
+        blend = np.maximum(BLEND_MIN, np.abs(rz - h0[sel]) * slope * free[sel])
         ok &= dist <= cell + blend
+        # sans talus : le sol ne monte pas vers la route (pont) ; sous le relief, la tranchee reste necessaire
+        flag = np.repeat(C[a, 6] > 0.5, len(sub))
+        ok &= ~(np.concatenate([flag, flag])[near] & (rz > h0[sel]))
         t = np.clip((dist - cell) / blend, 0.0, 1.0)
         s = t * t * (3 - 2 * t)
         v = np.where(dist <= cell, rz, rz * (1 - s) + h0[sel] * s)
@@ -1110,6 +1134,19 @@ def _height(xs, ys, H, x, y):
 
 
 WALL_SURFACE = 4                 # « Sol (defaut) » : surface des murs de Crash Cove
+
+
+def _far_cells(xs, ys, C, reach):
+    """Cases du terrain dont le centre est a plus de `reach` m de la route (booleens (ny, nx)) : ni sol ni collision, objets
+    semes dessus ecartes (prop_seat)."""
+    cx, cy = (xs[:-1] + xs[1:]) / 2, (ys[:-1] + ys[1:]) / 2
+    P = C[::2, :2]
+    far = np.ones((len(cy), len(cx)), bool)
+    for j, y in enumerate(cy):
+        near = P[np.abs(P[:, 1] - y) <= reach]
+        if len(near):
+            far[j] = ((cx[:, None] - near[:, 0][None, :]) ** 2 + (y - near[:, 1][None, :]) ** 2).min(1) > reach * reach
+    return far
 
 
 def _hole_cells(xs, ys, C):
@@ -1230,16 +1267,20 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
 
     # terrain raccorde a la route, en carreaux de GROUND_TILE m et par matiere (matiere d'une case : la plus presente
     # a ses 4 coins)
-    H = _conform(xs, ys, H, C, closed, left, right, _dig_mask(terrain, xs, ys))
+    H = _conform(xs, ys, H, C, closed, left, right, _dig_mask(terrain, xs, ys),
+                 float((terrain or {}).get('blend') or BLEND_SLOPE), H - gz)
     H, _ = _clear_road(xs, ys, H, left, right, rows, gap, ns)
     # sauts : seule la route s'arrete, le sol dessous reste (demande du 2026-11-05 ; avant : _hole_cells, trou jusqu'au
     # plancher de chute)
     hole = np.zeros((len(ys) - 1, len(xs) - 1), bool)
+    trim = float((terrain or {}).get('trim_m') or 0)
+    if trim > 0:                                         # carte loin de la route retiree (demande a la generation)
+        hole = _far_cells(xs, ys, C, trim)
     MATS = paint_materials(kit)
     M = np.clip(M, 0, len(MATS) - 1)
-    corners = np.stack([M[:-1, :-1], M[:-1, 1:], M[1:, :-1], M[1:, 1:]])          # (4, cases y, cases x)
-    present = np.unique(M)
-    CM = present[np.stack([(corners == m).sum(0) for m in present]).argmax(0)]
+    MIX0 = len(MATS)
+    CM, mixes = _cell_materials(M, MIX0, (terrain or {}).get('fade', FADE_DEF))
+    NAMES = [m[0] for m in MATS] + [_mix_name(*x) for x in mixes]
     per = max(1, int(round(GROUND_TILE / cell)))
     rep = K['ground_repeat']
     used = set()
@@ -1253,7 +1294,7 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
             tile += 1
             for m in np.unique(CM[ja:jb, ia:ib]):         # matieres presentes dans le carreau seulement (100+ peintures)
                 m = int(m)
-                name = MATS[m][0]
+                name = NAMES[m]
                 cells = [(a, b) for b in range(ja, jb) for a in range(ia, ib) if CM[b, a] == m and not hole[b, a]]
                 if not cells:
                     continue
@@ -1305,16 +1346,24 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
         n_bridges = max(n_bridges, 1)
 
     n_walls = _barriers(ob, C, L, left, right, rows, gap, closed, barriers)
-    mtl = 'newmtl Road\nKd 0.8 0.7 0.5\nmap_Kd road.png\n\n' + \
+    # fondus : images composees apres coup (mix_textures), leurs deux peintures doivent etre decodees
+    mix_used = [x for i, x in enumerate(mixes) if MIX0 + i in used]
+    base_used = {m for m in used if m < MIX0} | {m for x in mix_used for m in x[:2]}
+    mtl ='newmtl Road\nKd 0.8 0.7 0.5\nmap_Kd road.png\n\n' + \
         ('newmtl StartLine\nKd 1 1 1\nmap_Kd checker.png\n\n' if not gap[0] else '') + ('newmtl Bridge\nKd 0.5 0.5 0.5\nmap_Kd rock.png\n\n' if n_bridges or skirts else '') + \
         ('newmtl Wall\nKd 0.5 0.5 0.5\nmap_Kd rock.png\n\n' if n_walls else '') + ''.join(
-        f'newmtl {name}\nKd 0.8 0.7 0.5\nmap_Kd {png}\n\n' for m, (name, png, *_) in enumerate(MATS) if m in used)
+        f'newmtl {name}\nKd 0.8 0.7 0.5\nmap_Kd {png}\n\n' for m, (name, png, *_) in enumerate(MATS) if m in used) + ''.join(
+        f'newmtl {_mix_name(*x)}\nKd 0.8 0.7 0.5\nmap_Kd {_mix_name(*x)}.png\n\n' for x in mix_used)
     yaw = math.atan2(T[0, 1], T[0, 0])
     guide = (C[::2, :2] * INCH).round(1).tolist()
     exact = np.hstack([C[:, :2], road_z[:, None], C[:, 3:4]]) * INCH      # route (surface), largeur
     exact = np.hstack([exact, gap[:, None].astype(np.float64)])            # + saut (en l'air)
     info = {'length': float(s[-1]), 'guide': guide, 'exact': exact.round(1).tolist(), 'start': (C[0, :3] * INCH).tolist(),
-            'yaw': yaw, 'ground_tiles': tile, 'materials': [MATS[m][0] for m in sorted(used)],
+            'trimmed_pct': round(100 * float(hole.mean())) if trim > 0 else 0,
+            'yaw': yaw, 'ground_tiles': tile, 'materials': [MATS[m][0] for m in sorted(base_used)],
+            'mixes': [(_mix_name(*x), MATS[x[0]][1], MATS[x[1]][1], x[2]) for x in mix_used],
+            # surface de collision d'un fondu : celle de la peinture dominante
+            'mix_surfaces': {_mix_name(*x): MATS[x[1] if x[2] > 2 else x[0]][3] for x in mix_used},
             'bridges': int(n_bridges), 'jumps': int(np.count_nonzero(gap & ~np.roll(gap, 1))), 'walls_m': round(n_walls * STEP),
             'min_z': float(min(H.min(), road_z.min())) * INCH,
             '_ground': (xs, ys, H, hole, C)}                     # sol genere (metres) : hauteur des objets semes
@@ -1372,9 +1421,56 @@ def prop_conflict(r, zmin, zmax, s, base, mx, my, C, foot_share=FOOT_SHARE):
     return bool(((hd < foot) & level).any() or ((hd < r * s * 0.9 + PROP_CLEAR) & above).any())
 
 
+# role d'une famille d'objets : (inclinaison max selon la pente en degres, part du rayon d'emprise qui doit reposer sur le sol).
+# Herbes et rochers epousent le sol ; un arbre ou un mur reste presque droit et s'enfonce du cote du haut.
+PROP_ROLES = {'cover': (30.0, 0.6), 'shrub': (15.0, 0.4), 'tree': (5.0, 0.2), 'rock': (30.0, 0.6), 'road': (6.0, 0.4),
+              'prop': (12.0, 0.5), 'house': (8.0, 0.7), 'big': (3.0, 0.9)}
+ROLE_OF = {**dict.fromkeys(('grass', 'flower', 'plant', 'kelp', 'coral', 'mushroom', 'beach', 'snow', 'bones', 'vine'), 'cover'),
+           'bush': 'shrub', **dict.fromkeys(('palm', 'tree', 'pine', 'cactus', 'giant'), 'tree'),
+           **dict.fromkeys(('rock', 'crystal', 'gems', 'fossil'), 'rock'),
+           **dict.fromkeys(('house', 'hut', 'building'), 'house'),
+           **dict.fromkeys(('sign', 'fence', 'lamp', 'lantern', 'torch', 'tire'), 'road')}
+
+
+def prop_role(kind_name, big=False):
+    """Role d'une famille (voir PROP_ROLES) ; tout le reste (statues, machines, tuyaux...) : 'prop'."""
+    return 'big' if big else ROLE_OF.get(kind_name, 'prop')
+
+
+def prop_seat(ground, x, y, yaw, r, s, role):
+    """Pose sur le sol genere de l'objet en (x, y) pouces, de rayon r m et d'echelle s -> (bas du modele en m, rx, ry), ou None
+    au-dessus d'un trou. Plan moyen du sol sous l'objet, incline au plus de ce que permet le role ; le bas descend ensuite
+    jusqu'au point le plus bas de l'emprise par rapport a ce plan (rien ne flotte). Meme calcul que seatOf (creator.js)."""
+    tilt, seat = PROP_ROLES[role]
+    ang = [i * math.pi / 4 for i in range(8)]
+    rt = max(INCH, 0.7 * r * s * INCH)
+    around = [ground_height(ground, x + rt * math.cos(a), y + rt * math.sin(a)) for a in ang]
+    z0 = ground_height(ground, x, y)
+    if z0 is None or sum(z is None for z in around) > 2:
+        return None
+    around = [z0 if z is None else z for z in around]
+    gx = sum(z * math.cos(a) for z, a in zip(around, ang)) / (4 * rt)
+    gy = sum(z * math.sin(a) for z, a in zip(around, ang)) / (4 * rt)
+    g, lim = math.hypot(gx, gy), math.tan(math.radians(tilt))
+    if g > lim:
+        gx, gy = gx * lim / g, gy * lim / g
+    rf = seat * r * s * INCH
+    low = z0
+    for f in (0.5, 1.0):
+        for a in ang:
+            dx, dy = f * rf * math.cos(a), f * rf * math.sin(a)
+            z = ground_height(ground, x + dx, y + dy)
+            if z is not None:
+                low = min(low, z - gx * dx - gy * dy)
+    n = math.sqrt(gx * gx + gy * gy + 1)
+    nx, ny = -gx / n, -gy / n
+    c, sn = math.cos(yaw), math.sin(yaw)
+    lx, ly = c * nx + sn * ny, -sn * nx + c * ny                   # normale dans le repere de l'objet tourne
+    return low / INCH - PROP_SINK, -math.asin(max(-1.0, min(1.0, ly))), math.atan2(lx, 1 / n)
+
+
 def props_items(kit, props, ground, dims):
-    """Objets semes du brouillon [{t, m, x, y, yaw, s}] -> items de place_library_many, poses sur le sol genere au
-    point le plus bas sous leur emprise (rayon reel du modele : en pente, la base reste enterree) moins PROP_SINK, par
+    """Objets semes du brouillon [{t, m, x, y, yaw, s}] -> items de place_library_many, poses sur le sol genere (prop_seat) par
     leur base (sauf rochers : par leur origine) ; ecartes si l'objet touche la route (prop_conflict) ou un trou de saut.
     Chaque objet peut venir d'un autre theme (p['k'], sinon kit).
     dims(theme) -> {type: [{'r', 'zmin', 'zmax'} (metres) par modele]}. -> (items, nb ecartes)."""
@@ -1391,21 +1487,96 @@ def props_items(kit, props, ground, dims):
         r, zmin, zmax = float(dm.get('r', 2.0)), float(dm.get('zmin', 0.0)), float(dm.get('zmax', 5.0))
         rock = p['t'] in ROCK_KINDS
         fs = foot_share({**d, 'rock': rock})
-        rf = fs * r * s * INCH                                       # emprise du pied (hauteur de pose)
-        ring = [(0.0, 0.0)] + [(f * rf * math.cos(a), f * rf * math.sin(a))
-                                for f in (0.5, 1.0) for a in np.linspace(0, 2 * math.pi, 8, endpoint=False)]
-        zs = [ground_height(ground, p['x'] + dx, p['y'] + dy) for dx, dy in ring]
-        if zs[0] is None or sum(z is None for z in zs) > len(zs) // 3:      # au-dessus d'un trou de saut
+        yaw = float(p.get('yaw', 0.0))
+        seated = prop_seat(ground, p['x'], p['y'], yaw, r, s, prop_role(p['t'], d.get('big')))
+        if seated is None:                                           # au-dessus d'un trou de saut
             dropped += 1
             continue
-        low = min(z for z in zs if z is not None) / INCH - PROP_SINK             # m : bas de l'objet
+        low, rx, ry = seated                                         # m : bas de l'objet
         if prop_conflict(r, zmin, zmax, s, low, p['x'] / INCH, p['y'] / INCH, C, fs):
             dropped += 1
             continue
         z = (low - (0.0 if rock else zmin * s)) * INCH
         out.append({'model': d['models'][m], 'pak': d['pak'], 'pos': [p['x'], p['y'], z],
-                    'yaw': float(p.get('yaw', 0.0)), 'scale': s})
+                    'yaw': yaw, 'rot': [rx, ry], 'scale': s})
     return out, dropped
+
+FADE_DEF = 4        # fondu entre peintures : cote (sommets) de la fenetre autour d'une case. 0 : net ; 2 / 4 / 6 : 8 / 24 / 40 m
+MIX_MAX = 24        # images de fondu au plus par piste (les plus etendues) ; au-dela, la case prend sa peinture dominante
+
+
+def _mix_name(lo, hi, level):
+    return f'Mix{lo}_{hi}_{level}'
+
+
+def _cell_materials(M, mix0, fade=FADE_DEF):
+    """Peinture de chaque case -> (CM, mixes). Sans fondu : la plus presente a ses 4 coins. Avec : les 2 plus presentes dans la
+    fenetre donnent un melange a 25, 50 ou 75 %, code dans CM a partir de mix0 ; mixes = [(peinture lo, peinture hi, quarts de
+    hi)]. Le jeu n'a pas d'alpha progressif au sol : chaque melange est une vraie image (mix_textures), mappee comme le sol,
+    donc sans couture. Meme calcul que refreshTerrainFaces (creator.js)."""
+    fade = int(fade or 0)
+    if fade < 2:
+        corners = np.stack([M[:-1, :-1], M[:-1, 1:], M[1:, :-1], M[1:, 1:]])          # (4, cases y, cases x)
+        present = np.unique(M)
+        return present[np.stack([(corners == m).sum(0) for m in present]).argmax(0)], []
+    r = (fade - 2) // 2
+    win = np.lib.stride_tricks.sliding_window_view(np.pad(M, r, mode='edge'), (fade, fade))
+    CM = win[:, :, 0, 0].copy()
+    tally = {}
+    for b, a in np.argwhere(win.min((2, 3)) != win.max((2, 3))):
+        vals, cnt = np.unique(M[max(0, b - r):b + 2 + r, max(0, a - r):a + 2 + r], return_counts=True)
+        top = np.argsort(-cnt, kind='stable')[:2]                                     # egalite : la plus petite peinture
+        p, q = int(vals[top[0]]), int(vals[top[1]])
+        level = int(np.floor(cnt[top[1]] / (cnt[top[0]] + cnt[top[1]]) * 4 + 0.5))
+        if not level:
+            CM[b, a] = p
+            continue
+        key = (p, q, level) if p < q else (q, p, 4 - level)
+        tally.setdefault(key, []).append((b, a))
+    mixes = sorted(tally, key=lambda k: (-len(tally[k]), k))[:MIX_MAX]
+    code = {k: mix0 + i for i, k in enumerate(mixes)}
+    for k, cells in tally.items():
+        c = code.get(k, k[1] if k[2] > 2 else k[0])
+        for b, a in cells:
+            CM[b, a] = c
+    return CM, mixes
+
+
+_mix_noises = {}
+
+
+def _mix_noise(size):
+    """Bruit carrele uniforme entre 0 et 1 (FFT : il se raccorde sur les bords comme la texture du sol)."""
+    if size not in _mix_noises:
+        f = np.fft.fftfreq(size) * size
+        R = np.hypot(*np.meshgrid(f, f))
+        N = np.fft.ifft2(np.fft.fft2(np.random.RandomState(7).standard_normal((size, size))) / (1 + (R / 5.0) ** 2)).real
+        rank = np.empty(N.size)
+        rank[np.argsort(N, axis=None)] = np.linspace(0, 1, N.size)
+        _mix_noises[size] = rank.reshape(N.shape)
+    return _mix_noises[size]
+
+
+def mix_textures(textures, mixes):
+    """Images de fondu : {'MixL_H_n.png': octets}. textures : {image: octets PNG} ; mixes : info['mixes']. Decoupe irreguliere et
+    douce : 3 niveaux empiles passent de l'un a l'autre sans marche visible sur la grille de 8 m."""
+    from PIL import Image
+    out, cache = {}, {}
+
+    def load(png, size=None):
+        key = (png, size)
+        if key not in cache:
+            im = Image.open(io.BytesIO(textures[png])).convert('RGB')
+            cache[key] = np.asarray(im.resize((size, size), Image.BILINEAR) if size and im.size != (size, size) else im, np.float32)
+        return cache[key]
+    for name, lo, hi, level in mixes:
+        A = load(lo, 1024)
+        k = np.clip((level / 4 - _mix_noise(A.shape[0])) / 0.8 + 0.5, 0, 1)[..., None]
+        buf = io.BytesIO()
+        Image.fromarray((A * (1 - k) + load(hi, A.shape[0]) * k + 0.5).astype(np.uint8)).save(buf, 'PNG')
+        out[name + '.png'] = buf.getvalue()
+    return out
+
 
 def paint_materials(kit='sable'):
     """Matieres a peindre, par indice de peinture : 0..3 = celles du theme ; 4 + rang = celles de TOUS les themes dans

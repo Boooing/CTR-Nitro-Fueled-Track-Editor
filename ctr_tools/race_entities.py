@@ -19,6 +19,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from race_system import same_ns  # noqa: E402
 from spline_edit import SplineEditor  # noqa: E402
 
 TRANSITION = 'CRaceTrackSplineTransitionComponentData'
@@ -36,7 +37,17 @@ class RaceSystemEditor(SplineEditor):
     def __init__(self, data, track):
         super().__init__(data)
         self.track = track
-        self.ns = f'{track}_RaceSystem'
+        # orthographe du fichier lui-meme (T233 « _Racesystem », T231 « _Race_System »), pour ne pas y ajouter un 2e espace de noms
+        ns = f'{track}_RaceSystem'
+        names = {n for _, n in self.igz.ext_names}
+        design = f'{track}_Design'                         # T212, T213, T221... : tout le parcours est dans le _Design
+        self.ns = next((n for n in names if same_ns(n, ns)), design if design in names else ns)
+
+    def _ns_of(self, name):
+        """Fichier d'une spline citee : celui-ci, sauf si elle vit ailleurs (T153, T154, T243 : positions dans le _Design)."""
+        if name in self.by_name:
+            return self.ns
+        return next((ns for n, ns in self.igz.ext_names if n == name), self.ns)
 
     def transitions(self):
         out = {}
@@ -56,7 +67,7 @@ class RaceSystemEditor(SplineEditor):
         comp = self.transitions()[name]
         for key, names in lists.items():
             lst = self.igz.deref(comp + FIELDS[key])
-            self.igz.set_handle_list(lst, [(n, self.ns) for n in names])
+            self.igz.set_handle_list(lst, [(n, self._ns_of(n)) for n in names])
 
     def add_ai_spline(self, new_name, template, points=None, wire=True):
         """Clone l'entite `template` sous `new_name`, avec ses points (monde) eventuellement remplaces.
@@ -72,9 +83,7 @@ class RaceSystemEditor(SplineEditor):
             while len(cur) > len(points):
                 self.remove_point(new_name, len(cur) - 1)
                 cur = self.points(new_name)
-            while len(cur) < len(points):
-                self.insert_point(new_name, len(cur), points[len(cur)])
-                cur = self.points(new_name)
+            self.extend_points(new_name, points[len(cur):])
             for i, p in enumerate(points):
                 self.move_point(new_name, i, p)
         if wire:
@@ -170,18 +179,20 @@ class TTRStatsEditor:
                           key=lambda o: self.igz.u32(o + 0x10))
         h = fnv1a(new_name)
         n = 0
+        pairs = []                                  # racines ajoutees d'un coup : chaque ajout recopie toute la liste (T114 : > 128 Mo)
         for o in sp:
             c = self.igz.clone_object(o)
             struct.pack_into('<I', *self.igz._loc(c + 0x0C), h)
             self.igz.set_string_ref(c + 0x10, new_name)
-            self.igz.add_root(c, f'CRaceTrackSplineStats_{new_name}')
+            pairs.append((c, f'CRaceTrackSplineStats_{new_name}'))
         want = segments if segments is not None else len(segs)
         for i in range(want):
             src = segs[min(i, len(segs) - 1)]
             c = self.igz.clone_object(src)
             struct.pack_into('<Ii', *self.igz._loc(c + 0x0C), h, i)
-            self.igz.add_root(c, f'CRaceTrackSplineSegmentStats_{new_name}_{i}')
+            pairs.append((c, f'CRaceTrackSplineSegmentStats_{new_name}_{i}'))
             n += 1
+        self.igz.add_roots(pairs)
         return n
 
     def resize_segments(self, name, n):
@@ -190,10 +201,12 @@ class TTRStatsEditor:
         if not segs:
             return
         h = fnv1a(name)
+        pairs = []
         for i in range(len(segs), n):
             c = self.igz.clone_object(segs[-1])
             struct.pack_into('<Ii', *self.igz._loc(c + 0x0C), h, i)
-            self.igz.add_root(c, f'CRaceTrackSplineSegmentStats_{name}_{i}')
+            pairs.append((c, f'CRaceTrackSplineSegmentStats_{name}_{i}'))
+        self.igz.add_roots(pairs)
         extra = segs[n:]
         if extra:
             self.igz.remove_roots(extra)

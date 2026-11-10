@@ -37,20 +37,26 @@ TILT_REACH = 40.0          # po : hauteur du sol mesuree a cette distance de par
 TILT_MAX = math.radians(35)  # au-dela : mur ou bord de route sous la mesure, caisse laissee a plat
 
 
-def tilt_euler(height_at, x, y, z):
-    """Euler [rx, ry, 0] qui aligne le haut de la caisse sur la normale du sol en (x, y) ; height_at(x, y, z) ->
-    hauteur du sol ou None. [0, 0, 0] si le sol n'est pas mesurable ou trop raide (mur, bord)."""
+def tilt_euler(height_at, x, y, z, yaw=0.0):
+    """Euler [rx, ry, yaw] qui aligne le haut de la caisse sur la normale du sol en (x, y), caisse tournee de `yaw`
+    (ordre du jeu : X, Y puis le cap ; normale ramenee dans le repere tourne, comme groundTilt de l'editeur) ;
+    height_at(x, y, z) -> hauteur du sol ou None. [0, 0, yaw] si le sol n'est pas mesurable ou trop raide."""
+    yaw = float(yaw or 0.0)
     r = TILT_REACH
     hx = [height_at(x + d, y, z) for d in (-r, r)]
     hy = [height_at(x, y + d, z) for d in (-r, r)]
     if None in hx or None in hy:
-        return [0.0, 0.0, 0.0]
+        return [0.0, 0.0, yaw]
     gx, gy = (hx[1] - hx[0]) / (2 * r), (hy[1] - hy[0]) / (2 * r)
     L = (gx * gx + gy * gy + 1.0) ** 0.5
-    rx, ry = float(np.arcsin(gy / L)), float(np.arctan(-gx))
-    if max(abs(rx), abs(ry)) > TILT_MAX or math.degrees(math.acos(1.0 / L)) < TILT_MIN_DEG:
-        return [0.0, 0.0, 0.0]
-    return [rx, ry, 0.0]
+    if math.degrees(math.acos(1.0 / L)) < TILT_MIN_DEG:
+        return [0.0, 0.0, yaw]
+    c, s = math.cos(yaw), math.sin(yaw)
+    lx, ly = c * gx + s * gy, -s * gx + c * gy           # pente dans le repere de la caisse
+    rx, ry = float(np.arcsin(ly / L)), float(math.atan2(-lx, 1.0))
+    if max(abs(rx), abs(ry)) > TILT_MAX:
+        return [0.0, 0.0, yaw]
+    return [rx, ry, yaw]
 
 
 TILT_MIN_DEG = 3.0         # pente plus faible : caisse laissee a plat (Crash Cove laisse a plat jusqu'a ~5 deg)
@@ -73,7 +79,7 @@ def tilt_outdated(data, height_at, orig_data, tol=0.02, crates_only=False):
         if tr is None:
             continue
         cur = struct.unpack_from('<3f', *z._loc(tr + 0x60))
-        want = tilt_euler(height_at, *c['pos'])
+        want = tilt_euler(height_at, *c['pos'], yaw=cur[2])       # cap garde (rotation choisie dans l'editeur)
         n += any(abs(a - b) > tol for a, b in zip(cur, want))
     return n
 
@@ -266,6 +272,9 @@ def _read_entities(data):
         c = {'name': name, 'kind': kind, 'pos': [round(v, 2) for v in z.vec3(o + 0x20)]}
         if extra_kind(name):
             c['kind'] = extra_kind(name)
+        if not name.startswith(BOOST_PREFIX) and z.deref(o + 0x30) is not None:
+            # cap des caisses (2026-11-07 : tournables dans l'editeur) ; fruit au sol : sans transformation
+            c['yaw'] = round(struct.unpack_from('<3f', *z._loc(z.deref(o + 0x30) + 0x60))[2], 5)
         if name.startswith(BOOST_PREFIX):
             tr, trig = z.deref(o + 0x30), _trigger(df, o)
             c['kind'] = 'boost'
@@ -357,7 +366,9 @@ def write_crates(orig_data, crates, donor=None, extras=None, height_at=None, cra
     ou deplacees (et TNT / Nitro) sont inclinees comme la pente (tilt_euler), sinon a plat. keep_tilt : {(nom, pos)}
     des caisses du jeu jamais deplacees ; les autres caisses gardees sont re-inclinees (base deja enregistree).
     Retourne (IgzFile, rapport, ids ajoutes)."""
-    euler_at = (lambda p: tilt_euler(height_at, *[float(v) for v in p])) if height_at else (lambda p: [0.0, 0.0, 0.0])
+    # cap (yaw) choisi dans l'editeur (2026-11-07), inclinaison de la pente par-dessus
+    euler_at = ((lambda p, yaw=0.0: tilt_euler(height_at, *[float(v) for v in p], yaw=yaw)) if height_at
+                else (lambda p, yaw=0.0: [0.0, 0.0, float(yaw or 0.0)]))
     boosts = [c for c in crates if c['kind'] == 'boost']
     others = [c for c in crates if c['kind'] in EXTRAS]
     crates = [c for c in crates if c['kind'] != 'boost' and c['kind'] not in EXTRAS]
@@ -388,27 +399,29 @@ def write_crates(orig_data, crates, donor=None, extras=None, height_at=None, cra
             used.add(name)
             added.append((name, c))
     # copies : inclinaison de LEUR sol (le modele copie garde sinon celle de sa pente d'origine : Roo's Tubes)
-    eulers = [euler_at(c['pos']) for _, c in added]
+    eulers = [euler_at(c['pos'], c.get('yaw', 0.0)) for _, c in added]
     new_ids = df.duplicate_many([(template[c['kind']], name, [float(v) for v in c['pos']], e, None)
                                  for (name, c), e in zip(added, eulers)])
     tilted = 0
     for nid, (_, c), e in zip(new_ids, added, eulers):
         _set_tilt(df, nid, c['pos'], e, z.u32(template[c['kind']] + 0x38))
-        tilted += any(e)
+        tilted += any(e[:2])
     moved = 0
     for name, c in kept.items():
         is_moved = any(abs(a - b) > 1e-3 for a, b in zip(c['pos'], orig[name]['pos']))
-        if not is_moved and keep_tilt is not None and height_at and (name, tuple(orig[name]['pos'])) not in keep_tilt:
-            # deja posee / deplacee lors d'une sauvegarde precedente : inclinaison suivant le sol actuel
-            e = euler_at(c['pos'])
+        yaw = float(c['yaw']) if c.get('yaw') is not None else float(orig[name].get('yaw', 0.0))
+        turned = abs(yaw - float(orig[name].get('yaw', 0.0))) > 1e-4
+        if not is_moved and (turned or (keep_tilt is not None and height_at and (name, tuple(orig[name]['pos'])) not in keep_tilt)):
+            # deja posee / deplacee lors d'une sauvegarde precedente, ou tournee : inclinaison suivant le sol actuel
+            e = euler_at(c['pos'], yaw)
             _set_tilt(df, by_name[name], c['pos'], e, z.u32(template[orig[name]['kind']] + 0x38))
-            tilted += any(e)
+            tilted += any(e[:2])
         if is_moved:
             # deplacee : inclinaison du sol a sa nouvelle place (Crash Cove crate_question_001, 19 deg a l'origine,
             # remise a plat ailleurs : un coin rentrait dans le sol)
-            e = euler_at(c['pos'])
+            e = euler_at(c['pos'], yaw)
             _set_tilt(df, by_name[name], c['pos'], e, z.u32(template[orig[name]['kind']] + 0x38))
-            tilted += any(e)
+            tilted += any(e[:2])
             moved += 1
     gone = [by_name[n] for n in orig if n not in kept]
     df.delete_many(gone)
@@ -429,7 +442,7 @@ def write_crates(orig_data, crates, donor=None, extras=None, height_at=None, cra
         df._refresh()
         pos = [float(v) for v in c['pos']]
         if z.deref(ent + 0x30) is not None:                     # avec transformation (TNT, Nitro) : pente du sol
-            _set_tilt(df, ent, pos, euler_at(pos), z.u32(ent + 0x38))
+            _set_tilt(df, ent, pos, euler_at(pos, c.get('yaw', 0.0)), z.u32(ent + 0x38))
         else:                                                   # fruit : position seule
             struct.pack_into('<3f', *z._loc(ent + 0x20), *pos)
     for kind in counts:
@@ -479,12 +492,25 @@ def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=
         raise ValueError('trace trop court')
     road = set(ai_gen.road_surfaces(ground, P[::5]))
 
+    # 2026-11-07 : la ligne de parcours est la reference. Les caisses sont posees de part et d'autre du trace, a egale
+    # distance (la largeur de route mesuree ne sert plus qu'a resserrer une rangee trop large : avant, le milieu
+    # mesure de la route decalait parfois toute la rangee) ; point du trace interpole (plus arrondi au point de 1 m)
     def frame(s):
-        i = min(int(s / 100.0), len(P) - 2)
-        a, b = P[max(i - 3, 0)], P[min(i + 3, len(P) - 1)]
+        s = min(max(s, 0.0), length)
+        f = s / 100.0
+        i = min(int(f), len(P) - 2)
+        p = P[i] + (P[i + 1] - P[i]) * (f - i)
+        a, b = P[max(i - 2, 0)], P[min(i + 3, len(P) - 1)]
         t = np.array([b[0] - a[0], b[1] - a[1]])
         t /= np.linalg.norm(t) or 1.0
-        return P[i], np.array([-t[1], t[0]])
+        return p, np.array([-t[1], t[0]])
+
+    def half_width(p, n):
+        # demi-largeur utilisable de chaque cote du trace (le cote le plus etroit) ; mesure ratee -> 0 (sans limite)
+        left = ai_gen.road_width(ground, p, n, p[2], road)
+        right = ai_gen.road_width(ground, p, -n, p[2], road)
+        w = min(left, right)
+        return max(0.0, w - margin) if w > margin * 1.5 else 0.0
 
     def place(p, n, off, lift=LIFT):
         # surface la plus haute sous le trace (la route), pas le niveau le plus proche : un sol enfoui sous la route
@@ -494,34 +520,35 @@ def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=
         if z is None:
             g = ground.at(x, y, p[2])
             z = g[0] if g else None
-        return [round(x, 1), round(y, 1), round(z + lift, 1)] if z is not None else None
+        if z is None:
+            return None
+        yaw = math.atan2(-n[0], n[1])                          # X local dans le sens de la course (n = gauche du trace)
+        return {'pos': [round(x, 1), round(y, 1), round(z + lift, 1)], 'yaw': round(yaw, 5)}
 
     out, narrow, missing = [], 0, 0
     span = length * (1 - skip - (0.04 if closed else 0.0))
     marks = [length * skip + span * (k + 0.5) / max(rows, 1) for k in range(rows)]
     for s in marks:
         p, n = frame(s)
-        left = ai_gen.road_width(ground, p, n, p[2], road)
-        right = ai_gen.road_width(ground, p, -n, p[2], road)
-        center = (left - right) / 2
-        usable = max(0.0, left + right - 2 * margin)
-        gap = spacing if per_row < 2 else min(spacing, usable / (per_row - 1))
+        hw = half_width(p, n)
+        gap = spacing
+        if per_row > 1 and hw:
+            gap = max(spacing * 0.45, min(spacing, 2 * hw / (per_row - 1)))
         if per_row > 1 and gap < spacing - 1:
             narrow += 1
         for i in range(per_row):
-            q = place(p, n, center + (i - (per_row - 1) / 2) * gap)
+            q = place(p, n, (i - (per_row - 1) / 2) * gap)
             if q:
-                out.append({'kind': 'question', 'pos': q})
+                out.append({'kind': 'question', **q})
             else:
                 missing += 1
+    side = lambda p, n, frac: min(spacing, half_width(p, n) or spacing) * frac
     for k in range(fruit):                                     # entre deux rangees, alternativement a gauche / droite
         s = length * skip + span * (k + 1) / (fruit + 1)
         p, n = frame(s)
-        left = ai_gen.road_width(ground, p, n, p[2], road)
-        right = ai_gen.road_width(ground, p, -n, p[2], road)
-        q = place(p, n, (left - right) / 2 + (1 if k % 2 else -1) * (left + right) / 4)
+        q = place(p, n, (1 if k % 2 else -1) * side(p, n, 0.5))
         if q:
-            out.append({'kind': 'fruit', 'pos': q})
+            out.append({'kind': 'fruit', **q})
         else:
             missing += 1
     # caisses explosives : entre les rangees (au tiers), alternativement a gauche / a droite du milieu de la route
@@ -530,11 +557,9 @@ def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=
     for k, kind in enumerate(bombs):
         s = length * skip + span * (k + 0.33) / max(len(bombs), 1)
         p, n = frame(s)
-        left = ai_gen.road_width(ground, p, n, p[2], road)
-        right = ai_gen.road_width(ground, p, -n, p[2], road)
-        q = place(p, n, (left - right) / 2 + (1 if k % 2 else -1) * (left + right) / 5)
+        q = place(p, n, (1 if k % 2 else -1) * side(p, n, 0.4))
         if q:
-            out.append({'kind': kind, 'pos': q})
+            out.append({'kind': kind, **q})
         else:
             missing += 1
     # lignes de fruits : au milieu entre deux rangees (aux deux tiers), sur un cote de la trajectoire
@@ -542,11 +567,9 @@ def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=
         s0 = length * skip + span * (k + 0.66) / max(wumpa_lines, 1)
         for j in range(wumpa_per_line):
             p, n = frame(min(length - 1, s0 + j * wumpa_gap))
-            left = ai_gen.road_width(ground, p, n, p[2], road)
-            right = ai_gen.road_width(ground, p, -n, p[2], road)
-            q = place(p, n, (left - right) / 2 + (-1 if k % 2 else 1) * (left + right) / 6, lift_of('wumpa'))
+            q = place(p, n, (-1 if k % 2 else 1) * side(p, n, 0.33), lift_of('wumpa'))
             if q:
-                out.append({'kind': 'wumpa', 'pos': q})
+                out.append({'kind': 'wumpa', 'pos': q['pos']})          # fruit au sol : sans rotation
             else:
                 missing += 1
     rep = f'{rows} rangee(s) de {per_row} sur {round(length / 39.37)} m'

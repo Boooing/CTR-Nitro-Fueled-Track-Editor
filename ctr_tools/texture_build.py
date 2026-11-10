@@ -164,6 +164,27 @@ def texture_info(data):
     return {'width': w, 'height': h, 'levels': levels, 'bytes_per_block': bpb, 'size': size}
 
 
+def drop_top_level(data):
+    """Texture du jeu reduite de moitie (2048 -> 1024...) sans reencodage : le 1er niveau de detail est retire, les
+    suivants deviennent l'image. Champs changes (compares sur Crash Cove, 2048 / 1024 en BC1 et BC3) : +0x18 largeur,
+    +0x1A hauteur, +0x1E niveaux, +0x38 taille des pixels (u32 bas de la memref). -> octets, ou None (format inconnu,
+    un seul niveau, texture trop petite)."""
+    info = texture_info(data)
+    w, h, levels, bpb = info['width'], info['height'], info['levels'], info['bytes_per_block']
+    if bpb is None or levels < 2 or min(w, h) < 512:
+        return None
+    first = level_size(w, h, bpb)
+    z = IgzFile(data)
+    img = _image(z)
+    if z.u32(img + 0x38) != len(z.data[1]):
+        return None                                   # memref inattendue : on ne touche pas
+    z.data[1] = bytearray(z.data[1][first:])
+    struct.pack_into('<2H', *z._loc(img + 0x18), w // 2, h // 2)
+    struct.pack_into('<H', *z._loc(img + 0x1E), levels - 1)
+    struct.pack_into('<I', *z._loc(img + 0x38), len(z.data[1]))
+    return z.to_bytes()
+
+
 def build_color_texture(template, image_bytes, internal_name):
     """Texture couleur BC1 depuis une image (PNG/JPG...) : clone de `template` (texture BC1 du jeu), image
     redimensionnee a sa taille, mipmaps recalcules. Haut de l'image = premiere ligne (convention DirectX, comme

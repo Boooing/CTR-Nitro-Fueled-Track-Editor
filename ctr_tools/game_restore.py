@@ -106,6 +106,14 @@ def restore_game(archives, progress=None):
     plan = restore_plan(archives)
     report = []
     _close_archives()
+    # 0. ecran titre de « Tester en jeu » encore en place (essai jamais remis) : la sauvegarde de TOC d'update2, s'il y en
+    # a une, ne suffit pas toujours (les ajouts vont dans update3, update2 peut ne pas en avoir)
+    import quick_test
+    if quick_test.PATCH_MARK in pak_tool.read_latest(archives, quick_test.MANAGER, original=False)[0]:
+        quick_test.uninstall(archives)
+        report.append('écran titre d\'origine remis')
+        plan = restore_plan(archives)
+    _close_archives()                                     # la lecture ci-dessus a ouvert update3.pak : Windows refuserait de le supprimer
     # 1. pistes creees : archives supprimees (avec leurs sauvegardes)
     step(0.0, 'pistes créées')
     for t in plan['created']:

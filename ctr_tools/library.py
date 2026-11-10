@@ -19,7 +19,8 @@ from igz import IgzFile
 from model_build import tdep_entries
 
 TRACK_PAK = re.compile(r'^[ta]\d{3}_[a-z0-9_]+\.pak$')
-COMMON_ARCHIVES = pak_tool.UPDATE_ARCHIVES + ('permanent.pak',)
+# permanent_precache : seule archive de C1_Moss03_N, citee par 14 objets de la Creation (C1_CanopyTree, C2_BonusTree...)
+COMMON_ARCHIVES = pak_tool.UPDATE_ARCHIVES + ('permanent.pak', 'permanent_precache.pak')
 # objets de decor seulement (pas les personnages / karts animes, ni les modeles de test)
 INCLUDE = re.compile(r'^models/(levels|props)/', re.I)
 # morceaux de piste (terrain, sections de route, paysage lointain, ombres, collision) : pas des objets a poser

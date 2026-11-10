@@ -131,6 +131,12 @@ def set_teleporter(z, ent, name, arrival, design_ns, src):
     z.add_tdep(TDEP)
 
 
+def set_destination(z, ent, arrival, design_ns):
+    """Arrivee d'un teleporteur existant, transition ou non (Teleporter_02 de T255)."""
+    comp = dict(table_items(z, table_of(z, ent)))[KEY]
+    struct.pack_into('<Q', *z._loc(_params(z, comp) + P_DEST), 0x80000000 | z.ext_index(arrival, design_ns))
+
+
 def set_trigger_events(z, ent, on):
     """Evenements de la zone de declenchement transmis a l'entite (indispensables au script) ou non."""
     trig = dict(table_items(z, table_of(z, ent))).get(TRIGGER_KEY)

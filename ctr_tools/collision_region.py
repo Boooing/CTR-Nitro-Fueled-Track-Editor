@@ -170,6 +170,7 @@ class GroundEditor:
 
     def transform(self, sel, world_matrix):
         """Applique une transformation monde (4x4, pouces) aux primitives selectionnees."""
+        self._prims_gen = getattr(self, '_prims_gen', 0) + 1
         for mi, pi in sel:
             m = self.meshes[mi]
             to_local = mat_inv_rigid_scale(m['to_world'])
@@ -213,17 +214,26 @@ class GroundEditor:
         supprimees (suppression differee) ne comptent pas : apres « Nouvelle map » (sol d'origine retire), les modeles
         importes en surface « auto » heritaient du sol de Crash Cove dessous — sur la mer, 16 « reapparition » : les
         karts traversaient la route de T901 (Boo Lake) des le depart."""
-        vals = collections.Counter()
+        px, py, pz, pv = self._prim_centres()
         cx, cy = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
         rad = max(hi[0] - lo[0], hi[1] - lo[1]) / 2 + 200
-        for mi, pi, vs in self.prims_world():
-            if pi in self.meshes[mi].get('deleted', ()):
-                continue
-            px = sum(v[0] for v in vs) / len(vs)
-            py = sum(v[1] for v in vs) / len(vs)
-            if abs(px - cx) <= rad and abs(py - cy) <= rad and min(v[2] for v in vs) <= hi[2] + 200:
-                vals[self.meshes[mi]['mesh'].prims[pi].value] += 1
+        hit = (np.abs(px - cx) <= rad) & (np.abs(py - cy) <= rad) & (pz <= hi[2] + 200)
+        vals = collections.Counter(pv[hit].tolist())
         return vals.most_common(1)[0][0] if vals else default
+
+    def _prim_centres(self):
+        """(x, y, z mini, surface) des primitives non supprimees, monde : calcule une fois (surface_under etait appele des
+        centaines de fois sur toutes les primitives : 28 s pour T901). Recalcule si des primitives ont change."""
+        key = (getattr(self, '_prims_gen', 0),) + tuple((len(m['mesh'].prims), len(m.get('deleted', ()))) for m in self.meshes)
+        if getattr(self, '_centres_key', None) != key:
+            rows = []
+            for mi, pi, vs in self.prims_world():
+                if pi not in self.meshes[mi].get('deleted', ()):
+                    rows.append((sum(v[0] for v in vs) / len(vs), sum(v[1] for v in vs) / len(vs), min(v[2] for v in vs),
+                                 self.meshes[mi]['mesh'].prims[pi].value))
+            a = np.array(rows, np.float64).reshape(-1, 4)
+            self._centres, self._centres_key = (a[:, 0], a[:, 1], a[:, 2], a[:, 3].astype(int)), key
+        return self._centres
 
     def snapshot(self, sel):
         return {(mi, pi): list(self.meshes[mi]['mesh'].prims[pi].verts) for mi, pi in sel}

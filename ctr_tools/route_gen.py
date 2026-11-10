@@ -963,6 +963,117 @@ def preview_png(raw, lo, cell, pts, air, max_px=900):
             'w': w, 'h': h}
 
 
+MARCH_FAN = (0, 8, -8, 16, -16, 24, -24, 32, -32, 44, -44, 56, -56, 68, -68)    # degres essayes autour de la direction
+MARCH_MIN_STEPS = 40
+MARCH_MAX_GAP = 80 * 39.37      # sauts franchis (comme le second essai de route_layout : T114 a un saut de 50 m)
+MARCH_OVERLAP_DZ = 315.0        # 8 m d'ecart de hauteur au meme endroit vu de dessus : deux passages l'un sur l'autre
+
+
+def _march_3d(q, start_xy, start_z, heading, step=300.0, scan=60.0, max_gap=0.0, max_half=2400.0):
+    """Suivi de la route en 3D, en restant sur son niveau : la vue de dessus (squelette) ne voit qu'un anneau dans une
+    spirale qui monte (T114 importee : 2 tours superposes, 3 niveaux a -63, -8 et +44 m ; tour trouve : 596 m, l'anneau).
+    Chaque pas : point suivant sur le meme niveau dans l'axe (sinon en tournant), recentre entre les bords de la route a ce
+    niveau ; coupure de la route : ligne droite jusqu'a max_gap. q : GroundQuery des triangles de la route.
+    -> {'points': [[x, y, z]], 'air': [bool], 'length': po} si le tour se referme, sinon None."""
+    def level(x, y, z, tol):
+        c = [h for h in q.heights(x, y) if abs(h - z) <= tol]
+        return min(c, key=lambda h: abs(h - z)) if c else None
+
+    def half_width(x, y, z, nx, ny, sign):
+        o, zc = 0.0, z
+        while o < max_half:
+            h = level(x + nx * sign * (o + scan), y + ny * sign * (o + scan), zc, scan * 0.9 + 20)
+            if h is None:
+                break
+            zc, o = h, o + scan
+        return o
+
+    def centred(x, y, z, dx, dy):
+        nx, ny = -dy, dx
+        shift = (half_width(x, y, z, nx, ny, 1) - half_width(x, y, z, nx, ny, -1)) / 2
+        shift = max(-0.6 * step, min(0.6 * step, shift))
+        cx, cy = x + nx * shift, y + ny * shift
+        return cx, cy, level(cx, cy, z, scan + 40) or z
+
+    x, y = float(start_xy[0]), float(start_xy[1])
+    here = q.heights(x, y)
+    if not here:
+        return None
+    z = min(here, key=lambda h: abs(h - start_z)) if start_z is not None else max(here)
+    d0 = np.array([math.cos(heading), math.sin(heading)])
+    d = d0.copy()
+    x, y, z = centred(x, y, z, *d)
+    start = (x, y, z)
+    pts, air = [[x, y, z]], [False]
+    tol = step * 0.75 + 60
+    for _ in range(6000):
+        px, py, pz = pts[-1]
+        hit = None
+        for deg in MARCH_FAN:
+            c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+            r = np.array([d[0] * c - d[1] * s, d[0] * s + d[1] * c])
+            h = level(px + r[0] * step, py + r[1] * step, pz, tol)
+            if h is not None:
+                hit = (px + r[0] * step, py + r[1] * step, h, r)
+                break
+        if hit is None:                                     # coupure : on continue tout droit jusqu'a la reprise
+            # direction : celle des derniers metres (le bord irregulier du bout de route fausse le recentrage)
+            back = next((p for p in pts[max(0, len(pts) - 9):] if p[2] is not None), pts[-1])
+            chord = np.array([px - back[0], py - back[1]])
+            dj = chord / np.linalg.norm(chord) if np.linalg.norm(chord) > step else d
+            for g in np.arange(2 * step, max(max_gap, 0) + step, step):
+                for deg in (0, 6, -6, 12, -12, 20, -20):
+                    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+                    r = np.array([dj[0] * c - dj[1] * s, dj[0] * s + dj[1] * c])
+                    qx, qy = px + r[0] * g, py + r[1] * g
+                    h = level(qx, qy, pz, g * 0.6 + 200)
+                    if h is not None:
+                        n = int(g / step)
+                        for u in range(1, n):
+                            pts.append([px + r[0] * step * u, py + r[1] * step * u, None])
+                            air.append(True)
+                        hit = (qx, qy, h, r)
+                        break
+                if hit is not None:
+                    break
+            if hit is None:
+                return None
+        cx, cy, cz = centred(hit[0], hit[1], hit[2], hit[3][0], hit[3][1])
+        last = pts[-1]
+        v = np.array([cx - last[0], cy - last[1]])
+        nv = float(np.linalg.norm(v))
+        if nv < 1e-6:
+            return None
+        d = 0.5 * d + 0.5 * v / nv
+        d /= np.linalg.norm(d)
+        n = len(pts)
+        if n >= MARCH_MIN_STEPS and math.hypot(cx - start[0], cy - start[1]) < 1.5 * step and abs(cz - start[2]) < tol and d @ d0 > 0.2:
+            P = np.array([[p[0], p[1], p[2] if p[2] is not None else np.nan] for p in pts])
+            xy = _smooth_closed(P[:, :2], 2)
+            ok = ~np.isnan(P[:, 2])
+            z3 = np.interp(np.arange(n), np.nonzero(ok)[0], P[ok, 2])
+            seg = np.linalg.norm(np.diff(np.column_stack([xy, z3]), axis=0, append=[[*xy[0], z3[0]]]), axis=1)
+            return {'points': np.column_stack([xy, z3]).tolist(), 'air': air, 'length': float(seg.sum())}
+        recent = np.array([[p[0], p[1], p[2] if p[2] is not None else 1e12] for p in pts[:max(0, n - 20)]])
+        if len(recent) and ((np.hypot(recent[:, 0] - cx, recent[:, 1] - cy) < 0.7 * step) & (np.abs(recent[:, 2] - cz) < tol)).any():
+            return None                                     # repasse sur son propre trace : demi-tour ou impasse
+        pts.append([cx, cy, cz])
+        air.append(False)
+    return None
+
+
+def _overlaps_itself(points, step=300.0):
+    """Le tour passe-t-il au-dessus de lui-meme (meme endroit vu de dessus, hauteurs nettement differentes) ?"""
+    P = np.asarray(points, np.float64)
+    n = len(P)
+    for i in range(0, n, 2):
+        near = np.hypot(P[:, 0] - P[i, 0], P[:, 1] - P[i, 1]) < 2 * step
+        far = np.minimum(np.abs(np.arange(n) - i), n - np.abs(np.arange(n) - i)) > 20
+        if (near & far & (np.abs(P[:, 2] - P[i, 2]) > MARCH_OVERLAP_DZ)).any():
+            return True
+    return False
+
+
 def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start_z=None, max_gap=0.0, min_z=None,
               guide=None):
     """Boucle centrale de la route (voir l'en-tete du module). `ground` : GroundQuery pour poser le trace sur
@@ -1001,6 +1112,9 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
         if len(paths[0]) < 30:
             raise ValueError('boucle trop courte : le circuit est-il bien ferme ?')
         return paths
+    from ai_gen import GroundQuery
+    road_q = GroundQuery(tris, np.zeros(len(tris), int))
+    marched = None
     if guide is not None:                                # trace dessine sur l'apercu de dessus
         progress.step('trace dessine', 0.45)
         P, total = _resample_closed(_guide_path(guide, raw, dmap, lo, cell, start_xy, heading), step)
@@ -1026,6 +1140,12 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
             if best is None or total > best[1]:
                 best = (P, total)
         P, total = best
+        # route qui passe au-dessus d'elle-meme (spirale) : suivi 3D, garde seulement s'il referme un tour nettement plus long
+        progress.step('suivi de la route en 3D', 0.88)
+        m = _march_3d(road_q, start_xy, start_z, heading, step, cell, max(max_gap, MARCH_MAX_GAP))
+        if m is not None and m['length'] > 1.05 * total and _overlaps_itself(m['points'], step):
+            marched = m
+            P, total = np.array(m['points'])[:, :2], m['length']
     # hauteur : on suit la route en continuite depuis le depart (niveau le plus proche du point precedent),
     # pour ne pas monter sur une passerelle ou une arche qui passe au-dessus
     def zmap_at(x, y):
@@ -1036,8 +1156,6 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
     # sous la route (sable de Mario Circuit 3, 1,1 m dessous : trace, zones et caisses dessous). Parmi les niveaux de
     # route, le plus proche du point precedent, pas le plus haut : dans un tuyau (Sewer Speedway) la voute est de la
     # meme surface que le fond, le trace passait 15 a 38 m au-dessus du sol, sur la voute.
-    from ai_gen import GroundQuery
-    road_q = GroundQuery(tris, np.zeros(len(tris), int))
     z_prev = start_z if start_z is not None else (zmap_at(*P[0]) if zmap_at(*P[0]) is not None else 0.0)
     near_bridge = _dilate(_dilate(bridge)) & ~raw if bridge.any() else bridge
     if guide is not None:                                # dessin : tout ce qui n'est pas sur la route = au-dessus d'un trou
@@ -1045,11 +1163,13 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
     on_bridge = lambda x, y: bool(near_bridge[min(max(int((y - lo[1]) / cell), 0), raw.shape[0] - 1),
                                               min(max(int((x - lo[0]) / cell), 0), raw.shape[1] - 1)])
     pts, air, guess = [], [], set()                    # guess : hauteur reprise du point precedent (rien trouve)
-    for x, y in P:
-        if on_bridge(x, y):                            # au-dessus du trou : hauteur interpolee ensuite
+    for i, (x, y) in enumerate(P):
+        if (marched['air'][i] if marched else on_bridge(x, y)):   # au-dessus du trou : hauteur interpolee ensuite
             pts.append([float(x), float(y), None])
             air.append(True)
             continue
+        if marched:                                    # suivi 3D : son niveau, pas celui du dessus ou du dessous
+            z_prev = marched['points'][i][2]
         z = None
         # sinon le niveau de route le plus proche, a n'importe quelle hauteur : apres une chute de plus de 10 m (Android
         # Alley), la hauteur gardee restait 40 m au-dessus (ou sous) la route sur tout le reste du tour
@@ -1081,9 +1201,11 @@ def road_loop(tris, start_xy, heading, ground=None, step=300.0, cell=CELL, start
             widths = [w if w > 0 else widths[min(known, key=lambda k: min(abs(k - i), len(pts) - abs(k - i)))]
                       for i, w in enumerate(widths)]
         n_jumps = sum(1 for i in range(len(air)) if air[i] and not air[i - 1])
+    if marched:
+        n_jumps = sum(1 for i in range(len(air)) if air[i] and not air[i - 1])
     moved = _avoid_obstacles(pts, air, widths, ground) if ground is not None else 0
     return {'points': pts, 'half_widths': widths, 'length': float(total), 'air': air, 'jumps': n_jumps,
-            'obstacles': moved, 'preview': preview_png(raw, lo, cell, pts, air)}
+            'obstacles': moved, 'marched': bool(marched), 'preview': preview_png(raw, lo, cell, pts, air)}
 
 
 def _avoid_obstacles(pts, air, half_widths, ground):

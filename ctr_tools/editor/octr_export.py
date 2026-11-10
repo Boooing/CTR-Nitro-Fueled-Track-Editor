@@ -68,8 +68,18 @@ def _plan(track):
     """{chemin d'archive: {nom logique: octets}} de l'installation, avec les retouches faites a l'ecriture (temps,
     types de sol ajoutes) ; le menu des pistes creees n'y est pas (extra_files : etat du jeu, pas cette piste)."""
     S = _S()
+    try:                                                  # comme l'installation : zones de chute hors de la course
+        checked = S.check_race_zones(track)
+    except Exception as e:  # noqa: BLE001 - la verification ne doit pas empecher l'export
+        checked = [f'vérification de la course impossible : {e}']
     plan = S.install_plan(track)
+    # meme plafond de memoire qu'a l'installation (2026-11-07 : T901 exportee a 843 Mo plantait aussi dans OCTR,
+    # « OOM [1]{76,GlobalChunk} » : le jeu charge toute l'archive de la piste) ; textures d'origine reduites ajoutees
+    _LAST_SHRINK[track] = checked + S.slim_ai_lanes(plan, track) + S.shrink_textures(plan, track)
     return {arc: S._apply_custom_surfaces(S._apply_times(dict(reps))) for arc, reps in plan.items() if reps}
+
+
+_LAST_SHRINK = {}                                         # piste -> rapport de reduction des textures (build)
 
 
 def _complete_pak(arc_path, reps, out_path):
@@ -176,7 +186,7 @@ def _add_track(item, work, used, frac):
     if not plan and not is_created:
         raise RuntimeError(f'{track} : rien a exporter, enregistre la piste d\'abord')
     own = {os.path.normcase(a) for a in S.own_archives(track)}
-    paks, report = [], []
+    paks, report = [], list(_LAST_SHRINK.pop(track, []))
     if mode == 'replace' or is_created:
         # archive de la piste toujours ; survols seulement s'ils ont ete modifies (piste creee : aussi, ils ne sont
         # dans le jeu de personne d'autre)

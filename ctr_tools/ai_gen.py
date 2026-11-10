@@ -245,8 +245,20 @@ def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, 
     # largeurs mesurees jusqu'a ~15 m du vide : faussees par le bout coupe de la route (mesurees le long du bord) ->
     # reprises plus loin aussi
     near = max(1, int(round(600 / sample)))
-    wair = [any(air[max(0, i - near):i + near + 1]) for i in range(len(air))]
+    # coupure de la route couverte par un autre objet (bloc de la ligne de depart de T114) : du sol, donc pas un saut, mais
+    # une largeur de route nulle mesuree la, et toutes les voies se resserraient au centre (26 -> 3,8 m sur la ligne)
+    no_road = [a or (road_ground is not None and road_ground.at(p[0], p[1], p[2], window=300.0) is None)
+               for a, p in zip(air, samples)]
+    wair = [any(no_road[max(0, i - near):i + near + 1]) for i in range(len(no_road))]
     lefts, rights = _fill_air(lefts, wair), _fill_air(rights, wair)
+    # ...largeur reprise des deux cotes, sans depasser le sol reel a cet endroit (pont etroit d'un autre objet : Mystery Caves)
+    covered = [w and not any(air[max(0, i - near):i + near + 1]) for i, w in enumerate(wair)]
+    if road_ground is not None and any(covered):
+        solid = set(int(v) for v in np.unique(ground.v))
+        for i, p in enumerate(samples):
+            if covered[i]:
+                lefts[i] = min(lefts[i], road_width(ground, p, normals[i], zs[i], solid))
+                rights[i] = min(rights[i], road_width(ground, p, -normals[i], zs[i], solid))
     k = max(1, int(round(2000 / sample)))               # largeurs lissees sur ~50 m
     lefts, rights = _smooth(lefts, k), _smooth(rights, k)
     obs = Obstacles(ground)
@@ -286,6 +298,8 @@ def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, 
             hi.append(left)
             lo.append(-right)
         hi, lo = _fill_air(hi, wair), _fill_air(lo, wair)
+        hi = [min(h, max(0.0, lefts[i] - CLEARANCE)) if covered[i] else h for i, h in enumerate(hi)]
+        lo = [max(l, -max(0.0, rights[i] - CLEARANCE)) if covered[i] else l for i, l in enumerate(lo)]
         # decalage final : voulu, lisse, dans les bornes, et dont la variation est limitee (pas de zigzag :
         # au plus ~0,35 de deplacement lateral par unite d'avance, bornes elles-memes « erodees » a cette pente)
         slope = [0.35 * d for d in ds]

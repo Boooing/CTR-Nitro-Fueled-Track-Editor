@@ -101,6 +101,36 @@ def before(points, s, count=3):
     return order[:count]
 
 
+EDGE_STEP = 6 * M                  # ecart de hauteur maximal de la route entre deux mesures a 2 m (bord le plus raide de la Creation)
+ROAD_CLEAR = 4 * M                 # une zone de chute reste au moins a ca sous la route
+ROAD_GRID = 2 * M                  # pas de recherche de la route dans l'emprise d'une zone
+
+
+def _road_near(road, x, y, z, reach):
+    """Hauteur de la route en (x, y) la plus proche de z, a moins de `reach` ; None si pas de route a ce niveau."""
+    near = [h for h in road.heights(x, y) if abs(h - z) <= reach]
+    return min(near, key=lambda h: abs(h - z)) if near else None
+
+
+def road_clear_top(lo, hi, ztop, depth, road, clear=ROAD_CLEAR):
+    """Hauteur du dessus d'une zone (emprise lo-hi, profondeur depth) abaissee sous toute route qu'elle toucherait.
+    Une boite alignee sur les axes deborde au-dessus de la route dans un virage, et le bord bas d'un virage incline
+    est plus bas que le milieu de la route (2026-11-08 : 13 zones sur 86 touchaient la route de T901). Une route au moins
+    `clear` au-dessus de la zone ne la touche pas (pont). road None (piste d'origine) : inchange."""
+    if road is None:
+        return ztop
+    levels = []
+    for x in np.arange(lo[0], hi[0] + ROAD_GRID, ROAD_GRID):
+        for y in np.arange(lo[1], hi[1] + ROAD_GRID, ROAD_GRID):
+            levels += road.heights(min(x, hi[0]), min(y, hi[1]))
+    for _ in range(8):                                 # chaque descente peut atteindre un niveau de route plus bas
+        hit = [h for h in levels if ztop - depth - clear < h < ztop + clear]
+        if not hit:
+            break
+        ztop = min(hit) - clear
+    return ztop
+
+
 def find_fall_zones(path, ground, road=None, step=5 * M, reach=40 * M, drop=6 * M, max_half=60 * M, killz=None,
                     zone_len=40 * M):
     """Zones ou un kart qui quitte la route tombe : a cote de la route (de son bord jusqu'a `reach`), pas de sol a
@@ -123,15 +153,20 @@ def find_fall_zones(path, ground, road=None, step=5 * M, reach=40 * M, drop=6 * 
         t = t / (np.linalg.norm(t) or 1.0)
         nrm = np.array([-t[1], t[0]])
         for side in (-1, 1):
-            # bord de la route : premier point sans route (route seule connue) ou 6 m (a defaut)
-            edge = 6 * M
+            # bord de la route : premier point sans route (route seule connue) ou 6 m (a defaut). La surface est suivie
+            # depuis le milieu : sur une route inclinee, le bord est jusqu'a 15 m plus haut ou 10 m plus bas que le milieu
+            edge, zedge = 6 * M, p[2]
             if road is not None:
                 edge = max_half
+                zedge = _road_near(road, p[0], p[1], p[2], 3 * M)
+                zedge = p[2] if zedge is None else zedge
                 for d in np.arange(2 * M, max_half, 2 * M):
                     x, y = p[:2] + side * d * nrm
-                    if road.top(x, y, p[2] + 300) is None:
+                    h = _road_near(road, x, y, zedge, EDGE_STEP)
+                    if h is None:
                         edge = d
                         break
+                    zedge = h
             for d in np.arange(edge + 2 * M, edge + reach, 4 * M):
                 x, y = p[:2] + side * d * nrm
                 # un autre morceau du parcours plus pres : ce n'est plus le bord de celui-ci
@@ -139,16 +174,19 @@ def find_fall_zones(path, ground, road=None, step=5 * M, reach=40 * M, drop=6 * 
                     break
                 if road is not None and road.heights(x, y):
                     continue                           # route (plus haut ou plus bas) : pas un trou
-                h = ground.top(x, y, p[2] + 300)
+                h = ground.top(x, y, zedge + 300)
                 z = h[0] if isinstance(h, (tuple, list)) else h
-                if z is None or z < p[2] - drop:
-                    holes.append((j, side, x, y, p[2]))
+                if z is None or z < zedge - drop:              # compare au bord (virage incline : sol bas mais pas un vide)
+                    holes.append((j, side, x, y, zedge))
     zones = []
 
     def add(run, side):
         A = np.array([[r[2], r[3]] for r in run])
         ztop = min(r[4] for r in run) - 4 * M
         lo, hi = A.min(0) - 3 * M, A.max(0) + 3 * M
+        ztop = road_clear_top(lo, hi, ztop, 20 * M, road)
+        if killz is not None and ztop - 4 * M < killz:
+            return                                     # plus de place au-dessus du plancher : le plancher suffit
         depth = 20 * M if killz is None else min(20 * M, max(4 * M, ztop - killz))
         box = {'center': [float((lo[0] + hi[0]) / 2), float((lo[1] + hi[1]) / 2), float(ztop - depth / 2)],
                'dims': [float(hi[0] - lo[0]), float(hi[1] - lo[1]), float(depth)],

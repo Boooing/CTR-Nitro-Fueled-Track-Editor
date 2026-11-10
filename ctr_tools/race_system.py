@@ -37,6 +37,11 @@ def catmull_rom(points, closed, n=SAMPLES_PER_SEGMENT):
     return out
 
 
+def same_ns(a, b):
+    """Meme fichier de course malgre l'orthographe : _RaceSystem, _Racesystem (T233), _Race_System (T231, T243)."""
+    return a.lower().replace('_', '') == b.lower().replace('_', '')
+
+
 class RaceSystem:
     def __init__(self, path, file_ns=None):
         """path : chemin ou octets ; file_ns : nom du fichier sans extension (espace de noms des handles)."""
@@ -45,7 +50,9 @@ class RaceSystem:
         self.names = {o: n for n, o in self.igz.root_objects()}
         self.by_name = {n: o for o, n in self.names.items() if n}
         # entites de la liste racine seulement (une entite supprimee reste dans le fichier, hors racine)
-        self.entities = [o for _, o in self.igz.root_objects() if self.igz.objects.get(o) == 'CEntity']
+        # CGameEntity : splines de course de T151 et T212 (pas celles d'un objet anime, comme GPI_Magnet_spline de T241)
+        self.entities = [o for _, o in self.igz.root_objects() if self.igz.objects.get(o) == 'CEntity'
+                         or (self.igz.objects.get(o) == 'CGameEntity' and 'CRaceTrackSplineComponentData' in self.components(o)[1])]
 
     # -- helpers ---------------------------------------------------------------------------
     def obj(self, off):
@@ -59,7 +66,7 @@ class RaceSystem:
         if not isinstance(h, dict) or '@handle' not in h:
             return None
         ns, _, name = h['@handle'].partition('::')
-        return name if ns == self.file_ns else h['@handle']
+        return name if same_ns(ns, self.file_ns) else h['@handle']
 
     def handle_list(self, v):
         off = self.ref(v)

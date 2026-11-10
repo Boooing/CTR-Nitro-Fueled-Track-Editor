@@ -156,10 +156,17 @@ def _qt_window(url):
     # choix de dossier demande par le serveur (autre fil) : execute dans le fil de la fenetre, le serveur attend
     class Dialogs(QObject):
         ask = Signal(str, str, object)
+        quit = Signal()
 
         def __init__(self):
             super().__init__()
             self.ask.connect(self._ask, Qt.ConnectionType.QueuedConnection)
+            self.quit.connect(self._quit, Qt.ConnectionType.QueuedConnection)
+            self.on_quit = None
+
+        def _quit(self):
+            if self.on_quit:
+                self.on_quit()
 
         def _ask(self, title, initial, box):
             try:
@@ -208,6 +215,8 @@ def _qt_window(url):
         closing['ok'] = True
         win.close()
     page.windowCloseRequested.connect(close_ok)
+    dialogs.on_quit = close_ok                         # mise a jour : fermeture demandee par le serveur (autre fil)
+    server.APP_QUIT = dialogs.quit.emit
     base_close = win.closeEvent
 
     def close_event(e):
@@ -223,6 +232,7 @@ def _qt_window(url):
     win.show()
     app.exec()
     server.FOLDER_DIALOG = None
+    server.APP_QUIT = None
 
 
 def _browser_fallback(url):
@@ -290,11 +300,17 @@ def _tk_folder_dialog(root):
 
 
 def main():
-    if FROZEN:
-        _log_to_file()
     sys.path.insert(0, HERE)
     sys.path.insert(0, os.path.dirname(HERE))
+    if FROZEN:
+        _log_to_file()
     import server
+    import updater
+    global TITLE
+    TITLE = f'CTRNFTE {updater.VERSION}'
+    if FROZEN:                                         # mise a jour possible seulement pour l'application empaquetee
+        updater.APP_DIR = APP_DIR
+        updater.cleanup(APP_DIR)
     # dossier des archives : memorise, sinon demande par la page a l'ouverture (/api/archives, comme le menu ⋯)
     server.configure(out_dir=os.path.join(BASE, 'out', 'editor'), project_dir=BASE, config=CONFIG)
     archives = server.load_config().get('archives')

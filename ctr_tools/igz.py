@@ -200,10 +200,19 @@ class IgzFile:
         return (sec << 27) | off
 
     def add_string(self, s):
-        if s in self.strings:
-            return self.strings.index(s)
-        self.strings.append(s)
-        return len(self.strings) - 1
+        """Index de la chaine, ajoutee si absente (table d'index : list.index prenait 70 % d'un enregistrement de 68 voies)."""
+        idx = self.__dict__.get('_string_index')
+        if idx is None or self.__dict__.get('_string_count') != len(self.strings):
+            idx = self._string_index = {}
+            for i, v in enumerate(self.strings):
+                idx.setdefault(v, i)
+            self._string_count = len(self.strings)
+        i = idx.get(s)
+        if i is None:
+            i = idx[s] = len(self.strings)
+            self.strings.append(s)
+            self._string_count += 1
+        return i
 
     def type_index(self, type_name):
         """Index TMET du type, en l'ajoutant (taille issue du schema) s'il est absent."""
@@ -232,8 +241,21 @@ class IgzFile:
         if on and kind not in self.fixups:
             self.ensure_fixup(kind)
         s = self.offset_sets.setdefault(kind, set())
-        (s.add if on else s.discard)(off)
-        self._sorted_cache = None
+        lst = (getattr(self, '_sorted_cache', None) or {}).get(kind)
+        if on and off not in s:
+            s.add(off)
+            if lst is not None:                          # liste triee tenue a jour : la retrier a chaque marque prenait 23 s sur T901
+                bisect.insort(lst, off)
+        elif not on and off in s:
+            s.discard(off)
+            if lst is not None:
+                del lst[bisect.bisect_left(lst, off)]
+
+    def _copy_marks(self, start, size, dest):
+        """Marques (pointeurs, chaines...) de [start, start + size[ recopiees a dest (bloc neuf)."""
+        for kind, s in self.offset_sets.items():
+            for x in self._marks_in(kind, start, size):
+                self._mark(kind, dest + x - start)
 
     def set_ptr(self, off, target):
         """Ecrit un pointeur (offset encode) ou None, et tient ROFS a jour."""
@@ -261,10 +283,7 @@ class IgzFile:
         sbuf, so = self._loc(src)
         dbuf, do = self._loc(off)
         dbuf[do:do + size] = sbuf[so:so + size]
-        for kind, s in self.offset_sets.items():
-            for rel in [o - src for o in self._marks_in(kind, src, size)]:
-                s.add(off + rel)
-        self._sorted_cache = None
+        self._copy_marks(src, size, off)
         self.objects[off] = t
         return off
 
@@ -466,10 +485,7 @@ class IgzFile:
             sb, so = self._loc(m)
             db, do = self._loc(new)
             db[do:do + s] = sb[so:so + s]
-            for kind, st in self.offset_sets.items():
-                for rel in [x - m for x in self._marks_in(kind, m, s)]:
-                    st.add(new + rel)
-            self._sorted_cache = None
+            self._copy_marks(m, s, new)
             mmap[m] = new
         # re-cablage des pointeurs dans toutes les copies
         spans = [(n, self.size_of(self.objects[n])) for n in omap.values()] + \
@@ -707,6 +723,27 @@ class IgzFile:
                 self.fixups[magic] = (cnt, struct.pack('<I', remap(cur)) + body[4:])
         self._sorted_cache = None
         return len(old) - len(buf)
+
+    def fix_refcounts(self):
+        """Compteur de references de chaque objet (u32 a +0x08) rendu egal au nombre de pointeurs (ROFS) qui le visent.
+        Regle verifiee sur les fichiers de CARTE du jeu (13 000 objets) ; FAUSSE ailleurs (scripts vsc : compteurs plus bas que
+        les pointeurs). A n'appeler que sur maps/*.igz (server._fix_refcounts) : appliquee a tout fichier reecrit, elle faisait
+        planter toute course lancee par « Tester en jeu » (ecran titre de test, 2026-11-08). Ajouter ou retirer des entites change les
+        pointeurs vers les objets partages sans toucher leur compteur ; trop haut comme trop bas, le jeu plante au
+        dechargement du niveau SUIVANT (2026-11-08, « Fault ... guest offset 0x14a94e9 », igStreamingChunkManager : essais
+        OCTR, 5 caisses retirees sans copie -> plantage, compteur 18 pour 13). Objet sans pointeur (listes racine, objets
+        sortis de la liste racine) : laisse tel quel. -> nombre d'objets corriges."""
+        refs = {}
+        for m in self.offset_sets.get('ROFS', ()):
+            t = self.deref(m)
+            if t in self.objects:
+                refs[t] = refs.get(t, 0) + 1
+        n = 0
+        for o, c in refs.items():
+            if self.u32(o + 8) != c:
+                struct.pack_into('<I', *self._loc(o + 8), c)
+                n += 1
+        return n
 
     def to_bytes(self):
         """Reconstruit le fichier : fixups (listes compressees re-encodees) + sections de donnees."""

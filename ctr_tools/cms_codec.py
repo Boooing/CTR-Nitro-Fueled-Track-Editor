@@ -137,13 +137,39 @@ def _union(boxes):
     return ([min(b[0][k] for b in boxes) for k in range(3)], [max(b[1][k] for b in boxes) for k in range(3)])
 
 
-def _split(items, box_of):
-    """Coupe une liste en deux selon l'axe le plus long des centres."""
+def _split(items, box_of, h=None):
+    """Coupe une liste en deux selon l'axe le plus long des centres (h : taille de la 1re partie, defaut moitie)."""
     cs = [[(b[0][k] + b[1][k]) / 2 for k in range(3)] for b in map(box_of, items)]
     ax = max(range(3), key=lambda k: max(c[k] for c in cs) - min(c[k] for c in cs))
     order = sorted(range(len(items)), key=lambda j: cs[j][ax])
-    h = len(items) // 2
+    if h is None:
+        h = len(items) // 2
     return [items[j] for j in order[:h]], [items[j] for j in order[h:]]
+
+
+def _section_cut(n, cap=MAX_PRIMS):
+    """Coupe d'un groupe trop grand en sections pleines (2026-11-07) : la 1re partie = un multiple de `cap` proche
+    de la moitie, au lieu de la moitie exacte (sections remplies a ~75 % en moyenne : 32 791 sections sur une carte
+    de ~2,9 M primitives, au-dela des 32 767 du format ; pleines, ~25 % de sections en moins)."""
+    k = -(-n // cap)                             # nombre minimal de sections
+    return (k // 2) * cap if k >= 2 else n // 2
+
+
+def _sections(prims, pkeys, box_of_prim, cap, full=False):
+    """Decoupe spatiale jusqu'a `cap` primitives et MAX_VERTS sommets par section. full : sections pleines (moins
+    nombreuses mais plus etendues, donc sommets compresses un peu moins precis : ~2,2 cm au lieu de ~1,2 sur la route)."""
+    groups, stack = [], [list(range(len(prims)))]
+    while stack:
+        g = stack.pop()
+        nverts = len({k for i in g for k in pkeys[i]})
+        gb = _union([box_of_prim(i) for i in g])
+        small = all(gb[1][k] - gb[0][k] <= MAX_EXTENT[k] for k in range(3))
+        if len(g) <= cap and nverts <= MAX_VERTS and (small or len(g) == 1):
+            groups.append(g)
+        else:
+            a, b = _split(g, box_of_prim, _section_cut(len(g), cap) if full and len(g) > cap else None)
+            stack += [b, a]
+    return groups
 
 
 def _build_tree(leaves, box_of, root_box, node_size, encode_leaf, encode_internal):
@@ -176,6 +202,26 @@ def _quantize(v, lo, ext, maxq):
                  for k in range(3))
 
 
+def _shared_priority(prims, pkeys, ext):
+    """{sommet: (0 si une primitive plate l'utilise, sinon 1 ; plus petite arete)} : plus c'est petit, plus une fissure
+    s'y verrait sous les roues. Le haut est l'axe le moins etendu du maillage (une piste est plus large que haute)."""
+    up = min(range(3), key=lambda k: ext[k])
+    score = {}
+    for p, keys in zip(prims, pkeys):
+        a, b, c = p.verts[:3]
+        u = [b[k] - a[k] for k in range(3)]
+        w = [c[k] - a[k] for k in range(3)]
+        n = (u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0])
+        flat = abs(n[up]) >= 0.7 * (math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) or 1.0)
+        v = p.verts
+        edge = max(math.dist(v[i], v[(i + 1) % len(v)]) for i in range(len(v)))
+        s = (0 if flat else 1, round(edge, 2))
+        for k in keys:
+            if k not in score or s < score[k]:
+                score[k] = s
+    return score
+
+
 def encode_mesh(mesh):
     """Encode un Mesh -> dict de tableaux binaires + valeurs scalaires (voir write_mesh)."""
     prims = mesh.prims
@@ -190,17 +236,13 @@ def encode_mesh(mesh):
     def vkey(v):
         return (round(v[0], 4), round(v[1], 4), round(v[2], 4))
     pkeys = [[vkey(v) for v in p.verts] for p in prims]
-    groups, stack = [], [list(range(len(prims)))]
-    while stack:
-        g = stack.pop()
-        nverts = len({k for i in g for k in pkeys[i]})
-        gb = _union([box_of_prim(i) for i in g])
-        small = all(gb[1][k] - gb[0][k] <= MAX_EXTENT[k] for k in range(3))
-        if len(g) <= MAX_PRIMS and nverts <= MAX_VERTS and (small or len(g) == 1):
-            groups.append(g)
-        else:
-            a, b = _split(g, box_of_prim)
-            stack += [b, a]
+    groups = _sections(prims, pkeys, box_of_prim, MAX_PRIMS)
+    # carte enorme (2026-11-07, T901 : 32 791 sections) : sections pleines, puis de 127 primitives (maximum des cles)
+    for cap in (MAX_PRIMS, 127):
+        if len(groups) <= 0x7FFF:
+            break
+        progress.step(f'encodage de la collision : {len(groups)} sections, nouveau découpage plus serré')
+        groups = _sections(prims, pkeys, box_of_prim, cap, full=True)
     # 2) sommets partages = utilises par plusieurs sections (evite les fissures entre sections)
     users = {}
     for si, g in enumerate(groups):
@@ -213,8 +255,14 @@ def encode_mesh(mesh):
     all_shared = ALL_SHARED and len(users) <= 0xFFFF
     shared_keys = sorted(k for k, s in users.items() if all_shared or len(s) > 1)
     if len(shared_keys) > 0xFFFF:
-        raise ValueError(f'collision trop detaillee : {len(shared_keys)} sommets communs a plusieurs sections '
-                         f'(65 535 au plus) — retirer la collision du decor qui n\'est pas roulable')
+        # piste longue : encore trop de sommets communs -> les 65 535 ou une fissure compterait le plus restent partages
+        # (surfaces plates a maille fine : la route), les autres sont compresses dans chacune de leurs sections : quelques
+        # cm d'ecart possibles au raccord de deux sections de sol ou de mur, sans detail perdu
+        score = _shared_priority(prims, pkeys, ext)
+        shared_keys = sorted(sorted(shared_keys, key=lambda k: (score[k], k))[:0xFFFF])
+    if len(groups) > 0x7FFF:
+        raise ValueError(f'collision trop grande : {len(groups)} sections, le format en autorise 32 767 '
+                         f'(environ 3,9 millions de triangles)')
     shared_index = {k: n for n, k in enumerate(shared_keys)}
     shared_pos = {}
     for g in groups:
