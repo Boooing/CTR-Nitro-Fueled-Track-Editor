@@ -9,6 +9,87 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 > This folder holds the editor only. **CTR Track Installer**, the separate app for players, is not part of it.
 
 ---
+## What's new in v0.5
+
+
+### Automatic updates
+- The editor checks GitHub at launch and offers the new version; it replaces itself and restarts. Your saves, settings and FFmpeg stay in place. v0.4 has no updater: install v0.5 by hand once.
+
+### A clearer editor
+- New look: line icons, a vertical tool bar on the 3D view, mouse hints in the status bar, tabs in work order (Create, Edit, Track / category).
+- Scene objects panel (replaces Search): every object of the map by category (scenery by model, invisible walls, lights, crates, boosters, fall zones), with 3D thumbnails, select, show / hide and details.
+- The right-hand inspector is laid out in blocks (Position, Tool, Actions...) for scenery, crates, boosters, splines, grid, finish line, lights.
+- Colorize an object (Edit › select › *Colorize…*, or right-click): tint that keeps the texture's details, or flat paint, with intensity and live preview; parts of the object and "all identical objects" can be chosen. *(not tried in game yet)*
+- Faster editing on big maps: adding objects, colouring, changing a ground type... no longer rebuilds the whole collision each time (about 2 minutes on a big map). It is rebuilt once, on Save (orange dot on the button), and always before installing or checking.
+
+### Create tab
+- New panel in blocks, Scenery in two tabs (*Automatic* / *By hand*).
+- Smarter automatic scenery: styles (balanced, nature, clear, wild, built), amount per family, objects borrowed from other themes when the ground has no matching object, corners kept clear. *(not tried in game yet)*
+- Bigger height range (road from -200 m to +300 m), road banking up to 30°, slopes with or without embankment per section, embankment width, smooth blending between ground paints, tilted objects that sit on the slope, "Place the kart" to choose the start. *(partly tried in game)*
+- Parts of the map far from the road can be trimmed at generation (lighter map).
+- "Generate the track" now offers a new track by default, so nobody overwrites Crash Cove by mistake.
+
+### Race
+- Rotatable crates, automatic crate rows centred on the race line.
+- Reverse the race direction (or one spline). *(not tried in game yet)*
+- Better route detection on stacked roads (spirals, 3 levels) and jumps up to 80 m; AI lanes that keep their width where road pieces overlap. *(not tried in game yet)*
+- Falls and respawns work on tracks whose respawn points are in the RaceSystem (Star Circuit, Slide Coliseum, Turbo Track...). *(not tried in game yet)*
+- More game tracks can be edited (Thunder Struck, Out of Time, Electron Avenue and the tracks whose race line is in the _Design).
+
+### Game and install
+- Restore the game's archives: this track or the whole game; put back a track removed by a full restore.
+- Big maps: track archive capped to what the game can load (textures reduced if needed), "Game memory" line in Check, lighter collision for far scenery.
+- The ground type Turbo is removed (it had no effect in game; use boosters).
+
+### Fixes
+- Infinite loading when an object with several textures had a custom texture on a part other than the first one (e.g. a colourised rock).
+- Crash when leaving a track after a race (object reference counts), crash after loading with too many AI lanes (copies installed with 6 lanes per section at most), "Test in game" crash after the title-screen patch.
+- Fall zones that triggered on the low edge of banked corners.
+- Save error after re-creating many AI lanes on a big track; missing sky on copied tracks; "unexpected title-screen script" on another PC.
+
+## What was new in v0.4
+
+### Create tab: build a track without any 3D software
+- Drive to lay the road: a paver kart in the 3D view (keyboard or gamepad, with configurable buttons), road width 40 to 120 m, undo / redo.
+- Terrain: raise, dig, flatten, smooth, paint. The ground follows the road, and bridges are made where the road crosses itself.
+- 26 themes taken from the game's tracks, each with its road, ground materials and objects. Objects from every theme can be mixed, with 3D thumbnails and a brush or "along the road" placement.
+- Barriers and start checkerboard. Generate, and the route, AI, grid and respawns are created for you.
+- *(not tried in game yet)* Jumps with the larger ramp, the "dig under the road" tool, 4 m road strips, and the 47 extra 3D objects.
+
+### Your own music
+- Import a song per track (MP3, WAV, FLAC, OGG, M4A...): seamless loop, level matching.
+- Final lap: keep the same music with no change (the jingle still plays), same song a bit faster, another song, or the original.
+- Packs carry the music with the track. Requires FFmpeg (see below). Tried in game on Crash Cove.
+
+### OCTR PC port
+- File › Export for PC (OCTR): one mod (.zip) holding one or several tracks, with the name of each track and of their menu category. Works in OCTR, including 21:9.
+
+### Boosters and ground
+- Super boosters, boosters that follow the slope, and boosters that work in time trial.
+- Boost settings: colour, power, reserve *(confirmed working overall; the power and duration effects were not checked separately)*.
+- Custom ground types with their own speed and grip. A slow ground was tried in game; slip was not confirmed.
+
+### Editing
+- Test in game: one button installs the track and starts a race on it in shadPS4.
+- Single Edit tab (scenery and race together), selection filter All / Track / Scenery, rectangle selection (B), hide / show objects (H).
+- Edit an object's shape and textures (right-click), including models with several textures.
+- *(not tried in game yet)* Visible from both sides (right-click), for flat signs seen from behind.
+- *(not tried in game yet)* Relic and ghost times (Track › Relic and ghost times).
+- Bigger minimap, sized like the game's own.
+
+### Check before installing
+- The check now reports intro flyover cameras not redone for a new map, and race zones that would respawn the kart: fall zones on the route are lowered, Respawn surfaces at road level are reported.
+
+### Window and install
+- Qt window: no more Edge WebView2 needed on your PC.
+- Files added by an install now go to `update3.pak`, so `update.pak` and `update2.pak` keep their file positions (needed by OCTR's 21:9 and 32:9 layouts).
+
+### Fixes
+- "Collision too detailed" error when scattering many objects.
+- Generation error when another track was already installed.
+- Road and scenery display after generating a track.
+
+---
 
 ## What's new in v0.4
 
