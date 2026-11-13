@@ -374,7 +374,7 @@ def layer_files(archives, origin=None):
     """{nom logique: octets} installes dans update3.pak (ceux venus de l'archive `origin`, ou tous)."""
     idx = _layer_index(archives)
     names = {n for n, o in idx.items() if origin is None or o.lower() == origin.lower()}
-    path = layer_path(archives)
+    path = pak_tool.real(layer_path(archives))
     if not names or not os.path.exists(path):
         return {}
     a = pak_tool.IgaArchive(path)
@@ -388,7 +388,7 @@ def layer_files(archives, origin=None):
 def _layer_write(archives, origin, files):
     """update3.pak : fichiers venus de `origin` remplaces par `files` ; ceux des autres archives gardes."""
     import track_clone
-    path, idx = layer_path(archives), _layer_index(archives)
+    path, idx = pak_tool.real(layer_path(archives)), _layer_index(archives)     # jeu en deux dossiers : la ou le jeu le lit
     if os.path.exists(path) and not idx:
         if not files:
             return
@@ -458,7 +458,7 @@ def _installed_files(arc):
     out = {}
     info = pak_tool._backup_info(arc)
     if info:
-        a = pak_tool.IgaArchive(arc)
+        a = pak_tool.IgaArchive(pak_tool.real(arc))
         idx = {e.logical_name.lower(): e for e in a.entries}
         out = {n: a.read(idx[n.lower()]) for n in info['files'] if n.lower() != PROTO.lower()}
         a.f.close()

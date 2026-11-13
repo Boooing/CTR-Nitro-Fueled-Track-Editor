@@ -518,6 +518,9 @@ class IgzFile:
         lst = self._exnm_flagged(flag)
         if (name, ns) in lst:
             return lst.index((name, ns))
+        # fichier sans section EXNM (_Art de Crash Cove) : sans elle, l'entree etait perdue a l'ecriture (script d'un
+        # objet anime greffe sans sa reference -> plantage du jeu au chargement, 2026-11-12)
+        self.ensure_fixup('EXNM')
         self._exnm_raw.append((self.add_string(name), self.add_string(ns) | (0x80000000 if flag else 0)))
         self.ext_names.append((name, ns))
         return len(lst)
@@ -551,23 +554,34 @@ class IgzFile:
         for m, s in mem.items():
             nxt = next((x for x in starts if x > m), m + max(int(s), 8))
             spans[m] = max(int(s), min(nxt - m, 0x10000))
-        omap = {}
+        # blocs qui se chevauchent (memoire de parametres d'un script contenant un sous-bloc vise a part : objets
+        # animes, 2026-11-12) : copies d'un seul tenant, chaque bloc garde sa place dans le groupe (sinon le
+        # sous-bloc copie a part n'est plus dans la memoire du script : plantage du jeu au chargement)
+        groups = []                                         # [debut, fin, [membres]]
         for a in sorted(spans):
-            size = spans[a]
+            if groups and a < groups[-1][1]:
+                groups[-1][1] = max(groups[-1][1], a + spans[a])
+                groups[-1][2].append(a)
+            else:
+                groups.append([a, a + spans[a], [a]])
+        omap = {}
+        for g0, g1, members in groups:
+            size = g1 - g0
             new = self.alloc(max(size, 1), 16)
-            sb, so = src._loc(a)
+            sb, so = src._loc(g0)
             db, do = self._loc(new)
             db[do:do + size] = sb[so:so + size]
-            omap[a] = new
-            if a in objs:
-                t = src.objects[a]
-                if t not in self.types:
-                    self.types.append(t)
-                    self.type_sizes.append(src.type_sizes[src.types.index(t)])
-                self.objects[new] = t
+            for a in members:
+                omap[a] = new + (a - g0)
+                if a in objs:
+                    t = src.objects[a]
+                    if t not in self.types:
+                        self.types.append(t)
+                        self.type_sizes.append(src.type_sizes[src.types.index(t)])
+                    self.objects[new + (a - g0)] = t
         flag1, flag0, exid = src._exnm_flagged(1), src._exnm_flagged(0), src.exid_pairs()
-        for a, size in spans.items():
-            base = omap[a]
+        for g0, g1, _ in groups:
+            a, size, base = g0, g1 - g0, omap[g0]
             for kind in ('RVTB', 'ROFS', 'RSTT', 'RHND', 'RNEX', 'RPID'):
                 for p in src._marks_in(kind, a, size):
                     q = base + (p - a)

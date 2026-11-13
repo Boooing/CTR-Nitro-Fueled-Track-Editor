@@ -141,7 +141,7 @@ def _free_id(archives, src, used=()):
     """Numero T9xx libre : ni dans le jeu, ni deja pris dans ce mod (le numero seul : T901_Custom_Ma et T901_Custom_Map
     seraient deux pistes de meme numero)."""
     import custom_category
-    taken = {f.lower().split('_')[0] for f in os.listdir(archives) if f.lower().endswith('.pak')}
+    taken = {f.lower().split('_')[0] for f in pak_tool.listdir(archives) if f.lower().endswith('.pak')}
     taken |= {t['id'].lower().split('_')[0] for t in (custom_category.read_state(archives) or {}).get('tracks', [])}
     taken |= {u.lower().split('_')[0] for u in used}
     for k in range(1, 100):
@@ -192,7 +192,7 @@ def _add_track(item, work, used, frac):
         # dans le jeu de personne d'autre)
         main = os.path.normcase(os.path.join(archives, S.track_pak(track)))
         changed = {os.path.normcase(p) for p in plan}
-        arcs = [a for a in sorted(own) if os.path.exists(a) and (a == main or a in changed or is_created)]
+        arcs = [a for a in sorted(own) if pak_tool.exists(a) and (a == main or a in changed or is_created)]
         for k, arc in enumerate(arcs):
             S.progress.step(f'archive {os.path.basename(arc)}', frac(0.1 + 0.9 * k / max(1, len(arcs))))
             reps = next((r for p, r in plan.items() if os.path.normcase(p) == arc), {})
@@ -226,7 +226,7 @@ def _add_track(item, work, used, frac):
     report.append(f'{main} : {st["files"]} fichiers ({st["renamed"]} renommés)')
     ren = track_clone.Renamer(src, new_id)
     # survols, avec ceux de l'editeur ; cinematique de fin de boss (T112, T133, T142, T153), listee au manifeste
-    outro = sorted(f for f in os.listdir(archives) if f.lower().startswith(src.lower() + '_') and f.lower().endswith('_outro.pak'))
+    outro = sorted(f for f in pak_tool.listdir(archives) if f.lower().startswith(src.lower() + '_') and f.lower().endswith('_outro.pak'))
     for fp in track_clone.flyby_paks(archives, src) + outro:
         fpath = os.path.join(archives, fp)
         a, idx, lock = track_clone._view(fpath)

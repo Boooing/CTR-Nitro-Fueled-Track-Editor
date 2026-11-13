@@ -273,7 +273,10 @@ def export_track(track, zf, folder):
             'loop': _loop_from_lap(path, fin['position']),
             'grid': [{'pos': g['pos'], 'yaw': g['yaw']} for g in tr.get('start_grid') or []],
             'player_start': {'pos': tr['player_start']['pos'], 'yaw': tr['player_start']['yaw']} if tr.get('player_start') else None,
-            'crates': [{k: c[k] for k in ('kind', 'pos', 'yaw', 'dims') if k in c} for c in tr.get('crates') or []],
+            # inclinaison (boosters et caisses sur une pente) et reglages des boosters (couleur, puissance, duree) : sans eux
+            # le booster importe etait remis a plat, sa plaque ne suivait plus le sol (2026-11-11)
+            'crates': [{k: c[k] for k in ('kind', 'pos', 'yaw', 'dims', 'tilt', 'color', 'speed', 'duration', 'super') if k in c}
+                       for c in tr.get('crates') or []],
             'teleporters': {str(names.index(n)): {'pos': tp['pos'], 'yaw': tp['yaw']}
                             for n, tp in (tr.get('teleporters') or {}).items() if n in names and tp.get('pos')},
         }

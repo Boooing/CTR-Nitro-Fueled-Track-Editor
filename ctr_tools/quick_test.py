@@ -131,7 +131,13 @@ def set_intro_videos(archives, hidden):
     """Videos d'introduction mises de cote (<video>.ctrmod-off, remises par game_restore) ou remises."""
     report = []
     for v in INTRO_VIDEOS:
-        on, off = os.path.join(archives, v), os.path.join(archives, v + VIDEO_OFF)
+        # jeu en deux dossiers : la video que le jeu lit (mise a jour, sinon jeu de base), mise de cote a cote d'elle
+        if hidden:
+            on = pak_tool.real(os.path.join(archives, v))
+            off = on + VIDEO_OFF
+        else:
+            off = pak_tool.real(os.path.join(archives, v + VIDEO_OFF))
+            on = off[:-len(VIDEO_OFF)]
         src, dst = (on, off) if hidden else (off, on)
         if os.path.exists(src) and not os.path.exists(dst):
             os.replace(src, dst)
@@ -157,7 +163,7 @@ def original_manager(archives):
     if os.path.exists(p):
         return open(p, 'rb').read()
     upd = os.path.join(archives, 'update.pak')
-    if os.path.exists(upd):
+    if pak_tool.exists(upd):
         arc, idx, lock = pak_tool.cached_archive(upd)
         e = idx.get(MANAGER.lower())
         if e is not None:
@@ -168,23 +174,61 @@ def original_manager(archives):
     raise ValueError('script de l\'écran titre d\'origine introuvable : vérifie les fichiers du jeu')
 
 
+def _test_backup(archives):
+    """Sauvegarde propre a « Tester en jeu » quand update2 n'a pas celle de l'editeur (.ctrmod.json) : sans elle, chaque
+    essai ajoutait l'ecran titre modifie puis l'original en fin d'update2 (+60 ko par essai, jamais retires : l'update2
+    de l'autre PC avait grossi de 125 ko). Chemin du fichier que le jeu lit (jeu en deux dossiers : la mise a jour)."""
+    return pak_tool.real(os.path.join(archives, 'update2.pak')) + '.ctrtest'
+
+
 def install(archives, track):
-    """Ecran titre -> course unique sur `track` + intros sautees. Le fichier remplace est ajoute en fin d'update2
-    (sauvegarde d'origine de l'archive inchangee : desinstallation / « Remettre le jeu d'origine » le retirent)."""
+    """Ecran titre -> course unique sur `track` + intros sautees. Le fichier remplace est ajoute en fin d'update2 ;
+    si update2 n'a pas de sauvegarde de l'editeur, son en-tete (TOC) et sa taille sont gardes avant : uninstall le
+    remet a l'identique. Sinon la sauvegarde de l'editeur couvre deja ces ajouts."""
     data = original_manager(archives)
     p = _saved_manager(archives)
     if not os.path.exists(p):
         with open(p, 'wb') as f:
             f.write(data)
-    pak_tool._append_replace(os.path.join(archives, 'update2.pak'), {MANAGER: patch_manager(data, track)})
+    u2 = os.path.join(archives, 'update2.pak')
+    bk = _test_backup(archives)
+    if not os.path.exists(pak_tool.backup_path(u2)) and not os.path.exists(bk):
+        real = pak_tool.real(u2)
+        a = pak_tool.IgaArchive(real)
+        head_len = min(e.offset for e in a.entries)          # en-tete + TOC : la seule zone reecrite en place
+        a.f.seek(0)
+        head = a.f.read(head_len)
+        a.f.close()
+        with open(bk, 'wb') as f:
+            f.write(struct.pack('<Q', os.path.getsize(real)) + head)
+    pak_tool._append_replace(u2, {MANAGER: patch_manager(data, track)})
     return [f'écran titre : course unique sur {track}'] + set_intro_videos(archives, True)
 
 
 def uninstall(archives):
-    """Ecran titre d'origine + videos d'introduction remises."""
+    """Ecran titre d'origine + videos d'introduction remises (update2 a l'identique si la sauvegarde d'essai existe)."""
     data = original_manager(archives)
-    if pak_tool.read_latest(archives, MANAGER, original=False)[0] != data:
-        pak_tool._append_replace(os.path.join(archives, 'update2.pak'), {MANAGER: data})
+    u2 = os.path.join(archives, 'update2.pak')
+    bk = _test_backup(archives)
+    if os.path.exists(bk) and not os.path.exists(pak_tool.backup_path(u2)):
+        raw = open(bk, 'rb').read()
+        size, head = struct.unpack('<Q', raw[:8])[0], raw[8:]
+        real = pak_tool.real(u2)
+        pak_tool.invalidate_cache(u2)
+        pak_tool._orig_cache.pop(real, None)
+        with open(real, 'r+b') as f:
+            f.seek(0)
+            f.write(head)
+            f.truncate(size)
+        pak_tool.invalidate_cache(u2)
+        os.remove(bk)
+        # update2 deja bloque avant l'essai (ecran titre d'un ancien essai jamais remis) : l'original par-dessus
+        if PATCH_MARK in pak_tool.read_latest(archives, MANAGER, original=False)[0]:
+            pak_tool._append_replace(u2, {MANAGER: data})
+    elif pak_tool.read_latest(archives, MANAGER, original=False)[0] != data:
+        pak_tool._append_replace(u2, {MANAGER: data})
+    if os.path.exists(bk):                                   # sauvegarde de l'editeur arrivee entre-temps : caduque
+        os.remove(bk)
     p = _saved_manager(archives)
     if os.path.exists(p):
         os.remove(p)
@@ -298,10 +342,44 @@ def _press_cross(pid):
     return True
 
 
+def clean_env():
+    """Environnement de l'emulateur sans les reglages de l'exe de l'editeur (2026-11-12). L'exe (PyInstaller + PySide6)
+    pointe QT_PLUGIN_PATH, PATH... vers SON Qt (_internal) : shadPS4, qui a son propre Qt, y chargeait des morceaux
+    d'une autre version (« point d'entree ?convertVolume@QAudio@@... introuvable » sur un autre PC)."""
+    env = dict(os.environ)
+    bundle = getattr(sys, '_MEIPASS', None)
+    for k in list(env):
+        if k.upper().startswith(('QT_', 'QTWEBENGINE', 'QML', 'PYTHON', '_PYI', '_MEI')):
+            del env[k]
+    if bundle:
+        root = os.path.normcase(os.path.abspath(bundle))
+        keep = [p for p in env.get('PATH', '').split(os.pathsep)
+                if p and not os.path.normcase(os.path.abspath(p)).startswith(root)]
+        env['PATH'] = os.pathsep.join(keep)
+    return env
+
+
+def _popen_clean(cmd, cwd):
+    """Popen hors du dossier de DLL de l'exe : le chargeur PyInstaller appelle SetDllDirectoryW(_internal), que les
+    processus fils heritent ; remis a zero le temps du lancement."""
+    if os.name == 'nt' and getattr(sys, 'frozen', False):
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        buf = ctypes.create_unicode_buffer(32768)
+        old = buf.value if k32.GetDllDirectoryW(32768, buf) else ''
+        k32.SetDllDirectoryW(None)
+        try:
+            return subprocess.Popen(cmd, cwd=cwd, env=clean_env())
+        finally:
+            if old:
+                k32.SetDllDirectoryW(old)
+    return subprocess.Popen(cmd, cwd=cwd, env=clean_env())
+
+
 def launch(exe, game_root, track, on_exit=None, auto_ready=True, timeout=180):
     """Lance shadPS4 sur le jeu ; fil de suivi : validation du choix perso / kart, puis on_exit() a la fermeture."""
     since = time.time() - 2
-    proc = subprocess.Popen([exe, '-g', os.path.join(game_root, 'eboot.bin')], cwd=os.path.dirname(exe))
+    proc = _popen_clean([exe, '-g', os.path.join(game_root, 'eboot.bin')], os.path.dirname(exe))
     log = _Log(log_path(exe), since)
     load_marks = (f"load {map_path(track)}".lower(), f"'{map_path(track).lower()}'")
     _status('starting', 'shadPS4 lancé, démarrage du jeu…')

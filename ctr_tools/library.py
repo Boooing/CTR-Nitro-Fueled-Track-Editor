@@ -32,7 +32,7 @@ DEPS = {'materials': ('material_instances', 'materialinstances/'), 'textures': (
 
 def track_paks(archives):
     """Archives des pistes et arenes (sans survols ni cinematiques)."""
-    return sorted(f for f in os.listdir(archives) if TRACK_PAK.match(f) and 'flyby' not in f and 'outro' not in f)
+    return sorted(f for f in pak_tool.listdir(archives) if TRACK_PAK.match(f) and 'flyby' not in f and 'outro' not in f)
 
 
 def nice(pak):
@@ -100,7 +100,7 @@ def catalog(archives):
 def _common_case(archives, p):
     for n in COMMON_ARCHIVES:
         path = os.path.join(archives, n)
-        if os.path.exists(path):
+        if pak_tool.exists(path):
             e = pak_tool.cached_archive(path)[1].get(p.lower())
             if e:
                 return e.logical_name
@@ -138,7 +138,7 @@ def available(archives, logical, track_pak):
     """Le fichier est-il dans une archive montee pendant la course de la piste (version d'origine) ?"""
     for n in COMMON_ARCHIVES:
         p = os.path.join(archives, n)
-        if os.path.exists(p) and logical.lower() in pak_tool.cached_archive(p)[1]:
+        if pak_tool.exists(p) and logical.lower() in pak_tool.cached_archive(p)[1]:
             return True
     p = os.path.join(archives, track_pak)
     view = pak_tool.original_archive(p)
@@ -152,7 +152,7 @@ def find_pak(archives, logical, prefer=()):
     read_latest : elles ne comptent pas."""
     for pak in list(prefer) + track_paks(archives):
         p = os.path.join(archives, pak)
-        if not os.path.exists(p):
+        if not pak_tool.exists(p):
             continue
         view = pak_tool.original_archive(p)
         if logical.lower() in (view[1] if view else pak_tool.cached_archive(p)[1]):

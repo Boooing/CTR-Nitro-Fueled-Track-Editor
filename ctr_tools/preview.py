@@ -46,8 +46,20 @@ def model_preview(data, read):
     z = IgzFile(data)
     deps = dict(tdep_entries(z))
     pos, uvs, idx, groups, seen = [], [], [], [], set()
+    joints, weights = [], []                               # skin d'acteur : os (index de matrice) et poids par sommet
     mat_cache = {}
     nverts = 0
+    # palette commune des skins : igModelData +0xb8 nombre, +0xc0 bloc (int32 : index de matrice du squelette)
+    palette = None
+    md = next((o for o, t in z.objects.items() if t == 'igModelData'), None)
+    if md is not None and z.size_of('igModelData') >= 0xd0:
+        try:
+            pm, ps = z.memory_ref(md + 0xc0)
+            if pm is not None and ps:
+                pb, po = z._loc(pm)
+                palette = np.frombuffer(bytes(pb[po:po + ps]), np.int32).copy()
+        except Exception:  # noqa: BLE001 - pas de palette : modele sans os
+            palette = None
     for o, t in sorted(z.objects.items()):
         if t != 'igModelDrawCallData':
             continue
@@ -69,7 +81,7 @@ def model_preview(data, read):
         stride = z.u32(fmt + 0x0C)
         el, el_size = z.memory_ref(fmt + 0x10)
         eb, eo = z._loc(el)
-        p_off, uv_off = 0, None
+        p_off, uv_off, w_off, j_off = 0, None, None, None
         for i in range(el_size // 12):
             e = eb[eo + i * 12:eo + i * 12 + 12]
             off = struct.unpack_from('<H', e, 8)[0]
@@ -77,19 +89,38 @@ def model_preview(data, read):
                 p_off = off
             elif e[4] == 5 and e[0] == 0x2a and uv_off is None:     # premier jeu d'UV, half2
                 uv_off = off
+            elif e[4] == 6 and e[0] == 0x1a:                         # poids : 4 octets normalises
+                w_off = off
+            elif e[4] == 8 and e[0] == 0x0d:                         # os : 4 x uint32 locaux a l'appel de dessin
+                j_off = off
         vbuf, vo = z._loc(vdata)
         raw = np.frombuffer(bytes(vbuf[vo:vo + nv * stride]), np.uint8).reshape(nv, stride)
         pos.append(raw[:, p_off:p_off + 12].copy().view(np.float32).reshape(nv, 3))
         uvs.append(raw[:, uv_off:uv_off + 4].copy().view(np.float16).astype(np.float32).reshape(nv, 2)
                    if uv_off is not None else np.zeros((nv, 2), np.float32))
+        if w_off is not None and j_off is not None and palette is not None:
+            # plage de la palette de cet appel : mot +0x60 = (nombre << 16) | debut
+            word = z.u32(o + 0x60)
+            start = word & 0xFFFF
+            loc = raw[:, j_off:j_off + 16].copy().view(np.uint32).reshape(nv, 4).astype(np.int64)
+            glob = palette[np.clip(start + loc, 0, len(palette) - 1)]
+            joints.append(glob.astype(np.float32))
+            weights.append(raw[:, w_off:w_off + 4].astype(np.float32) / 255.0)
+        else:
+            joints.append(np.zeros((nv, 4), np.float32))
+            weights.append(np.zeros((nv, 4), np.float32))
         ibuf, io = z._loc(idata)
         tri = np.frombuffer(bytes(ibuf[io:io + ni * 2]), np.uint16).astype(np.uint32) + nverts
         groups.append((sum(len(a) for a in idx), ni, _texture_of(z, o, deps, read, mat_cache)))
         idx.append(tri)
         nverts += nv
     cat = lambda arrs, shape, dt: np.concatenate(arrs) if arrs else np.zeros(shape, dt)
-    return {'positions': cat(pos, (0, 3), np.float32), 'uvs': cat(uvs, (0, 2), np.float32),
-            'indices': cat(idx, (0,), np.uint32), 'groups': groups}
+    out = {'positions': cat(pos, (0, 3), np.float32), 'uvs': cat(uvs, (0, 2), np.float32),
+           'indices': cat(idx, (0,), np.uint32), 'groups': groups}
+    W = cat(weights, (0, 4), np.float32)
+    if len(W) and W.sum() > 0:                             # skin : os et poids (apercu anime)
+        out['joints'], out['weights'] = cat(joints, (0, 4), np.float32), W
+    return out
 
 
 def _texture_of(z, dc, deps, read, cache):

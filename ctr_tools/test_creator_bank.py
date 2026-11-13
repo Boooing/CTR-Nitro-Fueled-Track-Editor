@@ -261,4 +261,11 @@ for it, role in zip(items, ('cover', 'tree', 'big')):
         g = tc.ground_height(ground, wx * IN, wy * IN) / IN
         assert base <= g + 0.2, (role, base, g)
     print(f'ok pose {role} : inclinaison {ang:.1f} degres (pente {slope_deg:.1f})')
+
+# 9) inclinaison donnee a la main (outil Modifier, rx / ry en radians) : ajoutee a celle de la pente
+tilted = [dict(props[1], rx=0.5, ry=-0.25)]
+it2, _ = tc.props_items('sable', tilted, ground, dims)
+assert abs(it2[0]['rot'][0] - (items[1]['rot'][0] + 0.5)) < 1e-9 and abs(it2[0]['rot'][1] - (items[1]['rot'][1] - 0.25)) < 1e-9, \
+    (it2[0]['rot'], items[1]['rot'])
+print('ok inclinaison a la main ajoutee a celle du sol')
 print('TOUT EST BON')

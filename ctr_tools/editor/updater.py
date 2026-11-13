@@ -1,4 +1,9 @@
-"""Mise a jour de l'application depuis GitHub (Windows, application empaquetee).
+"""Mise a jour de l'application depuis GitHub (application empaquetee : Windows .exe, Linux .AppImage).
+
+Linux (2026-11-13) : la release porte aussi CTR_Track_Editor-<arch>.AppImage (workflow GitHub build-appimage.yml). Le
+fichier est telecharge dans <dossier de l'AppImage>/_update, puis un script sh, lance par la version installee, attend
+sa fermeture, remplace le fichier .AppImage ($APPIMAGE ; l'ancien garde en .old en cas d'echec) et la relance.
+Sans fichier pour ce systeme dans la release : la page annonce seulement la nouvelle version.
 
 Au lancement, la page demande /api/update_status : le fichier `version` du depot donne le numero le plus recent. S'il est
 plus grand que VERSION et que la derniere release GitHub porte bien ce numero, la page propose la mise a jour.
@@ -10,7 +15,8 @@ Seuls l'exe et _internal changent : ctr_editor_config.json, out/ (sauvegardes), 
 Sans internet ou en cas d'erreur de verification : rien ne se passe, l'editeur fonctionne normalement.
 
 Pour publier une version : changer VERSION ici, construire (build_exe.py), publier la release GitHub avec le .zip (exe + _internal
-a la racine, numero dans le tag), et seulement ensuite changer le fichier `version` du depot.
+a la racine, numero dans le tag) ; le workflow GitHub y ajoute l'AppImage Linux (quelques minutes) ; seulement ensuite
+changer le fichier `version` du depot.
 """
 import hashlib
 import json
@@ -27,7 +33,7 @@ import zipfile
 
 import progress
 
-VERSION = '0.5'
+VERSION = '0.6'
 REPO = 'Boooing/CTR-Nitro-Fueled-Track-Editor'
 VERSION_URL = f'https://raw.githubusercontent.com/{REPO}/refs/heads/main/version'
 RELEASE_URL = f'https://api.github.com/repos/{REPO}/releases/latest'
@@ -64,14 +70,40 @@ def is_newer(remote, local):
     return a + (0,) * (n - len(a)) > b + (0,) * (n - len(b))
 
 
+LINUX = sys.platform.startswith('linux')
+
+
+def _arch():
+    import platform
+    m = platform.machine().lower()
+    return {'amd64': 'x86_64', 'arm64': 'aarch64'}.get(m, m)
+
+
 def _pick_asset(release):
-    """Le .zip Windows de la release (le premier .zip qui n'est pas pour Linux)."""
-    zips = [a for a in release.get('assets') or [] if str(a.get('name', '')).lower().endswith('.zip')]
+    """Fichier de la release pour ce systeme : Windows, le premier .zip qui n'est pas pour Linux ; Linux, le .AppImage
+    de l'architecture (x86_64 / aarch64), sinon le seul .AppImage."""
+    assets = [a for a in release.get('assets') or [] if a.get('name')]
+    if LINUX:
+        imgs = [a for a in assets if a['name'].lower().endswith('.appimage')]
+        return next((a for a in imgs if _arch() in a['name'].lower()), imgs[0] if len(imgs) == 1 else None)
+    zips = [a for a in assets if a['name'].lower().endswith('.zip')]
     return next((a for a in zips if 'linux' not in a['name'].lower()), None)
 
 
+def _appimage():
+    """Chemin du fichier .AppImage en cours (donne par son lanceur), s'il est remplacable ; sinon None."""
+    p = os.environ.get('APPIMAGE')
+    if not p or not os.path.isfile(p):
+        return None
+    return p if os.access(os.path.dirname(os.path.abspath(p)), os.W_OK) else None
+
+
 def can_install():
-    return bool(APP_DIR) and sys.platform == 'win32'
+    if not APP_DIR:
+        return False
+    if LINUX:
+        return _appimage() is not None
+    return sys.platform == 'win32'
 
 
 def check():
@@ -87,11 +119,13 @@ def check():
         if not re.search(r'(?<![\d.])' + re.escape(latest) + r'(?![\d.])', tag):
             return out                                 # numero change avant la publication de la release : pas encore
         asset = _pick_asset(rel)
-        if asset is None:
-            return out
         out.update(available=True, tag=tag, name=rel.get('name') or tag, notes=(rel.get('body') or '')[:NOTES_MAX],
-                   page=rel.get('html_url') or '', size=int(asset.get('size') or 0),
-                   asset_url=asset.get('browser_download_url'), digest=asset.get('digest') or '')
+                   page=rel.get('html_url') or '')
+        if asset is None:                              # pas de fichier pour ce systeme : version annoncee seulement
+            out['can_install'] = False
+            return out
+        out.update(size=int(asset.get('size') or 0), asset_url=asset.get('browser_download_url'),
+                   digest=asset.get('digest') or '', asset_name=asset.get('name'))
     except Exception as e:  # noqa: BLE001 - hors ligne : l'editeur continue sans rien dire
         print(f'mise a jour : verification impossible ({e!r})', flush=True)
     return out
@@ -178,11 +212,21 @@ def download():
     """Etape 1 : version telechargee et decompressee dans _update/new. -> {ready, latest}."""
     global _ready
     st = status()
-    if not st.get('available') or not can_install():
+    if not st.get('available') or not st.get('asset_url') or not can_install():
         raise RuntimeError('aucune mise à jour à installer')
     root = _update_root(APP_DIR)
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(root, exist_ok=True)
+    if LINUX:                                          # un seul fichier : l'AppImage, rendue executable
+        img = os.path.join(root, 'new.AppImage')
+        progress.step('téléchargement', 0.0)
+        _download(st['asset_url'], img, st.get('size') or 0, st.get('digest') or '')
+        with open(img, 'rb') as f:
+            if f.read(4) != b'\x7fELF':
+                raise RuntimeError('fichier téléchargé inattendu (pas une AppImage)')
+        os.chmod(img, 0o755)
+        _ready = img
+        return {'ready': True, 'latest': st['latest']}
     archive = os.path.join(root, 'release.zip')
     progress.step('téléchargement', 0.0)
     _download(st['asset_url'], archive, st.get('size') or 0, st.get('digest') or '')
@@ -258,8 +302,63 @@ def spawn_apply(pid, app_dir, new_dir):
                             creationflags=0x08000000 | 0x00000200)   # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
 
 
+# Script de remplacement Linux (sh) : attend la fin du processus, remplace le fichier .AppImage (ancien garde en .old,
+# remis en cas d'echec), relance la nouvelle version et efface _update. Parametres : variables d'environnement.
+APPLY_SCRIPT_SH = r'''#!/bin/sh
+log="$CTR_UPD_DIR/ctr_update.log"
+say() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$log"; }
+k=0
+while kill -0 "$CTR_UPD_PID" 2>/dev/null; do
+  k=$((k+1)); if [ "$k" -gt 120 ]; then say "ancienne version toujours ouverte : mise a jour abandonnee"; exit 1; fi
+  sleep 0.5
+done
+if mv -f "$CTR_UPD_TARGET" "$CTR_UPD_TARGET.old" && cp -f "$CTR_UPD_NEW" "$CTR_UPD_TARGET" && chmod 755 "$CTR_UPD_TARGET"; then
+  rm -f "$CTR_UPD_TARGET.old"; say "mise a jour installee"
+else
+  say "echec, version precedente remise"
+  rm -f "$CTR_UPD_TARGET"; mv -f "$CTR_UPD_TARGET.old" "$CTR_UPD_TARGET"
+fi
+rm -rf "$CTR_UPD_DIR/_update"
+cd "$CTR_UPD_DIR" && nohup "$CTR_UPD_TARGET" >/dev/null 2>&1 &
+rm -f "$0"
+'''
+
+
+def _child_env_linux():
+    """Environnement de depart du systeme : ni les bibliotheques de cette application (PyInstaller : LD_LIBRARY_PATH,
+    sauf l'original *_ORIG), ni les variables du lanceur AppImage (la nouvelle les redefinit)."""
+    env = _child_env()
+    for k in ('LD_LIBRARY_PATH', 'QT_PLUGIN_PATH', 'QML2_IMPORT_PATH', 'QTWEBENGINEPROCESS_PATH'):
+        orig = env.pop(k + '_ORIG', None)
+        if orig is not None:
+            env[k] = orig
+        else:
+            env.pop(k, None)
+    for k in ('APPIMAGE', 'APPDIR', 'ARGV0', 'OWD'):
+        env.pop(k, None)
+    return env
+
+
+def spawn_apply_linux(pid, app_dir, new_file, target):
+    fd, script = tempfile.mkstemp(prefix='ctr_update_', suffix='.sh')
+    with os.fdopen(fd, 'w', encoding='ascii', newline='\n') as f:
+        f.write(APPLY_SCRIPT_SH)
+    os.chmod(script, 0o755)
+    env = _child_env_linux()
+    env.update(CTR_UPD_DIR=app_dir, CTR_UPD_NEW=new_file, CTR_UPD_TARGET=target, CTR_UPD_PID=str(pid))
+    return subprocess.Popen(['/bin/sh', script], cwd=tempfile.gettempdir(), env=env, close_fds=True,
+                            start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+
+
 def start_apply():
     """Etape 2 : lance le remplacement, qui commencera des que cette application sera fermee."""
+    if LINUX:
+        target = _appimage()
+        if not _ready or not os.path.isfile(_ready) or not target:
+            raise RuntimeError('la mise à jour n\'a pas été téléchargée')
+        spawn_apply_linux(os.getpid(), APP_DIR, _ready, target)
+        return {'restarting': True}
     if not _ready or not os.path.isfile(os.path.join(_ready, EXE_NAME)):
         raise RuntimeError('la mise à jour n\'a pas été téléchargée')
     spawn_apply(os.getpid(), APP_DIR, _ready)

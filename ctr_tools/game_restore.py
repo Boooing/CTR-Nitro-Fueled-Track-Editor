@@ -59,29 +59,29 @@ def restore_plan(archives, lang='fr'):
     installed = [{'track': t, 'by': e.get('by'), 'title': e.get('title')} for t, e in sorted(reg.items())]
     # installees avant le registre : archive propre de la piste sauvegardee (t111_crash_cove.pak.ctrmod.json)
     known = {t.lower() for t in reg} | {t['id'].lower() for t in created}
-    for f in sorted(os.listdir(archives)):
+    for f in pak_tool.listdir(archives):              # jeu en deux dossiers : mise a jour comprise
         m = re.match(r'^(t\d{3}_[a-z0-9_]+)\.pak\.ctrmod\.json$', f, re.I)
         if m and 'flyby' not in f.lower() and m.group(1).lower() not in known:
             installed.append({'track': m.group(1), 'by': None, 'title': None})
     mods, problems = [], []
-    for f in sorted(os.listdir(archives)):
+    for f in pak_tool.listdir(archives):
         if not f.endswith('.ctrmod.json'):
             continue
         arc = os.path.join(archives, f[:-len('.ctrmod.json')])
         name = os.path.basename(arc)
         if name.lower() in created_paks:
             continue                                      # supprimee avec sa piste
-        info = _read_json(os.path.join(archives, f)) or {}
-        if not os.path.exists(arc):
+        info = _read_json(pak_tool.backup_path(arc)) or {}
+        if not pak_tool.exists(arc):
             problems.append(f'{name} : archive absente (sauvegarde orpheline)')
         elif info.get('version') == 2 and not os.path.exists(pak_tool.toc_backup_path(arc)):
             problems.append(f'{name} : sauvegarde incomplète (.ctrmod.toc absent)')
-        elif os.path.getsize(arc) < int(info.get('original_size') or 0):
+        elif os.path.getsize(pak_tool.real(arc)) < int(info.get('original_size') or 0):
             problems.append(f'{name} : plus petite qu\'à l\'installation (jeu réinstallé ou mis à jour ?) — non touchée')
         else:
             mods.append(name)
-    videos = sorted(f[:-len(VIDEO_OFF)] for f in os.listdir(archives) if f.endswith('.bk2' + VIDEO_OFF))
-    chunks = os.path.exists(os.path.join(os.path.dirname(archives), track_clone.CHUNKS_IGX + '.ctrmod'))
+    videos = sorted(f[:-len(VIDEO_OFF)] for f in pak_tool.listdir(archives) if f.endswith('.bk2' + VIDEO_OFF))
+    chunks = os.path.exists(pak_tool.real(os.path.join(os.path.dirname(archives), track_clone.CHUNKS_IGX)) + '.ctrmod')
     # update3.pak de l'editeur (fichiers ajoutes et menu, custom_category) : supprime ; un update3.pak sans index
     # n'est pas a nous (mod) et reste
     layer = os.path.exists(os.path.join(archives, custom_category.LAYER_INDEX))
@@ -128,7 +128,7 @@ def restore_game(archives, progress=None):
     for k, name in enumerate(plan['archives']):
         step(0.1 + 0.75 * k / max(1, n), f'archive {k + 1} / {n} : {name}')
         if name == custom_category.LAYER:
-            for f in (custom_category.layer_path(archives), os.path.join(archives, custom_category.LAYER_INDEX)):
+            for f in (pak_tool.real(custom_category.layer_path(archives)), os.path.join(archives, custom_category.LAYER_INDEX)):
                 if os.path.exists(f):
                     os.remove(f)
             report.append(f'{name} de l\'éditeur supprimé')
@@ -142,12 +142,13 @@ def restore_game(archives, progress=None):
         os.remove(st_path)
         report.append('menu du jeu : catégories d\'origine')
     game_dir = os.path.dirname(archives)
-    ch = os.path.join(game_dir, track_clone.CHUNKS_IGX)
+    ch = pak_tool.real(os.path.join(game_dir, track_clone.CHUNKS_IGX))
     if os.path.exists(ch + '.ctrmod'):
         os.replace(ch + '.ctrmod', ch)
         report.append('chunks.igx d\'origine remis')
     for v in plan['videos']:
-        src, dst = os.path.join(archives, v + VIDEO_OFF), os.path.join(archives, v)
+        src = pak_tool.real(os.path.join(archives, v + VIDEO_OFF))
+        dst = os.path.join(os.path.dirname(src), v)
         if os.path.exists(dst):
             report.append(f'vidéo {v} : déjà présente, copie mise de côté laissée')
             continue

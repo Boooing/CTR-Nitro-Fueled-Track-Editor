@@ -300,7 +300,7 @@ def source_files(archives, src):
     lower = {n.lower(): n for n in out}
     for up in reversed(pak_tool.UPDATE_ARCHIVES):               # update puis update2 (le plus recent l'emporte)
         p = os.path.join(archives, up)
-        if not os.path.exists(p):
+        if not pak_tool.exists(p):
             continue
         ua, uidx, ulock = _view(p)
         for n, e in uidx.items():
@@ -312,7 +312,7 @@ def source_files(archives, src):
 
 def flyby_paks(archives, src):
     s = src.lower()
-    return sorted(f for f in os.listdir(archives) if f.lower().startswith(s + '_') and 'flyby' in f.lower()
+    return sorted(f for f in pak_tool.listdir(archives) if f.lower().startswith(s + '_') and 'flyby' in f.lower()
                   and f.lower().endswith('.pak'))
 
 
@@ -340,7 +340,7 @@ def _raw_span(a, e, lock):
 def write_archive(path, files, template):
     """files : [(nom logique, nom complet, ordinal, ('data', octets) | ('raw', archive, entree, verrou))].
     Les fichiers « raw » sont recopies tels quels (compresses ou non) avec leurs blocs ; les autres non compresses."""
-    tpl = pak_tool.IgaArchive(template)
+    tpl = pak_tool.IgaArchive(pak_tool.real(template))
     sector, flags, version = tpl.sector, tpl.flags, tpl.version
     tpl.f.close()
     tables = {'small': [], 'medium': [], 'large': []}
@@ -547,7 +547,7 @@ def clone_pak(archives, src, new, pak_name, out_path, extra=None, progress=None)
 def _read_any(archives, logical, paks):
     for p in paks:
         path = os.path.join(archives, p)
-        if not os.path.exists(path):
+        if not pak_tool.exists(path):
             continue
         a, idx, lock = _view(path)
         e = idx.get(logical.lower())
@@ -594,7 +594,7 @@ def chunks_igx_set(game_dir, pak_files):
     """Ajoute / retire nos archives dans chunks.igx (liste des fichiers installes, 1er groupe). Sauvegarde
     chunks.igx.ctrmod a la premiere modification. pak_files : noms des archives a y avoir (les autres « t9.. »
     ajoutees par nous sont retirees)."""
-    p = os.path.join(game_dir, CHUNKS_IGX)
+    p = pak_tool.real(os.path.join(game_dir, CHUNKS_IGX))     # jeu en deux dossiers : celui de la mise a jour
     if not os.path.exists(p):
         return False
     txt = open(p, encoding='utf-8', newline='').read()
@@ -618,7 +618,7 @@ def create(archives, src, n=None, display=None, out_dir=None, progress=None, ove
     out_dir : dossier de sortie (essai) ; par defaut le dossier des archives du jeu (nouveaux fichiers seulement).
     overwrite : refait les archives d'une piste deja creee par nous (numero n)."""
     out_dir = out_dir or archives
-    taken = {f.lower() for f in os.listdir(archives)} | {f.lower() for f in os.listdir(out_dir)}
+    taken = {f.lower() for f in pak_tool.listdir(archives)} | {f.lower() for f in pak_tool.listdir(out_dir)}
     if n is None:
         n = next(k for k in range(1, 100) if new_id(src, k).lower() + '.pak' not in taken)
     new = new_id(src, n)

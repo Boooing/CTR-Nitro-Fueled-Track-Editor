@@ -9,91 +9,79 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 > This folder holds the editor only. **CTR Track Installer**, the separate app for players, is not part of it.
 
 ---
-## What's new in v0.5
 
+## What's new in v0.6
+
+Items marked *(not tried in game yet)* work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
+
+### Create tab
+- **Water**: Relief › *💧 Fill with water*, click at the bottom of a dug hole and it fills up to its lowest edge. Adjustable level (0 to 20 m below the edge) and 5 water types (clear, lagoon, swamp, dark, mud). Shallow water (under 1.5 m): you drive on the bottom; deeper: you fall and respawn on the road. *(not tried in game yet)*
+- **Automatic scenery adds ponds** now and then: 1 to 3 water spots in hollows of the terrain, never on the road; they are regenerated or removed with the automatic scenery. *(not tried in game yet)*
+- **Edit scenery placed in Create**: Scenery › By hand › *✋ Modify*: click an object to move it, **rotate it on all 3 axes**, resize it, raise or lower it, duplicate or delete it. *(rotation on 3 axes not tried in game yet)*
+- **Bridge tool** (*🌉 Bridge*): click where two roads cross, the clicked road rises above the other. *(not tried in game yet)*
+- **Edges tool**: *〰 Smooth between the ends* evens out width and raise between the two ends of the selected zone; − / + buttons (and keys) to shrink or enlarge the zone, white markers at its ends.
+- **Paver**: after reversing, the road picks up the slope and banking of the road behind it again (no more bump).
+- *Delete the whole road* also removes the embankments the old road had made in the ground.
+- Water is drawn opaque in the 3D view (painted grass under it no longer turns it green).
+
+### Edit tab
+- **Animated objects** (Add › *🎞 Animated object…*): animals, characters, banners, balloons, sails… from other tracks, with an **animated preview**. They are copied into your track when it's installed. Click them in the 3D view to move them, **rotate them on 3 axes** and resize them. Tried in game. *(3-axis rotation not tried in game yet)*
+- The 3D previews of the object libraries can be **rotated and zoomed with the mouse** (double-click: back to the start view).
+- "Place at the centre of the view" now aims at what is really at the centre of the screen.
+- Map packs: created tracks are listed with their number and menu name (no more rows of "Custom Map").
+- Pack export keeps the boosters' tilt and settings (re-export older packs).
+
+### Game and install
+- **Game in one or two folders**: a single 1.21 folder, or the base game with its update next to it (`-UPDATE` / `-patch`).
+- **Sky check** before installing and before *Test in game* (the sky model, its materials and textures must be declared and present).
+- *Test in game*: shadPS4 is started with a clean environment (fixes the error "entry point ?convertVolume@QAudio… not found" on some PCs).
+- **Linux**: the AppImage is built automatically on GitHub and attached to each release, and the Linux editor now updates itself too. The Linux build script now includes the Create tab.
+
+### Fixes
+- Animated objects that stayed invisible in game (some come disabled from their own track, e.g. the Zams of Hyper Spaceway).
+- Infinite loading after removing a camera zone (an experimental feature since removed from the menus).
+
+### Good to know
+- No sky and textures smearing across the screen, on **Intel Arc** graphics: that's the emulator, not the editor (it happens on the game's own tracks too). The OCTR PC port works.
+
+## What was new in v0.5
+
+Items marked *(not tried in game yet)* work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
 
 ### Automatic updates
-- The editor checks GitHub at launch and offers the new version; it replaces itself and restarts. Your saves, settings and FFmpeg stay in place. v0.4 has no updater: install v0.5 by hand once.
+- The editor checks GitHub at launch and offers the new version; it replaces itself and restarts. Your saves, settings and FFmpeg stay in place. **v0.4 has no updater: install v0.5 by hand once.**
 
 ### A clearer editor
 - New look: line icons, a vertical tool bar on the 3D view, mouse hints in the status bar, tabs in work order (Create, Edit, Track / category).
-- Scene objects panel (replaces Search): every object of the map by category (scenery by model, invisible walls, lights, crates, boosters, fall zones), with 3D thumbnails, select, show / hide and details.
+- **Scene objects** panel (replaces Search): every object of the map by category (scenery by model, invisible walls, lights, crates, boosters, fall zones), with 3D thumbnails, select, show / hide and details.
 - The right-hand inspector is laid out in blocks (Position, Tool, Actions...) for scenery, crates, boosters, splines, grid, finish line, lights.
-- Colorize an object (Edit › select › *Colorize…*, or right-click): tint that keeps the texture's details, or flat paint, with intensity and live preview; parts of the object and "all identical objects" can be chosen. *(not tried in game yet)*
-- Faster editing on big maps: adding objects, colouring, changing a ground type... no longer rebuilds the whole collision each time (about 2 minutes on a big map). It is rebuilt once, on Save (orange dot on the button), and always before installing or checking.
+- **Colorize an object** (Edit › select › *Colorize…*, or right-click): tint that keeps the texture's details, or flat paint, with intensity and live preview; parts of the object and "all identical objects" can be chosen. *(not tried in game yet)*
+- **Faster editing on big maps**: adding objects, colouring, changing a ground type... no longer rebuilds the whole collision each time (about 2 minutes on a big map). It is rebuilt once, on **Save** (orange dot on the button), and always before installing or checking.
 
 ### Create tab
 - New panel in blocks, Scenery in two tabs (*Automatic* / *By hand*).
-- Smarter automatic scenery: styles (balanced, nature, clear, wild, built), amount per family, objects borrowed from other themes when the ground has no matching object, corners kept clear. *(not tried in game yet)*
+- **Smarter automatic scenery**: styles (balanced, nature, clear, wild, built), amount per family, objects borrowed from other themes when the ground has no matching object, corners kept clear. *(not tried in game yet)*
 - Bigger height range (road from -200 m to +300 m), road banking up to 30°, slopes with or without embankment per section, embankment width, smooth blending between ground paints, tilted objects that sit on the slope, "Place the kart" to choose the start. *(partly tried in game)*
 - Parts of the map far from the road can be trimmed at generation (lighter map).
-- "Generate the track" now offers a new track by default, so nobody overwrites Crash Cove by mistake.
+- "Generate the track" now offers a **new track** by default, so nobody overwrites Crash Cove by mistake.
 
 ### Race
-- Rotatable crates, automatic crate rows centred on the race line.
-- Reverse the race direction (or one spline). *(not tried in game yet)*
+- **Rotatable crates**, automatic crate rows centred on the race line.
+- **Reverse the race direction** (or one spline). *(not tried in game yet)*
 - Better route detection on stacked roads (spirals, 3 levels) and jumps up to 80 m; AI lanes that keep their width where road pieces overlap. *(not tried in game yet)*
 - Falls and respawns work on tracks whose respawn points are in the RaceSystem (Star Circuit, Slide Coliseum, Turbo Track...). *(not tried in game yet)*
 - More game tracks can be edited (Thunder Struck, Out of Time, Electron Avenue and the tracks whose race line is in the _Design).
 
 ### Game and install
-- Restore the game's archives: this track or the whole game; put back a track removed by a full restore.
-- Big maps: track archive capped to what the game can load (textures reduced if needed), "Game memory" line in Check, lighter collision for far scenery.
-- The ground type Turbo is removed (it had no effect in game; use boosters).
+- **Restore the game's archives**: this track or the whole game; **put back a track** removed by a full restore.
+- Big maps: track archive capped to what the game can load (textures reduced if needed), "Game memory" line in **Check**, lighter collision for far scenery.
+- The ground type **Turbo** is removed (it had no effect in game; use boosters).
 
 ### Fixes
 - Infinite loading when an object with several textures had a custom texture on a part other than the first one (e.g. a colourised rock).
 - Crash when leaving a track after a race (object reference counts), crash after loading with too many AI lanes (copies installed with 6 lanes per section at most), "Test in game" crash after the title-screen patch.
 - Fall zones that triggered on the low edge of banked corners.
 - Save error after re-creating many AI lanes on a big track; missing sky on copied tracks; "unexpected title-screen script" on another PC.
-
----
-
-## What's new in v0.4
-
-Items marked *(not tried in game yet)* work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
-
-### Create tab: build a track without any 3D software
-- **Drive to lay the road**: a paver kart in the 3D view (keyboard or gamepad, with configurable buttons), road width 40 to 120 m, undo / redo.
-- **Terrain**: raise, dig, flatten, smooth, paint. The ground follows the road, and bridges are made where the road crosses itself.
-- **26 themes** taken from the game's tracks, each with its road, ground materials and objects. Objects from every theme can be mixed, with 3D thumbnails and a brush or "along the road" placement.
-- **Barriers** and start checkerboard. Generate, and the route, AI, grid and respawns are created for you.
-- *(not tried in game yet)* Jumps with the larger ramp, the "dig under the road" tool, 4 m road strips, and the 47 extra 3D objects.
-
-### Your own music
-- **Import a song** per track (MP3, WAV, FLAC, OGG, M4A...): seamless loop, level matching.
-- **Final lap**: keep the same music with no change (the jingle still plays), same song a bit faster, another song, or the original.
-- Packs carry the music with the track. **Requires FFmpeg** (see below). Tried in game on Crash Cove.
-
-### OCTR PC port
-- **File › Export for PC (OCTR)**: one mod (.zip) holding one or several tracks, with the name of each track and of their menu category. Works in OCTR, including 21:9.
-
-### Boosters and ground
-- **Super boosters**, **boosters that follow the slope**, and boosters that work in **time trial**.
-- Boost settings: colour, power, reserve *(confirmed working overall; the power and duration effects were not checked separately)*.
-- **Custom ground types** with their own speed and grip. A slow ground was tried in game; slip was not confirmed.
-
-### Editing
-- **Test in game**: one button installs the track and starts a race on it in shadPS4.
-- **Single Edit tab** (scenery and race together), selection filter All / Track / Scenery, rectangle selection (B), hide / show objects (H).
-- **Edit an object's shape and textures** (right-click), including models with several textures.
-- *(not tried in game yet)* **Visible from both sides** (right-click), for flat signs seen from behind.
-- *(not tried in game yet)* **Relic and ghost times** (Track › Relic and ghost times).
-- **Bigger minimap**, sized like the game's own.
-
-### Check before installing
-- The check now reports **intro flyover cameras** not redone for a new map, and race zones that would respawn the kart: fall zones on the route are lowered, Respawn surfaces at road level are reported.
-
-### Window and install
-- **Qt window**: no more Edge WebView2 needed on your PC.
-- Files added by an install now go to `update3.pak`, so `update.pak` and `update2.pak` keep their file positions (needed by OCTR's 21:9 and 32:9 layouts).
-
-### Fixes
-- "Collision too detailed" error when scattering many objects.
-- Generation error when another track was already installed.
-- Road and scenery display after generating a track.
-
----
 
 ---
 
@@ -155,7 +143,8 @@ python ctr_tools/test_roundtrip.py extracted          # every .igz re-written by
 | `ctr_tools/igz.py` | Reader / writer for Alchemy `.igz` files (fixups, handles, deep clone, cross-file entity import, compaction) |
 | `ctr_tools/pak_tool.py`, `game_restore.py` | `.pak` archives (IGA v13, LZMA): extract, patch in place, backups, full restore |
 | `ctr_tools/track_clone.py`, `custom_category.py` | New tracks (renamed copy, hashes rebuilt) and the game's race menu |
-| `ctr_tools/havok*.py`, `cms_codec.py`, `collision*.py` | Havok collision: compressed-mesh decoder / encoder, compound instances |
+| `ctr_tools/havok*.py`, `cms_codec.py`, `collision*.py` | Havok collision: compressed-mesh decoder / encoder, compound instances; `havok_anim.py` decodes skeletal animations (animated object preview) |
+| `ctr_tools/animated.py` | Animated objects: catalog of the game's animated actors, copy into a track with their scripts, skins and animations |
 | `ctr_tools/route_gen.py`, `ai_gen.py`, `falls.py`, `start_finish.py` | Race line from the road, AI lanes, respawns and fall zones, finish line and grid |
 | `ctr_tools/model_build.py`, `texture_build.py`, `dae_import.py` | Model, material and PS4 texture (tiling, BC1/BC3, glow) generation |
 | `ctr_tools/powerup.py`, `teleport.py`, `minimap.py`, `menu_assets.py`, `library.py`, `lights.py`, `walls.py`, `flyby.py` | Crates and objects, teleporters, minimap, menus, object library, lights, invisible walls, intro flyover |
@@ -178,16 +167,34 @@ Importe ta map (OBJ / COLLADA) ou **construis-la de zéro dans l'éditeur**, tra
 
 Ce dossier contient l'éditeur seul. **CTR Track Installer**, l'appli à part pour les joueurs, n'en fait pas partie.
 
-### Nouveautés de la v0.4
+### Nouveautés de la v0.6
 Les points marqués *(pas encore essayé en jeu)* marchent dans l'éditeur et passent leurs tests hors jeu, sans confirmation en course pour l'instant.
 
-- **Onglet Création** : pose la route en conduisant une paveuse (clavier ou manette, boutons configurables), largeur 40 à 120 m, annuler / rétablir ; relief et peinture du sol, ponts automatiques, barrières, damier de départ ; **26 thèmes** tirés des pistes du jeu, objets de tous les thèmes avec vignettes 3D, au pinceau ou le long de la route. *(pas encore essayé en jeu : sauts avec le grand tremplin, « Creuser sous la route », route en bandes de 4 m, les 47 objets 3D ajoutés.)*
-- **Ta musique** : un morceau par piste (MP3, WAV, FLAC, OGG, M4A...), boucle sans blanc, niveau sonore du jeu. Dernier tour au choix : même musique sans changement (le jingle reste), même morceau plus rapide, autre morceau, ou l'original. Les packs emportent la musique. **Il faut FFmpeg** (voir plus bas). Essayé en jeu sur Crash Cove.
-- **Portage PC OCTR** : Fichier › Exporter pour le PC (OCTR) : un seul mod (.zip) avec une ou plusieurs pistes, le nom de chacune et celui de leur catégorie. Fonctionne dans OCTR, 21:9 compris.
-- **Boosters et sol** : **super turbos**, boosters **inclinés selon la pente**, boosters actifs en **contre-la-montre** ; réglages de couleur, puissance et réserve (effet de la puissance et de la durée pas vérifié à part) ; **types de sol** à vitesse et adhérence propres (sol lent essayé en jeu, glissade pas confirmée).
-- **Édition** : **Tester en jeu** en un bouton, onglet **Édition** unique (décor et course), filtre Tout / Piste / Décor, sélection rectangle (B), cacher / réafficher (H), **forme et textures d'un objet** (clic droit, modèles à plusieurs textures compris), **mini-carte plus grande**. *(pas encore essayé en jeu : « Visible des deux côtés », temps des reliques et des fantômes.)*
-- **Vérifier** signale aussi les **caméras de survol** pas refaites et les zones qui feraient réapparaître le kart sur la course.
-- **Fenêtre Qt** : plus besoin d'Edge WebView2. Les fichiers ajoutés à l'installation vont dans `update3.pak`, pour garder les positions d'`update.pak` et `update2.pak` (nécessaire au 21:9 et au 32:9 d'OCTR).
+- **Eau** : Relief › *💧 Remplir d'eau*, clic au fond d'un trou creusé et il se remplit jusqu'à son bord le plus bas ; niveau réglable (0 à 20 m sous le bord), 5 types d'eau (claire, lagon, marais, sombre, boue). Moins de 1,5 m : on roule au fond ; plus profond : on tombe et on réapparaît sur la route. *(pas encore essayé en jeu)*
+- **Le décor automatique ajoute parfois des points d'eau** : 1 à 3 dans des creux du relief, jamais sur la route ; refaits ou retirés avec le décor automatique. *(pas encore essayé en jeu)*
+- **Modifier le décor posé dans la Création** : Décor › À la main › *✋ Modifier* : déplacer, **tourner sur les 3 axes**, changer la taille et la hauteur, dupliquer, supprimer. *(rotation 3 axes pas encore essayée en jeu)*
+- **Outil Pont** (*🌉 Pont*) : clic sur un croisement, la route cliquée passe au-dessus de l'autre. *(pas encore essayé en jeu)*
+- **Outil Bords** : *〰 Lisser entre les extrémités* égalise largeur et relevé entre les deux bouts de la zone ; boutons − / + (et touches) pour réduire ou agrandir la zone, repères blancs à ses extrémités.
+- **Paveur** : après un recul, la route reprend la pente et l'inclinaison de la route d'avant (plus de bosse). *Supprimer toute la route* efface aussi les talus de l'ancienne route. Eau affichée opaque dans la vue 3D.
+- **Objets animés** (Ajouter › *🎞 Objet animé…*) : animaux, personnages, bannières, ballons, voiles… des autres pistes, avec **aperçu animé**, copiés dans ta piste à l'installation ; sélectionnables dans la vue 3D (déplacer, **tourner sur 3 axes**, taille). Essayé en jeu. *(rotation 3 axes pas encore essayée en jeu)*
+- **Aperçus 3D** des bibliothèques d'objets : tourner et zoomer à la souris (double-clic : vue de départ). « Placer au centre de la vue » vise vraiment le centre de l'écran.
+- **Packs de maps** : pistes créées affichées avec leur numéro et leur nom de menu (fini les lignes « Custom Map ») ; l'export garde l'inclinaison et les réglages des boosters (ré-exporte les anciens packs).
+- **Jeu et installation** : jeu en **un ou deux dossiers** (1.21 complet, ou base + mise à jour à côté, `-UPDATE` / `-patch`) ; **contrôle du ciel** avant l'installation et avant *Tester en jeu* ; *Tester en jeu* lance shadPS4 avec un environnement propre (corrige « point d'entrée ?convertVolume@QAudio… introuvable » sur certains PC).
+- **Linux** : l'AppImage est construite automatiquement sur GitHub et jointe à chaque release, et l'éditeur Linux se met maintenant à jour tout seul ; l'onglet Création est inclus dans la version Linux.
+- **Corrections** : objets animés invisibles en jeu (certains sont désactivés dans leur piste d'origine, comme les Zam d'Hyper Spaceway) ; chargement sans fin après la suppression d'une zone caméra (fonction expérimentale retirée depuis des menus).
+- **Bon à savoir** : pas de ciel et des textures qui laissent des traînées sur une carte graphique **Intel Arc** : c'est l'émulateur, pas l'éditeur (pareil sur les pistes d'origine). Le portage PC OCTR fonctionne.
+
+### Nouveautés de la v0.5
+Les points marqués *(pas encore essayé en jeu)* marchent dans l'éditeur et passent leurs tests hors jeu, sans confirmation en course pour l'instant.
+
+- **Mise à jour automatique** : au lancement, l'éditeur propose la nouvelle version publiée sur GitHub, se remplace et redémarre ; sauvegardes, réglages et FFmpeg restent en place. **La v0.4 n'a pas ce mécanisme : installe la v0.5 à la main une fois.**
+- **Éditeur plus clair** : icônes au trait, barre d'outils verticale sur la vue 3D, rappels souris dans la barre d'état, onglets dans l'ordre du travail ; panneau **Objets de la scène** (remplace Rechercher) avec tous les objets de la map par catégorie, vignettes 3D, sélection, cacher / afficher et infos ; inspecteur de droite rangé en blocs.
+- **Coloriser un objet** (bouton *Coloriser…* de la fiche ou clic droit) : teinte qui garde les détails de la texture ou peinture unie, intensité, aperçu en direct, choix des parties et « tous les objets identiques ». *(pas encore essayé en jeu)*
+- **Édition plus rapide sur les grandes maps** : ajouter, coloriser, changer un type de sol... ne recalcule plus toute la collision (environ 2 min sur une grande map) ; elle est refaite une fois à **Enregistrer** (pastille orange), et toujours avant l'installation et la vérification.
+- **Onglet Création** : panneau en blocs, Décor en deux onglets (*Automatique* / *À la main*) ; **décor automatique plus intelligent** (styles, quantités par famille, objets empruntés à d'autres thèmes quand le sol n'en a pas, virages dégagés) *(pas encore essayé en jeu)* ; hauteur de route de -200 à +300 m, inclinaison jusqu'à 30°, talus par morceau et largeur réglable, fondu entre peintures du sol, objets posés selon la pente, « Placer le kart » ; retrait des zones loin de la route ; « Générer la piste » propose une **nouvelle piste** par défaut.
+- **Course** : caisses orientables, rangées automatiques centrées sur la ligne de course ; **inverser le sens de la course** *(pas encore essayé en jeu)* ; parcours sur routes superposées (spirale) et sauts jusqu'à 80 m, voies IA qui gardent leur largeur *(pas encore essayé en jeu)* ; chutes et réapparitions sur les pistes dont les points sont dans le RaceSystem ; nouvelles pistes du jeu modifiables (Thunder Struck, Out of Time, Electron Avenue...).
+- **Jeu et installation** : **restaurer les archives du jeu** (cette piste ou tout le jeu) et **remettre une piste retirée** ; archive des grandes maps plafonnée à ce que le jeu charge, ligne « Mémoire du jeu » dans **Vérifier** ; type de sol **Turbo** retiré (sans effet en jeu : utilise les boosters).
+- **Corrections** : chargement sans fin quand une partie autre que la première d'un objet multi-textures avait une texture importée (roche colorisée) ; plantages en quittant une piste, avec trop de voies IA, et après « Tester en jeu » ; zones de chute sur le bord bas des virages inclinés ; erreur d'enregistrement après beaucoup de voies IA ; ciel manquant sur les pistes copiées.
 
 ### FFmpeg (seulement pour importer une musique)
 [FFmpeg](https://ffmpeg.org/download.html) **n'est pas inclus** dans ce dépôt (trop gros pour GitHub). Tout le reste marche sans lui, y compris jouer des pistes et des packs qui ont déjà leur musique.

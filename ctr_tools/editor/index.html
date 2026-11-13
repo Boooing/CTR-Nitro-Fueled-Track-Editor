@@ -476,7 +476,8 @@
      <button id="dimport" title="Un seul fichier .obj (textures du jeu au choix)">Importer un modèle OBJ…</button></div></div></details>
   <details class="sec" open><summary>📚 Objets du jeu <span class="hint">palmiers, panneaux, rochers…</span></summary>
    <div class="body"><p class="lead">Des objets des autres pistes du jeu, avec leurs textures, posés au centre de la vue.</p>
-    <div class="stack"><button id="dlib" title="Parcourir les objets de décor des 47 pistes et arènes">Bibliothèque d'objets du jeu…</button></div></div></details>
+    <div class="stack"><button id="dlib" title="Parcourir les objets de décor des 47 pistes et arènes">Bibliothèque d'objets du jeu…</button>
+      <button id="danim" title="Animaux, personnages, bannières, ballons, voiles… qui bougent en jeu">🎞 Objets animés…</button></div></div></details>
   <details class="sec" open><summary>🧱 Murs invisibles <span class="hint">collision seule, rien à l'écran en jeu</span></summary>
    <div class="body"><p class="lead">Empêchent les karts de tomber ou de couper. En violet dans l'éditeur ; chaque morceau se déplace, se tourne, s'allonge (échelle X) ou se rehausse (échelle Z) avec les poignées. Un modèle OBJ peut aussi devenir un mur invisible (clic droit, ou à l'import).</p>
     <div class="stack"><button id="dwallauto" class="primary" title="Murs le long des bords de la route, là où il y a du vide (et hors route si tu veux)">Générer le long de la route…</button>
@@ -1002,7 +1003,7 @@ function applyGizmoAxes() {
   const yawOnly = mode === 'race' && selected?.kind && selected.kind !== 'boost' && gizmo.getMode() === 'rotate';
   gizmo.showX = gizmo.showY = !yawOnly;
   // poignees de taille : zones de transition, boosters et zones de chute (profondeur X, largeur Y, hauteur Z)
-  const sizable = selected?.kind === 'transition' || selected?.kind === 'boost' || selected?.kind === 'fallZone' || selected?.kind === 'portal';
+  const sizable = selected?.kind === 'transition' || selected?.kind === 'boost' || selected?.kind === 'fallZone' || selected?.kind === 'portal' || selected?.kind === 'camZone';
   if (mode === 'race' && selected?.kind && !sizable && gizmo.getMode() === 'scale') gizmo.setMode('translate');
   if (mode === 'race') gizmo.space = sizable && gizmo.getMode() === 'scale' ? 'local' : 'world';
 }
@@ -1256,9 +1257,12 @@ function boostDialog(init, title) {
     ov.querySelectorAll('[data-c]').forEach(b => b.onclick = () => { v.color = b.dataset.c; paint(); });
     q('#bdclassic').onclick = () => { Object.assign(v, BOOST_PRESETS.classic); paint(); };
     q('#bdsuper').onclick = () => { Object.assign(v, BOOST_PRESETS.super); paint(); };
-    const done = r => { ov.remove(); resolve(r); };
+    // fermeture : Annuler / OK / Echap seulement. Un clic a cote fermait la fenetre, et le navigateur en compte un des
+    // qu'on appuie dans un champ et relache la souris hors de la fenetre (selection du chiffre) : reglages perdus.
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } };
+    const done = r => { removeEventListener('keydown', onKey, true); ov.remove(); resolve(r); };
+    addEventListener('keydown', onKey, true);
     q('#bdno').onclick = () => done(null);
-    ov.onclick = e => { if (e.target === ov) done(null); };
     q('#bdok').onclick = () => {
       const sp = parseFloat(q('#bdsp').value), du = parseFloat(String(q('#bddu').value).replace(',', '.'));
       if (!(sp >= 0 && sp <= 10000) || !(du >= 0.05 && du <= 30)) { status('Puissance de 0 à 10 000, durée de 0,05 à 30 s', 'err'); return; }
@@ -1353,6 +1357,66 @@ function renderFallSelection(valuesOnly) {
   $('fzdel').onclick = () => deleteFallZone(selected.index);
 }
 $('fzvis').onchange = () => { if (!$('fzvis').checked && selected?.kind === 'fallZone') select(null); renderFallMarkers(); };
+// ---- zones camera (2026-11-12) : sur une paroi roulable (sol « Driving wall ») a plus de 90 deg ou a l'envers, la
+// camera du kart se perdait. Boite ou le kart passe en camera « tunnel » (entite TunnelCam de Sewer Speedway copiee
+// dans le _Design, server.write_cam_zones). Ajout : menu Ajouter ; deplacer W, taille R, Suppr ----
+let camZones = [], camZonesLoaded = '[]';
+const camGroup = new THREE.Group(); scene.add(camGroup);
+function renderCamMarkers() {
+  camGroup.clear();
+  camZones.forEach((z, i) => {
+    if (z.deleted) return;
+    const sel = selected?.kind === 'camZone' && selected.index === i, d = z.dims;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(d[0], d[1], d[2]),
+      new THREE.MeshBasicMaterial({ color: sel ? 0xffe27a : 0x37c8ff, transparent: true, opacity: sel ? 0.25 : 0.1, depthWrite: false }));
+    m.add(new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({ color: sel ? 0xffe27a : 0x37c8ff })));
+    m.position.set(...z.pos);
+    m.userData = { kind: 'camZone', index: i, dims: [...d] };
+    camGroup.add(m);
+  });
+}
+function selectCamZone(i) { renderCamMarkers(); select(camGroup.children.find(x => x.userData.index === i) || null); }
+function deleteCamZone(i) {
+  camZones[i].deleted = true; select(null); renderCamMarkers(); markDirty(); pushHistory();
+  status('Zone caméra supprimée (enregistre pour l\'appliquer)');
+}
+// « Ajouter > Zone camera » RETIRE du menu le 2026-11-13 (mode tunnel : pas d'effet utile). Les zones deja posees restent
+// affichees et supprimables ; le serveur continue de declarer leur script (cam_install_files)
+function addCamZoneAtView() {
+  const t = orbit.target, gz = groundZ(t.x, t.y, t.z) ?? t.z;
+  camZones.push({ name: null, pos: [Math.round(t.x), Math.round(t.y), Math.round(gz + 15 * 39.37)],
+                  dims: [60, 60, 40].map(v => Math.round(v * 39.37)) });
+  renderCamMarkers(); selectCamZone(camZones.length - 1); markDirty(); pushHistory();
+  status('Zone caméra ajoutée au centre de la vue : englobe toute la paroi roulable (taille : R), puis Enregistrer et réinstaller', 'ok');
+}
+function renderCamSelection(valuesOnly) {
+  const box = $('sel'), z = camZones[selected.index];
+  if (!z) return;
+  const m = v => (v / 39.37).toFixed(1);
+  if (valuesOnly && box.querySelector('[data-cz]')) {
+    box.querySelectorAll('[data-cz]').forEach(inp => {
+      const [f, k] = inp.dataset.cz.split(':');
+      if (document.activeElement !== inp) inp.value = f === 'dims' ? m(z.dims[+k]) : z.pos[+k].toFixed(0);
+    });
+    return;
+  }
+  const row = (f, label, vals, conv) => insRow(label, vals.map((v, k) => `<input data-cz="${f}:${k}" type="number" value="${conv(v)}">`).join(''));
+  box.innerHTML = insHead('Zone caméra', `<span style="color:var(--muted);font-size:11px">${esc(z.name || 'nouvelle')}</span>`)
+    + `<div class="inssub">Dans cette boîte, la caméra du kart passe en mode « tunnel » (comme dans les tunnels de Sewer Speedway) :
+      pour les parois roulables très inclinées ou à l'envers. Elle doit englober toute la paroi et un peu d'espace au-dessus.</div>`
+    + insBlock('Position', insXYZ + row('pos', 'Centre (po)', z.pos, v => v.toFixed(0)) + row('dims', 'Taille (m)', z.dims, m))
+    + insBlock('Outil', '<div class="grid2"><button data-g="translate">Déplacer<kbd>W</kbd></button><button data-g="scale">Taille<kbd>R</kbd></button></div>')
+    + insBlock('Actions', '<div class="grid2"><button id="czfocus">Centrer la vue</button><button id="czdel" class="danger">Supprimer<kbd>Suppr</kbd></button></div>');
+  box.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { gizmo.setMode(b.dataset.g); applyGizmoAxes(); });
+  box.querySelectorAll('[data-cz]').forEach(inp => inp.onchange = () => {
+    const [f, k] = inp.dataset.cz.split(':'), v = parseFloat(inp.value);
+    if (!isFinite(v)) return;
+    if (f === 'dims') z.dims[+k] = Math.max(100, v * 39.37); else z.pos[+k] = v;
+    selectCamZone(selected.index); markDirty(); pushHistory();
+  });
+  $('czfocus').onclick = () => focusOn(z.pos);
+  $('czdel').onclick = () => deleteCamZone(selected.index);
+}
 // points de reapparition (entites du _Design ou du _RaceSystem citees par les splines de position) : affichage seul
 let respawnPts = {};
 const respawnGroup = new THREE.Group(); scene.add(respawnGroup);
@@ -1789,6 +1853,12 @@ function startChanged() {
       z.pos = m.position.toArray().map(v => Math.round(v));
       if (gizmo.getMode() === 'scale') z.dims = [0, 1, 2].map(k => Math.max(100, Math.round(m.userData.dims[k] * Math.abs(m.scale.getComponent(k)))));
     }
+  } else if (sel.kind === 'camZone') {
+    const m = camGroup.children.find(x => x.userData.index === sel.index), z = camZones[sel.index];
+    if (m && z) {
+      z.pos = m.position.toArray().map(v => Math.round(v));
+      if (gizmo.getMode() === 'scale') z.dims = [0, 1, 2].map(k => Math.max(100, Math.round(m.userData.dims[k] * Math.abs(m.scale.getComponent(k)))));
+    }
   } else if (sel.kind === 'transition') {
     const m = markers.children.find(x => x.userData.name === sel.name), t = transitions[sel.name];
     t.position = m.position.toArray(); t.yaw = m.rotation.z;
@@ -1888,6 +1958,7 @@ function renderStartSelection(valuesOnly) {
   if (sel.kind === 'crateGroup') { renderCrateGroupSelection(valuesOnly); return; }
   if (sel.kind === 'boost') { renderBoostSelection(valuesOnly); return; }
   if (sel.kind === 'fallZone') { renderFallSelection(valuesOnly); return; }
+  if (sel.kind === 'camZone') { renderCamSelection(valuesOnly); return; }
   if (sel.kind === 'grid') { ({ pos, yaw } = startGrid[sel.index]); }
   else if (sel.kind === 'gridAll') { pos = gridPivot.position.toArray(); yaw = gridPivot.rotation.z; }
   else if (sel.kind === 'tpArrival') { ({ pos, yaw } = teleporters[sel.name]); }
@@ -2190,6 +2261,11 @@ function select(handle) {
     if (selected?.kind === 'fallZone') handle = fallGroup.children.find(x => x.userData.index === selected.index);
     if (selected?.kind === 'fallZone' && gizmo.getMode() === 'rotate') gizmo.setMode('translate');   // boite alignee sur les axes
   }
+  if (was === 'camZone' || selected?.kind === 'camZone') {
+    renderCamMarkers();
+    if (selected?.kind === 'camZone') handle = camGroup.children.find(x => x.userData.index === selected.index);
+    if (selected?.kind === 'camZone' && gizmo.getMode() === 'rotate') gizmo.setMode('translate');     // boite alignee sur les axes
+  }
   if (selected?.kind === 'transition') { renderTransitionMarkers(); handle = markers.children.find(x => x.userData.name === selected.name); }
   if (was === 'flyPose' || selected?.kind === 'flyPose') {
     renderFlybyMarkers();
@@ -2236,6 +2312,9 @@ renderer.domElement.addEventListener('pointerup', e => {
   const race = pickFilter !== 'decor', dec = pickFilter !== 'race';
   const lh = dec && lightGroup.visible ? ray.intersectObjects(lightGroup.children, false)[0] : null;   // petites : d'abord
   if (lh) { setContext('decor'); selectLight(lh.object.userData.light); return; }
+  const ah = dec && animGroup.visible ? ray.intersectObjects(animGroup.children.filter(m => m.userData.anim != null), false)[0] : null;
+  if (ah) { selectAnim(ah.object.userData.anim); return; }      // objets animes : devant le decor qu'ils touchent
+  if (animSel >= 0) selectAnim(-1);
   // priorite : points de spline, caisses, boosters, places de la grille... puis le decor ; zones des transitions et de
   // chute (grandes boites qui englobent le sol) seulement si rien d'autre n'est sous le curseur
   const hit = race && (ray.intersectObjects(routeShown() ? splines.filter(s => s.group.visible).flatMap(s => s.handles) : [])[0]
@@ -2247,7 +2326,8 @@ renderer.domElement.addEventListener('pointerup', e => {
   // chute, grandes boites qui les englobent, ne se cliquaient plus)
   let dHit = !hit && dec ? ray.intersectObjects(decorGroup.children.filter(m => m.visible && !isCreatorGround(m)), false)[0] : null;
   const box = !hit && !dHit && race ? (routeShown() ? ray.intersectObjects(markers.children, false)[0] || ray.intersectObjects(portalGroup.children, false)[0] : null)
-    || (fallGroup.visible ? ray.intersectObjects(fallGroup.children, false)[0] : null) : null;
+    || (fallGroup.visible ? ray.intersectObjects(fallGroup.children, false)[0] : null)
+    || ray.intersectObjects(camGroup.children, false)[0] : null;
   if (!hit && !dHit && !box && dec) dHit = ray.intersectObjects(decorGroup.children.filter(m => m.visible && isCreatorGround(m)), false)[0] || null;
   if (hit && hit.object.userData.kind === 'crate' && (e.shiftKey || e.ctrlKey || e.metaKey)) { toggleCrate(hit.object.userData.index); return; }
   if (hit || box) { setContext('race'); select((hit || box).object); return; }
@@ -2937,6 +3017,7 @@ async function clearRaceScene() {
   crates = []; boosts = []; teleporters = {};
   Object.values(portals).forEach(p => { p.deleted = true; });
   fallZones.forEach(z => { z.deleted = true; });
+  camZones.forEach(z => { z.deleted = true; }); renderCamMarkers();
   designPoses = { ...designPoses, ...moves.design_moves, ...respawns };
   raceEntityPositions = { ...raceEntityPositions, ...moves.race_moves };
   realignGridOnFinish(true);
@@ -2988,6 +3069,14 @@ addEventListener('keydown', e => {
     if (e.key === 'H') { showHiddenDecor(); return; }                       // Maj+H
     if (e.key === 'h' && mode === 'decor' && dMulti.length) { hideDecor([...dMulti]); return; }
   }
+  if (mode === 'decor' && animSel >= 0 && !dMulti.length) {   // objet anime selectionne
+    if (!e.ctrlKey && !e.metaKey && (e.key === 'w' || e.key === 'z')) gizmo.setMode('translate');
+    if (e.key === 'e') gizmo.setMode('rotate');
+    if (e.key === 'r') gizmo.setMode('scale');
+    if (e.key === 'Delete') { animItems.splice(animSel, 1); selectAnim(-1); animSave('Objet retiré'); }
+    else if (e.key === 'Escape') selectAnim(-1);
+    return;
+  }
   if (mode === 'decor' && lightSel != null) {             // lumiere selectionnee : deplacer seulement
     if (e.key === 'Delete') deleteLight(lightSel);
     else if (e.key === 'Insert') duplicateLight(lightSel);
@@ -3005,10 +3094,10 @@ addEventListener('keydown', e => {
     return;
   }
   if (!selected) return;
-  if (selected.kind === 'fallZone') {
+  if (selected.kind === 'fallZone' || selected.kind === 'camZone') {
     if (e.key === 'w' || e.key === 'z') { gizmo.setMode('translate'); applyGizmoAxes(); }
     if (e.key === 'r') { gizmo.setMode('scale'); applyGizmoAxes(); }
-    if (e.key === 'Delete') deleteFallZone(selected.index);
+    if (e.key === 'Delete') (selected.kind === 'camZone' ? deleteCamZone : deleteFallZone)(selected.index);
     else if (e.key === 'Escape') select(null);
     return;
   }
@@ -3065,7 +3154,7 @@ const decorSnap = () => JSON.stringify({ edits: dEdits, ops: dOps, lights });
 const raceSnap = () => JSON.stringify({ splines: splines.map(s => ({ name: s.name, kind: s.kind, shortcut: s.shortcut, points: s.points,
     isNew: s.isNew, template: s.template, visible: s.visible, respawns: s.respawns })), transitions, starting, deleted,
     startGrid, playerStart, replacedAi, designPoses, raceEntityPositions, crates, boosts, teleporters, flyby,
-    deletedTransitions, sectionMerges, fallZones, portals });
+    deletedTransitions, sectionMerges, fallZones, portals, camZones });
 function snapshotState() { return JSON.stringify({ r: raceSnap(), d: decorSnap() }); }
 // etat enregistre de chaque partie : « Enregistrer » n'envoie que celle(s) qui ont change
 let savedSnap = { r: null, d: null };
@@ -3115,8 +3204,9 @@ function restoreState(s) {
     designPoses = st.designPoses || {}; raceEntityPositions = st.raceEntityPositions || {}; crates = st.crates || [];
     boosts = st.boosts || []; teleporters = st.teleporters || {}; flyby = st.flyby || {};
     deletedTransitions = st.deletedTransitions || []; sectionMerges = st.sectionMerges || {};
-    fallZones = st.fallZones || []; portals = st.portals || {};
+    fallZones = st.fallZones || []; portals = st.portals || {}; camZones = st.camZones || [];
     select(null); renderTransitionMarkers(); renderStartMarkers(); renderCrateMarkers(); renderBoostMarkers(); renderFallMarkers(); renderPortalMarkers();
+    renderCamMarkers();
     renderTeleportMarkers(); renderFlybyMarkers(); renderFlybyPanel(); renderPanel();
   }
   dirty = all.r !== savedSnap.r || all.d !== savedSnap.d;
@@ -3158,6 +3248,7 @@ gizmo.addEventListener('dragging-changed', e => {
     const i = selected.index; renderBoostMarkers(); selectBoost(i);
   }
   if (!e.value && mode === 'race' && selected?.kind === 'fallZone' && gizmo.getMode() === 'scale') selectFallZone(selected.index);
+  if (!e.value && mode === 'race' && selected?.kind === 'camZone' && gizmo.getMode() === 'scale') selectCamZone(selected.index);
   if (!e.value && mode === 'race' && selected?.kind === 'portal' && gizmo.getMode() === 'scale') selectPortal(selected.name);
   if (!e.value && dirty) pushHistory();
 });
@@ -3385,6 +3476,7 @@ async function loadDecor(keepCamera, refreshCol = !!keepCamera) {
   resetHistory('decor');
   const n = decor.files.reduce((a, f) => a + f.objects.length, 0);
   status(`Décor : ${n} objets, ${models.length} modèles, ${decor.files.length} fichiers` + (decor.files.some(f => f.saved) ? ' (versions enregistrées)' : ''), 'ok');
+  loadAnimated();                                        // objets animes poses (liste a part, copies a l'installation)
   creator?.rehide();
 }
 function applyFileVisibility() {
@@ -3505,6 +3597,7 @@ function selectDecor(m, toggle = false) {
 function setDecorSelection(list) {
   if (list.some(Boolean)) setContext('decor');
   if (list.some(Boolean) && lightSel != null) { lightSel = null; renderLights(); }
+  if (list.some(Boolean) && animSel >= 0) { animSel = -1; renderAnimated(); renderAnimList(); }
   for (const m of dMulti) { m.material = baseMaterial(m); m.userData.linkMesh?.removeFromParent(); }
   dMulti = list.filter(Boolean);
   dSelected = dMulti.length === 1 ? dMulti[0] : null;
@@ -3791,8 +3884,11 @@ function editSurfacePhys(list, surfaces) {
   const q = s => ov.querySelector(s);
   q('#spv').value = pct((first || def).speed); q('#sps').value = pct((first || def).slide);
   q('#spdef').onclick = () => { q('#spv').value = pct(def.speed); q('#sps').value = pct(def.slide); };
-  const close = () => ov.remove();
-  q('#spno').onclick = close; ov.onclick = e => { if (e.target === ov) close(); };
+  // fermeture : Annuler / OK / Echap seulement (un clic a cote la fermait, meme en relachant la souris hors du champ)
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const close = () => { removeEventListener('keydown', onKey, true); ov.remove(); };
+  addEventListener('keydown', onKey, true);
+  q('#spno').onclick = close;
   q('#spok').onclick = () => {
     const sp = parseFloat(q('#spv').value), sl = parseFloat(q('#sps').value);
     if (!(sp >= 5 && sp <= 300) || !(sl >= 0 && sl <= 100)) { status('Vitesse de 5 à 300 %, glissade de 0 à 100 %', 'err'); return; }
@@ -3999,6 +4095,7 @@ async function scaleMap(f, P, off = [0, 0, 0], killzFloor = null) {
   for (const n in raceEntityPositions) raceEntityPositions[n] = S(raceEntityPositions[n]);
   // zones de chute : centre ET taille (le centre seul suivait, via les poses du _Design : boites trop petites)
   fallZones = fallZones.map(z => ({ ...z, pos: S(z.pos), dims: z.dims.map(v => v * f) }));
+  camZones = camZones.map(z => ({ ...z, pos: S(z.pos), dims: z.dims.map(v => v * f) }));
   const r1 = await saveRace({ killz: killzFloor ?? P[2] + (sp.killz - P[2]) * f + off[2] });
   // lumieres ajoutees (fichier _Lighting) : position et portee, enregistrees avec le decor ci-dessous
   lights = lights.map(l => ({ ...l, pos: S(l.pos), radius: Math.min(50000, l.radius * f) }));
@@ -4166,6 +4263,7 @@ function recordDecorEdit(m) {
   else e.moves[obj.id] = obj.has_transform ? t : { pos: t.pos };
 }
 function decorChanged() {
+  if (animSel >= 0 && gizmo.object?.userData.anim === animSel) { animMoved(); return; }
   if (lightSel != null && gizmo.object?.userData.light === lightSel) { lightMoved(); return; }
   if (gizmo.object === pivot && dMulti.length > 1) { multiChanged(); return; }
   const m = dSelected; if (!m) return;
@@ -4207,6 +4305,7 @@ function renderMultiSel(valuesOnly) {
 function renderDecorSel(valuesOnly) {
   const box = $('dsel'), m = dSelected;
   if (!valuesOnly) sceneSync();
+  if (animSel >= 0 && !dMulti.length && lightSel == null) { renderAnimSel(valuesOnly); return; }
   if (lightSel != null && !dMulti.length) { renderLightSel(valuesOnly); return; }
   if (dMulti.length > 1) { renderMultiSel(valuesOnly); return; }
   if (!m) { box.innerHTML = 'Aucun objet sélectionné. Clique sur un objet du décor (Maj+clic : plusieurs).'; return; }
@@ -4282,7 +4381,7 @@ let meshEdit = null;
 const ME_COLORS = [0xff8040, 0x40c0ff, 0x80e060, 0xe060e0, 0xffe040, 0x60e0c0, 0xff6080, 0xa080ff];
 async function startMeshEdit(mesh) {
   if (meshEdit) return;
-  if (mesh.userData.isNew || dirty) { status('Enregistre d\'abord le décor (objet ajouté ou modifications en attente), puis recommence', 'err'); return; }
+  mesh = await flushDecorFor(mesh); if (!mesh) return;
   if (mesh.userData.obj.invisible) { status('Mur invisible : pas de forme visible à modifier', 'err'); return; }
   let info;
   try { info = await (await fetch(`/api/model_parts?track=${encodeURIComponent(track)}&file=${encodeURIComponent(mesh.userData.obj.model)}`)).json(); }
@@ -4532,9 +4631,28 @@ addEventListener('keydown', e => {
 // l'apercu, meme calcul) et l'objet devient un modele importe multi-textures (/api/recolor -> mesh_save).
 let tintEdit = null;
 const TINT_SWATCHES = ['#e53935', '#fb8c00', '#fdd835', '#7cb342', '#26a69a', '#1e88e5', '#5e35b1', '#d81b60', '#8d6e63', '#eceff1', '#546e7a', '#212121'];
+// Objet a modifier par une operation immediate (couleur, forme) alors que le decor a des modifications en attente :
+// elles sont d'abord enregistrees (collision differee, quelques secondes), puis l'objet est retrouve dans le decor
+// relu (meme fichier et meme nom, le plus proche : son id change si des copies / suppressions ont ete enregistrees).
+// Avant (2026-11-11) : il fallait enregistrer a la main apres chaque couleur. -> objet (mesh) ou null
+async function flushDecorFor(mesh) {
+  if (!decorDirty() && !mesh.userData.isNew) return mesh;
+  const { file } = mesh.userData, name = mesh.userData.obj.name, at = mesh.position.clone(), copy = !!mesh.userData.isNew;
+  status('Enregistrement des modifications en attente…');
+  const r = await saveDecor({ defer: true });
+  if (!r) return null;
+  let best = null, bd = Infinity;
+  for (const m of allDecorMeshes) {                       // copie pas encore enregistree : elle recoit son nom a l'enregistrement
+    if (m.userData.file !== file || (!copy && m.userData.obj.name !== name)) continue;
+    const d = m.position.distanceTo(at); if (d < bd) { bd = d; best = m; }
+  }
+  if (!best || bd > 50) { status('Objet introuvable après l\'enregistrement : sélectionne-le de nouveau', 'err'); return null; }
+  setContext('decor'); selectDecor(best);
+  return best;
+}
 async function startRecolor(mesh) {
   if (tintEdit || meshEdit) return;
-  if (mesh.userData.isNew || dirty) { status('Enregistre d\'abord le décor (objet ajouté ou modifications en attente), puis recommence', 'err'); return; }
+  mesh = await flushDecorFor(mesh); if (!mesh) return;
   if (mesh.userData.obj.invisible) { status('Mur invisible : rien à coloriser', 'err'); return; }
   let info;
   try { info = await (await fetch(`/api/model_parts?track=${encodeURIComponent(track)}&file=${encodeURIComponent(mesh.userData.obj.model)}`)).json(); }
@@ -4812,6 +4930,7 @@ function sceneModel() {
     { key: 'crates', label: 'Caisses et fruits', color: '#ff8a2a', groups: Object.entries(kinds).map(([k, items]) => ({ key: 'c:' + k, label: (CRATE_KINDS[k] || CRATE_KINDS.question)[2], items })) },
     { key: 'boosts', label: 'Boosters', color: '#ffb020', items: ofGroup(boostGroup, 'boost', 'booster', selectBoost, 'boost') },
     { key: 'falls', label: 'Zones de chute', color: '#ff6b6b', items: ofGroup(fallGroup, 'fallZone', 'zone de chute', selectFallZone, 'fallZone') },
+    { key: 'cams', label: 'Zones caméra', color: '#37c8ff', items: ofGroup(camGroup, 'camZone', 'zone caméra', selectCamZone, 'camZone') },
   ];
 }
 function scSetHidden(meshes, hide) {
@@ -4957,6 +5076,7 @@ function renderLights() {
 }
 function selectLight(i) {
   if (i != null) setContext('decor');
+  if (i != null && animSel >= 0) { animSel = -1; renderAnimated(); renderAnimList(); }
   if (dMulti.length) setDecorSelection([]);
   lightSel = i;
   if (i == null && gizmo.object?.userData.light != null) gizmo.detach();
@@ -5252,7 +5372,7 @@ $('dlib').onclick = async () => {
     status(`Bibliothèque : ${libCatalog.length} objets`);
   }
   // panneau de droite (a la place de « Sélection ») : la vue 3D reste visible pendant qu'on choisit
-  closeLib();
+  closeLib(); closeAnim();
   const ov = document.createElement('div');
   ov.id = 'libPanel';
   const field = 'background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
@@ -5283,8 +5403,9 @@ $('dlib').onclick = async () => {
   const cam = new THREE.PerspectiveCamera(40, box.clientWidth / box.clientHeight, 1, 1e6); cam.up.set(0, 0, 1);
   const holder = new THREE.Group(); sc.add(holder);
   let mesh = null, bbox = null, token = 0;
-  rnd.setAnimationLoop(() => { holder.rotation.z += 0.006; rnd.render(sc, cam); });
-  const close = () => { rnd.setAnimationLoop(null); rnd.dispose(); ov.remove(); $('details').classList.remove('libopen'); closeLib = () => {}; };
+  const ctl = previewOrbit(cam, rnd.domElement);
+  rnd.setAnimationLoop(() => { if (!ctl.touched) holder.rotation.z += 0.006; ctl.update(); rnd.render(sc, cam); });
+  const close = () => { rnd.setAnimationLoop(null); ctl.dispose(); rnd.dispose(); ov.remove(); $('details').classList.remove('libopen'); closeLib = () => {}; };
   closeLib = close;
   const list = ov.querySelector('#ll'), info = ov.querySelector('#linfo'), msg = ov.querySelector('#lvmsg');
   const show = async m => {
@@ -5306,6 +5427,7 @@ $('dlib').onclick = async () => {
       mesh.position.set(-c.x, -c.y, -c.z); holder.add(mesh); holder.rotation.z = 0;
       const r = Math.max(size.length() / 2, 1);
       cam.position.set(r * 1.9, -r * 1.9, r * 1.3); cam.lookAt(0, 0, 0); cam.near = r / 100; cam.far = r * 100; cam.updateProjectionMatrix();
+      ctl.fit(r);
       msg.style.display = 'none';
       const mm = v => (v / 39.37).toFixed(v < 393.7 ? 1 : 0).replace('.', ',');
       info.innerHTML += `<br><span style="color:var(--muted)">Taille : ${mm(size.x)} × ${mm(size.y)} × ${mm(size.z)} m · ${Math.round(g.index.count / 3)} triangles</span>`;
@@ -5345,6 +5467,300 @@ $('dlib').onclick = async () => {
       focusSelection();
       status('Objet ajouté — ' + r.report.join(' · '), 'ok');
     } catch (e) { status('Erreur : ' + e.message, 'err'); }
+  };
+};
+
+// Objets animes (2026-11-12) : acteurs d'autres pistes (animaux, personnages, bannieres, ballons, voiles...) copies dans
+// la piste a l'installation (animated.py, server.animated_install). Liste a part (out/editor/<piste>_animated.json), pas
+// dans le decor enregistre ; ici en pose de repos (l'animation ne se voit qu'en jeu).
+let animCatalog = null, animItems = [], animSel = -1, animToken = 0, closeAnim = () => {}, renderAnimList = () => {};
+const animGroup = new THREE.Group(); scene.add(animGroup);const animGrey = new THREE.MeshLambertMaterial({ color: 0x9a9a9a });
+const animMats = g => g.userData.texKeys?.length ? [animGrey, ...g.userData.texKeys.map(textureMaterial)] : animGrey;
+async function loadAnimated() {
+  try { animItems = await api('/api/animated?track=' + encodeURIComponent(track)); } catch (e) { animItems = []; }
+  animSel = -1; renderAnimated(); renderAnimList();
+}
+// apercu 3D des bibliotheques (2026-11-12) : glisser = tourner autour de l'objet, molette = zoom, double-clic = vue de
+// depart. L'objet tourne seul tant qu'on n'y a pas touche.
+function previewOrbit(cam, dom) {
+  const c = new OrbitControls(cam, dom);
+  c.enablePan = false; c.enableDamping = true; c.dampingFactor = 0.15; c.touched = false;
+  c.addEventListener('start', () => { c.touched = true; });
+  let home = null;
+  c.fit = r => { c.target.set(0, 0, 0); c.minDistance = r * 0.2; c.maxDistance = r * 20; c.touched = false;
+                 home = cam.position.clone(); c.update(); };
+  dom.addEventListener('dblclick', () => { if (home) { cam.position.copy(home); c.target.set(0, 0, 0); c.touched = false; c.update(); } });
+  dom.title = 'Glisser : tourner autour · molette : zoom · double-clic : vue de départ';
+  dom.style.cursor = 'grab';
+  return c;
+}
+let animBox = null;                                        // cadre orange de l'objet anime selectionne
+async function renderAnimated() {
+  const my = ++animToken;
+  const geos = await Promise.all(animItems.map(it => getGeometry(it.actor).catch(() => null)));
+  if (my !== animToken) return;
+  const hadGizmo = gizmo.object?.userData.anim != null;
+  animGroup.clear(); animBox = null;
+  let handle = null;
+  animItems.forEach((it, i) => {
+    const g = geos[i]?.attributes.position.count ? geos[i] : null;
+    const m = g ? new THREE.Mesh(g, animMats(g)) : new THREE.Mesh(new THREE.BoxGeometry(80, 80, 80), new THREE.MeshBasicMaterial({ color: 0xff9f1c, wireframe: true }));
+    m.position.set(...it.pos); m.rotation.set(it.rx || 0, it.ry || 0, it.yaw || 0, 'ZYX'); m.scale.setScalar(it.scale || 1);
+    m.userData.anim = i; animGroup.add(m);
+    if (i === animSel) { animBox = new THREE.BoxHelper(m, 0xff9f1c); animBox.raycast = () => {}; animGroup.add(animBox); handle = m; }
+  });
+  // selection dans la vue (2026-11-12) : poignees W / E / R comme le decor
+  if (handle && mode === 'decor') { gizmo.attach(handle); gizmo.showX = gizmo.showY = gizmo.showZ = true; }   // 3 axes (rotation comprise)
+  else if (hadGizmo) gizmo.detach();
+}
+// point vise au centre de l'ecran : sol gris (collision) ou decor sous le centre de la vue, sinon le pivot de la camera
+function viewCenterPoint() {
+  const rc = new THREE.Raycaster(); rc.setFromCamera(new THREE.Vector2(0, 0), camera);
+  const targets = [colMesh, ...decorGroup.children.filter(m => m.visible)].filter(Boolean);
+  const h = rc.intersectObjects(targets, false)[0];
+  if (h) return h.point.clone();
+  const t = orbit.target, gz = groundZ(t.x, t.y, t.z);
+  return new THREE.Vector3(t.x, t.y, gz ?? t.z);
+}
+function selectAnim(i, focus) {
+  if (i >= 0) { setContext('decor'); if (dMulti.length) setDecorSelection([]); if (lightSel != null) selectLight(null); gizmo.setMode('translate'); }
+  animSel = animItems[i] ? i : -1;
+  if (animSel < 0 && gizmo.object?.userData.anim != null) gizmo.detach();
+  renderAnimated(); renderAnimList(); renderDecorSel();
+  if (focus && animSel >= 0) animFocus(animSel);
+}
+function animMoved() {                                     // pendant le geste : valeurs lues sur la poignee
+  const m = gizmo.object, it = animItems[m.userData.anim]; if (!it) return;
+  it.pos = m.position.toArray();
+  if (m.rotation.order !== 'ZYX') m.rotation.reorder('ZYX');      // ordre du jeu (R = Rz*Ry*Rx)
+  it.rx = m.rotation.x; it.ry = m.rotation.y; it.yaw = m.rotation.z;
+  if (gizmo.getMode() === 'scale') { const s = Math.max(0.05, (m.scale.x + m.scale.y + m.scale.z) / 3); m.scale.setScalar(s); it.scale = s; }
+  animBox?.update(); renderAnimSel(true);
+}
+gizmo.addEventListener('dragging-changed', e => {           // fin du geste : enregistre (liste a part, pas « Enregistrer »)
+  if (!e.value && gizmo.object?.userData.anim != null && animSel >= 0) animSave('Objet animé modifié');
+});
+function renderAnimSel(valuesOnly) {
+  const box = $('dsel'), it = animItems[animSel]; if (!it) return;
+  const DEG = 180 / Math.PI, m = v => (v / 39.37).toFixed(2);
+  if (valuesOnly && box.querySelector('[data-an]')) {
+    const deg = v => ((v || 0) * DEG).toFixed(1);
+    const vals = { p0: m(it.pos[0]), p1: m(it.pos[1]), p2: m(it.pos[2]), rx: deg(it.rx), ry: deg(it.ry), yaw: deg(it.yaw),
+                   scale: (+(it.scale || 1)).toFixed(2) };
+    box.querySelectorAll('[data-an]').forEach(i => { if (document.activeElement !== i) i.value = vals[i.dataset.an]; });
+    return;
+  }
+  box.innerHTML = `<div style="font-weight:600;margin-bottom:4px">🎞 ${esc(it.name || it.entity)}</div>
+    <div class="inssub">Objet animé : il bouge en jeu. W déplacer · E tourner (3 axes) · R échelle · Suppr retirer · Échap désélectionner.</div>
+    ${insBlock('Position (m)', insXYZ + insRow('', [0, 1, 2].map(k => `<input data-an="p${k}" type="number" step="0.5">`).join(''), 3))}
+    ${insBlock('Rotation (°)', insXYZ + insRow('', '<input data-an="rx" type="number" step="15"><input data-an="ry" type="number" step="15"><input data-an="yaw" type="number" step="15">', 3))}
+    ${insBlock('Échelle', insRow('Taille ×', '<input data-an="scale" type="number" step="0.1" min="0.05">', 1, '1 = taille d\'origine'))}
+    <div class="btns" style="margin-top:6px"><button id="anground">Poser sur le sol</button><button id="anfocus">🎯 Aller voir</button><button id="andel">🗑 Retirer</button></div>`;
+  renderAnimSel(true);
+  box.querySelectorAll('[data-an]').forEach(inp => inp.onchange = () => {
+    const v = parseFloat(inp.value); if (!isFinite(v)) return;
+    const k = inp.dataset.an;
+    if (k[0] === 'p') it.pos[+k[1]] = v * 39.37;
+    else if (k === 'yaw' || k === 'rx' || k === 'ry') it[k] = v / DEG;
+    else it.scale = Math.max(0.05, v);
+    animSave('Objet animé modifié');
+  });
+  $('anground').onclick = async () => {
+    const gz = groundZ(it.pos[0], it.pos[1], it.pos[2] + 200); if (gz == null) { status('Pas de sol sous l\'objet', 'err'); return; }
+    let lift = 0;
+    try { const g = await getGeometry(it.actor); g.computeBoundingBox(); lift = -g.boundingBox.min.z * (it.scale || 1); } catch (e) {}
+    it.pos[2] = gz + lift; animSave('Objet animé posé sur le sol');
+  };
+  $('anfocus').onclick = () => animFocus(animSel);
+  $('andel').onclick = () => { animItems.splice(animSel, 1); selectAnim(-1); animSave('Objet retiré'); };
+}
+async function animSave(msg) {
+  try {
+    animItems = (await api('/api/animated_save', { track, items: animItems })).items;
+    renderAnimated(); renderAnimList();
+    status((msg || 'Objets animés enregistrés') + ' — installe la piste (ou « Tester en jeu ») pour les voir bouger en jeu', 'ok');
+  } catch (e) { status('Erreur : ' + e.message, 'err'); }
+}
+function animFocus(i) {
+  const it = animItems[i]; if (!it) return;
+  const d = new THREE.Vector3(...it.pos).sub(orbit.target);
+  orbit.target.add(d); camera.position.add(d); orbit.update();
+}
+$('danim').onclick = async () => {
+  closeLib(); closeAnim();
+  if (!animCatalog) {
+    status('Recherche des objets animés du jeu (la première fois : quelques secondes à quelques minutes)…');
+    try { animCatalog = await api('/api/animated_catalog'); } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
+    status(`Objets animés : ${animCatalog.length}`);
+  }
+  const ov = document.createElement('div');
+  ov.id = 'libPanel';
+  const field = 'background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  ov.innerHTML = `<div class="dhead" style="display:flex;align-items:center;gap:6px"><span style="flex:1">🎞 Objets animés</span>
+      <button id="acancel" title="Fermer (Échap)">✕</button></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Animaux, personnages, bannières, ballons, voiles… des autres pistes, qui
+    <b>bougent en jeu</b>. Ici ils restent immobiles. Ils sont copiés dans la piste à l'installation.</div>
+    <input id="aq" placeholder="chercher : penguin, chicken, banner, balloon, bear…" style="${field};width:100%;margin-bottom:4px">
+    <div id="al" style="overflow:auto;height:22vh;min-height:120px;border:1px solid var(--line);border-radius:6px;padding:2px"></div>
+    <div id="av" style="width:100%;height:170px;margin-top:6px;border-radius:6px;overflow:hidden;background:#101216;position:relative">
+      <div id="avmsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:12px">Choisis un objet dans la liste pour le voir ici.</div></div>
+    <label id="aanimrow" style="display:none;gap:6px;align-items:center;font-size:12px;margin:4px 0">Animation
+      <select id="aanim" style="${field};flex:1;min-width:0"></select></label>
+    <div id="ainfo" style="font-size:12px;margin:6px 0;min-height:30px"></div>
+    <label style="display:flex;gap:6px;align-items:center;font-size:12px;margin:4px 0">Rotation (°)
+      <input id="ayaw" type="number" step="15" value="0" style="${field};width:64px">
+      Échelle <input id="ascale" type="number" step="0.1" min="0.05" value="1" style="${field};width:64px"></label>
+    <label style="display:flex;gap:6px;align-items:center;font-size:12px;margin:4px 0"><input type="checkbox" id="aground" checked> Poser le bas de l'objet sur le sol</label>
+    <button id="aok" class="primary" style="width:100%;margin-top:4px" disabled>Placer au centre de la vue</button>
+    <div style="font-weight:600;margin:12px 0 4px">Sur cette piste <span id="acount" style="color:var(--muted);font-weight:400"></span></div>
+    <div id="aplaced" style="font-size:12px"></div>`;
+  $('details').appendChild(ov); $('details').classList.add('libopen');
+  const box = ov.querySelector('#av');
+  const rnd = new THREE.WebGLRenderer({ antialias: true });
+  rnd.setPixelRatio(devicePixelRatio); rnd.setSize(box.clientWidth, box.clientHeight); box.appendChild(rnd.domElement);
+  const sc = new THREE.Scene(); sc.background = new THREE.Color(0x101216);
+  sc.add(new THREE.HemisphereLight(0xdfe8ff, 0x303030, 1.1));
+  const sl = new THREE.DirectionalLight(0xffffff, 1.2); sl.position.set(1, -0.6, 2); sc.add(sl);
+  const cam = new THREE.PerspectiveCamera(40, box.clientWidth / box.clientHeight, 1, 1e6); cam.up.set(0, 0, 1);
+  const holder = new THREE.Group(); sc.add(holder);
+  let mesh = null, bbox = null, token = 0, pick = null, play = null;
+  // apercu anime (havok.py) : sommets deformes a chaque image (os x 4, poids), sur une copie de la geometrie
+  const animStep = () => {
+    if (!play) return;
+    const { geo, base, J, W, M, nb, frames, fps, t0 } = play;
+    const f = Math.floor((performance.now() - t0) / 1000 * fps) % frames, P = geo.attributes.position.array, o = f * nb * 16;
+    for (let i = 0, n = base.length / 3; i < n; i++) {
+      const x = base[3 * i], y = base[3 * i + 1], z = base[3 * i + 2];
+      let ox = 0, oy = 0, oz = 0;
+      for (let k = 0; k < 4; k++) {
+        const w = W[4 * i + k]; if (!w) continue;
+        const m = o + J[4 * i + k] * 16;
+        ox += w * (x * M[m] + y * M[m + 4] + z * M[m + 8] + M[m + 12]);
+        oy += w * (x * M[m + 1] + y * M[m + 5] + z * M[m + 9] + M[m + 13]);
+        oz += w * (x * M[m + 2] + y * M[m + 6] + z * M[m + 10] + M[m + 14]);
+      }
+      P[3 * i] = ox; P[3 * i + 1] = oy; P[3 * i + 2] = oz;
+    }
+    geo.attributes.position.needsUpdate = true; geo.computeVertexNormals();
+  };
+  const ctl = previewOrbit(cam, rnd.domElement);
+  rnd.setAnimationLoop(() => { animStep(); if (!ctl.touched) holder.rotation.z += play ? 0.002 : 0.006; ctl.update(); rnd.render(sc, cam); });
+  // animations de l'acteur : par defaut celle que joue l'objet en jeu (noms des parametres de son script), sinon « idle »
+  const animPreview = async (m, g, my) => {
+    const row = ov.querySelector('#aanimrow'), sel = ov.querySelector('#aanim');
+    row.style.display = 'none'; play = null;
+    let info;
+    try { info = await api('/api/anim_list?actor=' + encodeURIComponent(m.actor)); } catch (e) { return; }
+    if (my !== token || !info.skinned || !info.anims.length) return;
+    const sk = new Float32Array(await (await fetch('/api/anim_skin?actor=' + encodeURIComponent(m.actor))).arrayBuffer());
+    const n = g.attributes.position.count;
+    if (my !== token || sk.length !== n * 8) return;
+    const low = info.anims.map(a => a.toLowerCase());
+    const hint = (m.hints || []).map(h => h.toLowerCase()).find(h => low.includes(h));
+    const def = hint ? info.anims[low.indexOf(hint)] : info.anims.find(a => /idle/i.test(a)) || info.anims[0];
+    sel.innerHTML = info.anims.map(a => `<option ${a === def ? 'selected' : ''}>${esc(a)}</option>`).join('');
+    row.style.display = 'flex';
+    const geo = g.clone(); mesh.geometry = geo;
+    const base = g.attributes.position.array.slice();
+    const start = async name => {
+      try {
+        const buf = await (await fetch(`/api/anim_frames?actor=${encodeURIComponent(m.actor)}&anim=${encodeURIComponent(name)}`)).arrayBuffer();
+        if (my !== token) return;
+        const dv = new DataView(buf);
+        play = { geo, base, J: sk.subarray(0, n * 4), W: sk.subarray(n * 4), M: new Float32Array(buf, 12),
+                 frames: dv.getUint32(0, true), nb: dv.getUint32(4, true), fps: dv.getFloat32(8, true) || 30, t0: performance.now() };
+      } catch (e) { play = null; }
+    };
+    sel.onchange = () => start(sel.value);
+    await start(def);
+  };
+  const close = () => { rnd.setAnimationLoop(null); ctl.dispose(); rnd.dispose(); ov.remove(); $('details').classList.remove('libopen');
+                        closeAnim = () => {}; renderAnimList = () => {}; animSel = -1; renderAnimated(); };
+  closeAnim = close;
+  const list = ov.querySelector('#al'), info = ov.querySelector('#ainfo'), msg = ov.querySelector('#avmsg');
+  const show = async m => {
+    pick = m; ov.querySelector('#aok').disabled = true; play = null; ov.querySelector('#aanimrow').style.display = 'none';
+    list.querySelectorAll('.row').forEach(r => r.classList.toggle('sel', r.dataset.id === m.id));
+    info.innerHTML = `<b>${esc(m.name)}</b><br><span style="color:var(--muted)">${esc(m.skin)} · ${esc(m.track)}</span>`;
+    msg.textContent = 'Chargement…'; msg.style.display = 'flex';
+    const my = ++token;
+    try {
+      const g = await getGeometry(m.actor);
+      if (my !== token) return;
+      if (mesh) holder.remove(mesh);
+      if (!g.attributes.position.count) { msg.textContent = 'Aperçu indisponible (l\'objet se pose quand même).'; mesh = null; bbox = null; ov.querySelector('#aok').disabled = false; return; }
+      mesh = new THREE.Mesh(g, animMats(g));
+      g.computeBoundingBox(); bbox = g.boundingBox.clone();
+      const c = bbox.getCenter(new THREE.Vector3()), size = bbox.getSize(new THREE.Vector3());
+      mesh.position.set(-c.x, -c.y, -c.z); holder.add(mesh); holder.rotation.z = 0;
+      const r = Math.max(size.length() / 2, 1);
+      cam.position.set(r * 1.9, -r * 1.9, r * 1.3); cam.lookAt(0, 0, 0); cam.near = r / 100; cam.far = r * 100; cam.updateProjectionMatrix();
+      ctl.fit(r);
+      msg.style.display = 'none';
+      const mm = v => (v / 39.37).toFixed(1).replace('.', ',');
+      info.innerHTML += `<br><span style="color:var(--muted)">Taille : ${mm(size.x)} × ${mm(size.y)} × ${mm(size.z)} m</span>`;
+      ov.querySelector('#aok').disabled = false;
+      animPreview(m, g, my);
+    } catch (e) { if (my === token) { msg.textContent = 'Aperçu impossible : ' + e.message; ov.querySelector('#aok').disabled = false; } }
+  };
+  const aq = ov.querySelector('#aq');
+  const fill = () => {
+    const q = aq.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const hits = animCatalog.filter(m => q.every(w => (m.name + ' ' + m.skin + ' ' + m.track).toLowerCase().includes(w)));
+    const twice = new Set(animCatalog.filter((m, i) => animCatalog.findIndex(x => x.name === m.name) !== i).map(m => m.name));
+    list.innerHTML = hits.map(m => `<div class="row${pick?.id === m.id ? ' sel' : ''}" data-id="${esc(m.id)}" style="cursor:pointer;padding:3px 6px">
+      <label style="pointer-events:none">🎞 ${esc(m.name)}${twice.has(m.name) ? ` <span style="color:var(--muted)">(${esc(m.skin.replace(/_/g, ' '))})</span>` : ''}</label><span class="tag">${esc(m.track)}</span></div>`).join('')
+      || '<div style="color:var(--muted);font-size:12px;padding:6px">Aucun objet animé ne correspond.</div>';
+    list.querySelectorAll('.row').forEach(r => r.onclick = () => show(animCatalog.find(m => m.id === r.dataset.id)));
+  };
+  aq.oninput = fill; fill(); aq.focus();
+  renderAnimList = () => {
+    ov.querySelector('#acount').textContent = animItems.length ? `(${animItems.length})` : '';
+    const pl = ov.querySelector('#aplaced');
+    // 2026-11-12 : rotation sur 3 axes + libelles (avant : 2 cases sans nom, rotation et echelle pas reconnaissables)
+    const num = (a, v, step, tip, w) => `<input data-a="${a}" type="number" step="${step}" value="${v}" title="${tip}" style="${field};width:${w}px;padding:2px 4px">`;
+    const lab = t => `<span style="color:var(--muted)">${t}</span>`;
+    pl.innerHTML = animItems.length ? animItems.map((it, i) => `<div data-i="${i}" style="padding:4px;border-radius:4px;margin-bottom:2px;${i === animSel ? 'background:#ff9f1c22' : ''}">
+        <div style="display:flex;gap:4px;align-items:center">
+          <span style="flex:1;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" data-a="sel" title="${esc(it.name || it.entity)}">🎞 ${esc(it.name || it.entity)}</span>
+          <button data-a="go" title="Aller voir">🎯</button><button data-a="here" title="Déplacer au centre de la vue">⤵</button><button data-a="del" title="Retirer">🗑</button></div>
+        <div style="display:grid;grid-template-columns:62px 12px 1fr 12px 1fr 12px 1fr;gap:3px;align-items:center;margin-top:3px;font-size:11px">
+          ${lab('Rotation (°)')}
+          ${lab('<b style="color:#ff6b6b">X</b>')}${num('rx', Math.round((it.rx || 0) * DEG), 15, 'Rotation autour de X (°)', 0).replace('width:0px;', 'width:100%;box-sizing:border-box;')}
+          ${lab('<b style="color:#6fd66f">Y</b>')}${num('ry', Math.round((it.ry || 0) * DEG), 15, 'Rotation autour de Y (°)', 0).replace('width:0px;', 'width:100%;box-sizing:border-box;')}
+          ${lab('<b style="color:#5aa0ff">Z</b>')}${num('yaw', Math.round((it.yaw || 0) * DEG), 15, 'Rotation autour de Z, la verticale (°)', 0).replace('width:0px;', 'width:100%;box-sizing:border-box;')}
+          ${lab('Échelle (×)')}<span></span>${num('scale', +(it.scale || 1).toFixed(2), 0.1, 'Échelle (1 = taille d\'origine)', 0).replace('width:0px;', 'width:100%;box-sizing:border-box;')}
+          <span style="grid-column:4/-1;color:var(--muted)">1 = taille d'origine</span></div></div>`).join('')
+      : '<div style="color:var(--muted)">Aucun objet animé sur cette piste.</div>';
+    pl.querySelectorAll('[data-i]').forEach(row => {
+      const i = +row.dataset.i, it = animItems[i];
+      row.querySelector('[data-a="sel"]').onclick = () => selectAnim(i, true);
+      row.querySelector('[data-a="go"]').onclick = () => selectAnim(i, true);
+      for (const k of ['rx', 'ry', 'yaw'])
+        row.querySelector(`[data-a="${k}"]`).onchange = e => { it[k] = (parseFloat(e.target.value) || 0) / DEG; animSel = i; animSave('Rotation enregistrée'); };
+      row.querySelector('[data-a="scale"]').onchange = e => { it.scale = Math.max(0.05, parseFloat(e.target.value) || 1); animSel = i; animSave('Échelle enregistrée'); };
+      row.querySelector('[data-a="here"]').onclick = async () => {
+        const p = viewCenterPoint();
+        let lift = 0;
+        try { const g = await getGeometry(it.actor); g.computeBoundingBox(); lift = -g.boundingBox.min.z * (it.scale || 1); } catch (e) {}
+        it.pos = [p.x, p.y, p.z + lift]; animSel = i; await animSave('Objet déplacé au centre de la vue'); selectAnim(i);
+      };
+      row.querySelector('[data-a="del"]').onclick = () => { animItems.splice(i, 1); selectAnim(-1); animSave('Objet retiré'); };
+    });
+  };
+  renderAnimList();
+  ov.querySelector('#acancel').onclick = close;
+  ov.onkeydown = e => { if (e.key === 'Escape') close(); };
+  ov.querySelector('#aok').onclick = async () => {
+    if (!pick) return;
+    const p = viewCenterPoint(), scale = Math.max(0.05, parseFloat(ov.querySelector('#ascale').value) || 1);
+    const pos = [p.x, p.y, p.z];
+    if (ov.querySelector('#aground').checked && bbox) pos[2] -= bbox.min.z * scale;
+    animItems.push({ pak: pick.pak, file: pick.file, entity: pick.entity, name: pick.name, actor: pick.actor, pos,
+                     yaw: (parseFloat(ov.querySelector('#ayaw').value) || 0) / DEG, scale });
+    animSel = animItems.length - 1;
+    await animSave(`« ${pick.name} » posé au centre de la vue — clique dessus pour le déplacer (W / E / R)`);
+    selectAnim(animItems.length - 1);
   };
 };
 
@@ -5892,7 +6308,7 @@ for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclic
 function setContext(m) {
   if (m === mode) return;
   if (m === 'decor') select(null);
-  else { if (lightSel != null) selectLight(null); setDecorSelection([]); }
+  else { if (lightSel != null) selectLight(null); if (animSel >= 0) selectAnim(-1); setDecorSelection([]); }
   mode = m; $('mode').value = m;
   $('raceDetails').hidden = m !== 'race'; $('decorDetails').hidden = m !== 'decor';
   gizmo.showX = gizmo.showY = true;
@@ -5938,9 +6354,11 @@ function setMenuData(d) {
   renderMenuPage();
 }
 // liste des pistes de l'editeur : nom des pistes creees a cote de leur identifiant
+let createdTrackNames = {};                                // pistes creees : nom affiche au menu du jeu (id -> nom)
 function labelTracks(created, list) {
   const sel = $('track'), cur = sel.value;
   const names = Object.fromEntries((created || []).map(t => [t.id, t.display]));
+  createdTrackNames = names;
   const ids = list || [...sel.options].map(o => o.value);
   sel.innerHTML = ids.map(t => `<option value="${esc(t)}">${esc(t)}${names[t] ? ' — ' + esc(names[t]) : ''}</option>`).join('');
   sel.value = ids.includes(cur) ? cur : ids[0];
@@ -6099,7 +6517,16 @@ creator = initCreator({ THREE, TransformControls, scene, camera, orbit, view, re
       neutralize: true, sections: chain.length, randomness: 0.5, maxJump: 40, reverse: false });
     placeStartBehindChecker(r.start, r.yaw);             // zone d'arrivee au damier, grille derriere
     await saveRace({ killz: r.killz });                  // plancher de chute 30 m sous le sol genere
-    status(`Piste générée et enregistrée : ${r.report.join(' · ')} · ${cleared ? cleared + ' · ' : ''}${msg.replace(/ — vérifie.*$/, '')}. ` +
+    // eau profonde (Relief > Remplir d'eau) : zones de chute et points de reapparition tout de suite
+    let falls = '';
+    if (r.water_falls) {
+      try {
+        const f = await api('/api/auto_falls', { track: r.track, spacing: 50, killz: true, zones: true });
+        await loadTrack(r.track, true);
+        falls = ' · chutes : ' + f.report.join(', ');
+      } catch (e) { falls = ' · ⚠ chutes dans l\'eau non créées (' + e.message + ') : lance « Chutes et réapparitions »'; }
+    }
+    status(`Piste générée et enregistrée : ${r.report.join(' · ')} · ${cleared ? cleared + ' · ' : ''}${msg.replace(/ — vérifie.*$/, '')}${falls}. ` +
            'Ensuite : caisses, chutes, mini-carte, puis « ▶ Tester en jeu ».', 'ok');
   } });
 // « Générer la piste » : sur quelle piste ? Des joueurs ecrasaient Crash Cove sans le vouloir : pour une piste du jeu,
@@ -6174,7 +6601,8 @@ $('tabEdit').onclick = async () => {
 // dossier des archives du jeu (navigateur et application) : fenêtre de choix ouverte par le serveur, pris en compte
 // aussitôt (le serveur oublie ce qu'il avait lu), puis la page se recharge
 function showGameDir(a) {
-  $('archdir').title = 'Actuel : ' + (a.path || '—');
+  // jeu en deux dossiers (base + mise a jour <ID>-patch / -UPDATE) : detecte par le serveur, comme shadPS4
+  $('archdir').title = 'Actuel : ' + (a.path || '—') + (a.update ? `\nJeu en deux dossiers : mise à jour lue dans ${a.update}` : a.path ? '\nJeu en un seul dossier' : '');
 }
 // a l'ouverture : dossier du jeu inconnu (premier lancement, dossier deplace) => demande, rien d'autre ne marche sans lui
 async function ensureGameDir() {
@@ -6211,7 +6639,7 @@ async function chooseGameDir() {
     if (r.error) throw new Error(r.error.replace(/^\w+\(['"]?|['"]?\)$/g, ''));
     if (!r.ok) { status('Choix du dossier annulé'); return; }
     showGameDir(r);
-    status(`Dossier du jeu : ${r.path} — rechargement…`, 'ok');
+    status(`Dossier du jeu : ${r.path}${r.update ? ' (jeu en deux dossiers, mise à jour : ' + r.update + ')' : ' (un seul dossier)'} — rechargement…`, 'ok');
     setTimeout(() => location.reload(), 800);
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
 }
@@ -6378,6 +6806,7 @@ const MENUS = [
     { only: 'race', sep: true },
     { label: '⚡ Booster au centre de la vue…', only: 'race', run: addBoostAtView },
     { label: '📚 Objet du jeu (bibliothèque)…', only: 'decor', run: clickId('dlib') },
+    { label: '🎞 Objet animé (animaux, bannières, ballons…)…', only: 'decor', run: clickId('danim') },
     { label: '💡 Lumière au centre de la vue', only: 'decor', run: clickId('dltadd') },
     { label: '🧱 Mur invisible au centre de la vue', only: 'decor', run: clickId('dwalladd') },
     { label: '📥 Modèle OBJ…', only: 'decor', run: clickId('dimport') },
@@ -6621,6 +7050,9 @@ async function loadTrack(name, keepCamera) {
   fallZones = (d.fall_zones || []).map(z => ({ ...z, pos: [...z.pos], dims: [...z.dims] }));
   fallZonesLoaded = JSON.stringify(fallZones);
   renderFallMarkers();
+  camZones = (d.cam_zones || []).map(z => ({ ...z, pos: [...z.pos], dims: [...z.dims] }));
+  camZonesLoaded = JSON.stringify(camZones);
+  renderCamMarkers();
   loadRespawnPoints();
   flybyShots = d.flyby || [];
   flyby = Object.fromEntries(flybyShots.filter(s => s.custom).map(s => [s.key, s.model]));
@@ -6642,7 +7074,11 @@ async function loadTrack(name, keepCamera) {
 }
 $('save').onclick = async () => {
   // Creation ouverte : on enregistre son brouillon, pas la map de l'onglet Edition (rechargee, elle reapparaissait dans la vue)
-  if (creator?.active) { creator.saveNow(); status('Brouillon de la Création enregistré', 'ok'); return; }
+  if (creator?.active) {
+    const ok = await creator.saveNow();
+    status(ok ? 'Brouillon de la Création enregistré (copie sur le serveur comprise)' : 'Brouillon de la Création enregistré dans ce navigateur (copie sur le serveur impossible)', ok ? 'ok' : 'err');
+    return;
+  }
   // course d'abord : l'enregistrement du decor peut relire la piste (boosters, map deplacee)
   const doDecor = decorDirty() || collisionPending, doRace = raceDirty() || !doDecor;     // rien en attente : rapport de la course
   if (doRace) await saveRaceClick();
@@ -6680,6 +7116,8 @@ async function saveRace(extra = {}) {
       portals: JSON.stringify(portals) !== portalsLoaded ? portals : undefined,
       // zones de chute : envoyees seulement si elles ont change (deplacees, redimensionnees, supprimees)
       fall_zones: JSON.stringify(fallZones) !== fallZonesLoaded ? fallZones : undefined,
+      // zones camera : ajoutees (sans nom), deplacees, redimensionnees, supprimees
+      cam_zones: JSON.stringify(camZones) !== camZonesLoaded ? camZones : undefined,
       // survol d'introduction : plans modifies ({} = tous d'origine), seulement s'ils ont change
       flyby: JSON.stringify(flyby) !== flybyLoaded ? flyby : undefined };
     const r = await api('/api/save', body);
@@ -6693,6 +7131,34 @@ function overlayCard(html, width = 620) {
   ov.innerHTML = `<div class="card" style="max-width:${width}px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line)">${html}</div>`;
   document.body.appendChild(ov);
   return ov;
+}
+// ---- Piste › Camera (2026-11-12) : part de l'inclinaison du kart que la camera suit (toute la piste ; le jeu n'a pas
+// de script pour la changer par zone). 100 % : la camera tourne avec le kart sur une paroi roulable / a l'envers.
+// RETIRE du menu le 2026-11-13 (ne donnait pas le resultat voulu) ; code garde pour plus tard ----
+async function openCameraSettings() {
+  let info;
+  try { info = await api('/api/camera_settings', { track }); } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
+  const pct = v => Math.round((v ?? 0) * 100);
+  const orig = pct(info.original.roll), cur = pct(info.values.roll ?? info.original.roll);
+  const ov = overlayCard(`<div style="margin-bottom:6px"><b>🎥 Caméra de la piste</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Pour toute la piste (le jeu ne permet pas de la changer par zone).
+      Sur une route plate le kart est droit : ce réglage ne change rien. Il agit dans les virages relevés, sur les parois roulables
+      et la tête en bas.</div>
+    <label style="display:block;font-size:12px">La caméra suit l'inclinaison du kart : <b id="camrollv">${cur}</b> %
+      <input id="camroll" type="range" min="0" max="500" step="5" value="${cur}" style="width:100%"></label>
+    <div style="font-size:11px;color:var(--muted);margin:2px 0 10px">D'origine : ${orig} %. 100 % : la caméra tourne avec le kart (paroi, looping).
+      0 % : elle reste toujours droite. Au-delà de 100 % (essai) : la caméra tourne plus que le kart.</div>
+    <div class="btns" style="justify-content:flex-end"><button id="camorig">Remettre d'origine</button><button id="camno">Annuler</button><button id="camok" class="primary">Enregistrer</button></div>`, 440);
+  const q = s => ov.querySelector(s);
+  q('#camroll').oninput = e => { q('#camrollv').textContent = e.target.value; };
+  q('#camno').onclick = () => ov.remove();
+  const save = async values => {
+    try { await api('/api/camera_settings', { track, values }); ov.remove();
+          status('Caméra de la piste enregistrée — réinstalle la piste (ou « Tester en jeu ») pour l\'appliquer', 'ok'); }
+    catch (e) { status('Erreur : ' + e.message, 'err'); }
+  };
+  q('#camorig').onclick = () => save({});
+  q('#camok').onclick = () => { const v = +q('#camroll').value; save(v === orig ? {} : { roll: v / 100 }); };
 }
 // ---- Piste › Musique : morceau importe a la place de la musique de la piste et de celle du dernier tour (music.py).
 // Le fichier est envoye tel quel, le serveur le decode et l'encode ; enregistre aussitot, « ↶ Annuler » le defait ----
@@ -6959,12 +7425,21 @@ function openPadConfig() {
   };
   render(); loop(); raf = setInterval(loop, 33);            // manette lue ~30 fois par seconde
 }
-const trackLabel = t => t.replace(/^[A-Z]\d+_/, '').replace(/_/g, ' ');
+// nom lisible d'une piste ; piste creee (« Custom Map ») : son numero et son nom de menu, sinon toutes se ressemblaient
+// (choix de la piste a remplacer a l'import d'un pack, 2026-11-13)
+const trackLabel = t => {
+  const base = t.replace(/^[A-Z]\d+_/, '').replace(/_/g, ' '), name = createdTrackNames[t];
+  return name ? `${t.split('_')[0]} — ${name}` : base;
+};
+const refreshTrackNames = () => api('/api/menu_layout').then(d => {
+  createdTrackNames = Object.fromEntries((d.tracks || []).map(x => [x.id, x.display]));
+}).catch(() => {});
 async function openPackExport() {
   $('moremenu').hidden = true;
   let r;
   try { r = await api('/api/pack_tracks'); } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
   if (!r.tracks.length) { status('Aucune piste modifiée à exporter', 'err'); return; }
+  await refreshTrackNames();
   const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
   const ov = overlayCard(`<div style="margin-bottom:6px"><b>📦 Exporter des maps (.zip)</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Le pack contient tes modèles (OBJ), tes images, le parcours, les objets, les réglages,
@@ -7068,6 +7543,7 @@ async function openPackImport() {
   if (dirty && !(await ask('Des modifications ne sont pas enregistrées. Continuer quand même ?'))) return;
   let all = [];
   try { all = (await api('/api/pack_tracks')).all; } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
+  await refreshTrackNames();                              // noms de menu des pistes creees (liste « à la place de »)
   const ov = overlayCard(`<div style="margin-bottom:6px"><b>📦 Importer un pack de maps (.zip)</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Choisis le fichier .zip, puis pour chaque map : l'importer ou non, et à la place de quelle piste.
       La piste remplacée repart de son original avant l'import (ce que tu y avais fait reste récupérable avec « ↶ Annuler »).</div>
@@ -7452,6 +7928,13 @@ $('install').onclick = async () => {
 let testPoll = null;
 async function testInGame(chooseExe = false) {
   if (dirty && !(await ask('Des modifications ne sont pas enregistrées. Tester quand même la dernière version enregistrée ?'))) return;
+  // ciel : verifie avant de lancer (meme controle que « Vérifier »), le jeu ne previent pas s'il manque
+  try {
+    status('Vérification du ciel…');
+    const sky = await api('/api/sky_check', { track });
+    const bad = (sky.items || []).filter(i => i.level !== 'ok');
+    if (bad.length && !(await ask('Ciel : ' + bad.map(i => i.text).join(' · ') + '\n\nTester quand même ?'))) { status('Test annulé : ciel à corriger (bouton « Vérifier » ou mode Décor › Ambiance › Ciel)', 'err'); return; }
+  } catch (e) { status('Vérification du ciel impossible : ' + e.message, 'err'); }
   status('Installation et lancement de shadPS4…');
   try {
     const r = await api('/api/test_in_game', { track, choose_exe: chooseExe });

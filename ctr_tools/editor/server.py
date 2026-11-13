@@ -50,6 +50,8 @@ import ai_gen  # noqa: E402
 import numpy as np  # noqa: E402
 import obj_export  # noqa: E402
 import library  # noqa: E402
+import animated  # noqa: E402
+import havok_anim  # noqa: E402
 import pkg_manifest  # noqa: E402
 import powerup  # noqa: E402
 import progress  # noqa: E402
@@ -156,10 +158,10 @@ def saved_path(logical):
 
 def list_tracks():
     out = []
-    for f in sorted(os.listdir(ARCHIVES)):
+    for f in pak_tool.listdir(ARCHIVES):
         m = re.match(r'^(t\d{3}_[a-z_]+)\.pak$', f)
         if m and 'flyby' not in f:
-            arc = pak_tool.IgaArchive(os.path.join(ARCHIVES, f))
+            arc = pak_tool.IgaArchive(pak_tool.real(os.path.join(ARCHIVES, f)))
             names = [e.logical_name for e in arc.entries if e.logical_name.lower().endswith(('_racesystem.igz', '_race_system.igz'))]
             designs = [e.logical_name for e in arc.entries if e.logical_name.lower().endswith('_design.igz')
                        and e.logical_name.lower().startswith('maps/')]
@@ -240,7 +242,7 @@ def load_track(track):
             'transitions': transitions, 'forks': rs['fork_checkers'], 'player_starts': rs['player_starts'],
             'starting_splines': starting, 'start_grid': grid, 'player_start': player_start, 'crates': crates,
             'teleporters': teleporters_of(track, ed), 'portals': portals_of(track, ed), 'flyby': flyby_info(track), 'original_start': original_start(track),
-            'collision': load_collision(track), 'fall_zones': read_fall_zones(track)}
+            'collision': load_collision(track), 'fall_zones': read_fall_zones(track), 'cam_zones': read_cam_zones(track)}
 
 
 # -- zones de chute (CEntity + CTriggerVolumeBoxComponentData + CRespawnTriggerComponentData du _Design) -----------
@@ -292,6 +294,180 @@ def write_fall_zones(track, zones):
         moved += 1
     open(saved_path(logical), 'wb').write(dz.to_bytes())
     return [f'zones de chute : {moved} placée(s)' + (f', {removed} supprimée(s)' if removed else '')]
+
+
+# -- zones camera (2026-11-12) : parois roulables (sol « Driving wall ») a plus de 90 deg ou a l'envers, la camera du
+# kart se perdait. Le jeu regle ca dans les tunnels de Sewer Speedway avec l'entite « TunnelCam » de son _Design : deux
+# boites de declenchement + script T114_Sewer_Speedway_TunnelCam (sans parametre : a l'entree d'un kart,
+# CKartNodes::setInTunnel_VSC(kart, vrai), a la sortie faux -> camera « tunnel »). Copiee dans le _Design de la piste
+# (IgzFile.import_entity), 1re boite = la zone (centree sur l'entite, alignee sur les axes), 2e boite neutralisee (tres
+# petite, loin dessous) ; script declare au manifeste (et copie s'il n'est que dans l'archive de Sewer Speedway).
+CAM_DONOR = ('t114_sewer_speedway.pak', 'maps/Octane/T114_Sewer_Speedway/T114_Sewer_Speedway_Design.igz', 'TunnelCam')
+CAM_PREFIX = 'EdCamZone_'
+CAM_TDEP = ('T114_Sewer_Speedway_TunnelCam', 'vsc:/Octane/T114_Sewer_Speedway/T114_Sewer_Speedway_TunnelCam.igz')
+CAM_SCRIPT = 'vsc/octane/t114_sewer_speedway/t114_sewer_speedway_tunnelcam.igz'
+CAM_MIN = 100.0         # pouces : plus petite taille d'une zone
+
+
+def _components_of(z, ent, type_name):
+    """Tous les composants d'un type (table de composants), dans l'ordre de la table."""
+    data = z.deref(ent + 0x40)
+    table = z.deref(data + 0x10) if data is not None else None
+    out = []
+    for _, v in (z.hash_items(table) if table is not None else []):
+        off = int(v['@ref'], 16) if isinstance(v, dict) and '@ref' in v else None
+        if off is not None and z.objects.get(off) == type_name:
+            out.append(off)
+    return sorted(out)
+
+
+def read_cam_zones(track):
+    """[{name, pos, dims}] des zones camera ajoutees par l'editeur (pas celles ecartees sous la carte)."""
+    try:
+        dz = IgzFile(base_file(track, start_finish.design_file(track))[0])
+    except KeyError:
+        return []
+    out = []
+    for name, ent in dz.root_objects():
+        if not name or not name.startswith(CAM_PREFIX) or dz.objects.get(ent) not in DESIGN_ENTITY_TYPES:
+            continue
+        boxes = _components_of(dz, ent, 'CTriggerVolumeBoxComponentData')
+        pos = [round(v, 1) for v in dz.vec3(ent + 0x20)]
+        if not boxes or pos[2] < FAR_BELOW / 2:
+            continue
+        out.append({'name': name, 'pos': pos, 'dims': [round(v, 1) for v in dz.vec3(dz.find_field(boxes[0], '_dimensions')[0])]})
+    return out
+
+
+def write_cam_zones(track, zones):
+    """Zones camera de l'editeur : [{name (absent : nouvelle), pos, dims, deleted}] -> _Design enregistre."""
+    logical = start_finish.design_file(track)
+    dz = IgzFile(base_file(track, logical)[0])
+    roots = {n: o for n, o in dz.root_objects() if n}
+    used = {int(n[len(CAM_PREFIX):]) for n in roots if n.startswith(CAM_PREFIX) and n[len(CAM_PREFIX):].isdigit()}
+    donor = None
+    added = moved = removed = 0
+    for z in zones:
+        ent = roots.get(z.get('name')) if z.get('name') else None
+        if ent is None:
+            if z.get('deleted'):
+                continue
+            if donor is None:
+                src = IgzFile(pak_tool.read_latest(ARCHIVES, CAM_DONOR[1], CAM_DONOR[0])[0])
+                donor = (src, dict(src.root_objects())[CAM_DONOR[2]])
+            k = 1
+            while k in used:
+                k += 1
+            used.add(k)
+            ent = dz.import_entity(donor[0], donor[1], f'{CAM_PREFIX}{k:03d}', old_name=CAM_DONOR[2])
+            boxes = _components_of(dz, ent, 'CTriggerVolumeBoxComponentData')
+            for b in boxes[1:]:                             # 2e boite : neutralisee
+                dz.set_field(b, '_dimensions', [1.0, 1.0, 1.0])
+                dz.set_field(b, '_offset', [0.0, 0.0, -200000.0])
+            dz.set_field(boxes[0], '_offset', [0.0, 0.0, 0.0])
+            dz.set_field(boxes[0], '_rotation', [0.0, 0.0, 0.0])
+            added += 1
+        else:
+            boxes = _components_of(dz, ent, 'CTriggerVolumeBoxComponentData')
+            if z.get('deleted'):
+                p = list(dz.vec3(ent + 0x20))
+                struct.pack_into('<3f', *dz._loc(ent + 0x20), p[0], p[1], FAR_BELOW)
+                removed += 1
+                continue
+            moved += 1
+        struct.pack_into('<3f', *dz._loc(ent + 0x20), *[float(c) for c in z['pos']])
+        dz.set_field(boxes[0], '_dimensions', [max(CAM_MIN, float(c)) for c in z['dims']])
+    if added:
+        dz.add_tdep([CAM_TDEP])
+    open(saved_path(logical), 'wb').write(dz.to_bytes())
+    return [f'zones caméra : {added} ajoutée(s), {moved} placée(s)' + (f', {removed} supprimée(s)' if removed else '')]
+
+
+# -- camera de la piste (2026-11-12) : CKartCameraSettings du fichier principal <piste>.igz (vues proche, lointaine,
+# arriere). Le jeu n'a pas de script pour les changer pendant la course (zones) : reglage pour toute la piste.
+# _cameraFollowRollRatio = part de l'inclinaison du kart que la camera suit (0,333 d'origine) : a 1, la camera tourne
+# avec le kart sur une paroi roulable / a l'envers ; sur route plate (kart droit) rien ne change.
+CAMERA_FIELDS = {'roll': '_cameraFollowRollRatio'}
+CAMERA_RANGE = {'roll': (0.0, 5.0)}      # jusqu'a 500 % (essais demandes le 2026-11-13 : au-dela de l'inclinaison du kart)
+
+
+def camera_path(track):
+    return os.path.join(OUT_DIR, f'{track}_camera.json')
+
+
+def camera_settings(track):
+    """{cle: valeur} des reglages de camera changes (vide : ceux d'origine)."""
+    p = camera_path(track)
+    try:
+        return {k: float(v) for k, v in json.load(open(p)).items() if k in CAMERA_FIELDS}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def camera_original(track):
+    """Valeurs d'origine (1er CKartCameraSettings du fichier principal) : {cle: valeur}."""
+    z = IgzFile(pak_tool.read_latest(ARCHIVES, start_finish.main_map_file(track), track_pak(track))[0])
+    o = next((o for o, t in sorted(z.objects.items()) if t == 'CKartCameraSettings'), None)
+    return {k: round(z.f32(z.find_field(o, f)[0]), 4) for k, f in CAMERA_FIELDS.items()} if o is not None else {}
+
+
+def set_camera_settings(req):
+    """POST /api/camera_settings : {track, values: {roll: 0..1}} (vide : origine) -> {values, original}."""
+    track = req['track']
+    vals = {}
+    for k, v in (req.get('values') or {}).items():
+        if k in CAMERA_FIELDS and v is not None:
+            lo, hi = CAMERA_RANGE[k]
+            vals[k] = max(lo, min(hi, float(v)))
+    os.makedirs(OUT_DIR, exist_ok=True)
+    if vals:
+        json.dump(vals, open(camera_path(track), 'w'), indent=1)
+    elif os.path.exists(camera_path(track)):
+        os.remove(camera_path(track))
+    return {'values': camera_settings(track), 'original': camera_original(track)}
+
+
+def camera_install(track, per_archive):
+    """A l'installation : reglages de camera ecrits dans TOUS les CKartCameraSettings du fichier principal (version
+    deja prevue a l'installation, sinon enregistree / d'origine)."""
+    vals = camera_settings(track)
+    if not vals:
+        return
+    logical = start_finish.main_map_file(track)
+    data = next((f[logical] for f in per_archive.values() if logical in f), None) or base_file(track, logical)[0]
+    z = IgzFile(data)
+    n = 0
+    for o, t in z.objects.items():
+        if t != 'CKartCameraSettings':
+            continue
+        for k, v in vals.items():
+            off = z.find_field(o, CAMERA_FIELDS[k])[0]
+            struct.pack_into('<f', *z._loc(off), float(v))
+        n += 1
+    print(f'camera de la piste : {vals} dans {n} reglage(s)', flush=True)
+    data = z.to_bytes()
+    for arc in pak_tool.archives_with(ARCHIVES, logical, track_pak(track)):
+        per_archive[arc][logical] = data
+
+
+def _has_cam_entities(track):
+    """Le _Design enregistre contient-il des entites EdCamZone_, y compris celles supprimees (descendues sous la carte :
+    elles gardent leur script)."""
+    try:
+        dz = IgzFile(base_file(track, start_finish.design_file(track))[0])
+    except KeyError:
+        return False
+    return any(n and n.startswith(CAM_PREFIX) for n, _ in dz.root_objects())
+
+
+def cam_install_files(track):
+    """(entrees du manifeste, {fichier: archive source}) si le _Design a des entites zone camera. 2026-11-12 : aussi
+    quand toutes ont ete supprimees (descendues sous la carte, script toujours vise) ; avant, le script n'etait plus
+    declare et la carte chargeait sans fin."""
+    if not _has_cam_entities(track):
+        return [], {}
+    copies = {} if library.available(ARCHIVES, CAM_SCRIPT, track_pak(track)) else {CAM_SCRIPT: CAM_DONOR[0]}
+    return [('vsc', CAM_SCRIPT)], copies
 
 
 # -- teleporteurs (mecanisme de Spyro Circuit, voir teleport.py) ---------------------------------
@@ -489,7 +665,7 @@ def flyby_shots(track):
     des archives de survol de la piste (le dernier plan de chaque survol est le plan final, sur la grille)."""
     if track not in _flyby_cache:
         shots = []
-        for pak in flyby.flyby_paks(os.listdir(ARCHIVES), track):
+        for pak in flyby.flyby_paks(pak_tool.listdir(ARCHIVES), track):
             arc, idx, _ = pak_tool.cached_archive(os.path.join(ARCHIVES, pak))
             cams = sorted((e.logical_name for e in arc.entries if flyby.is_camera(e.logical_name)), key=str.lower)
             short = 'short' in pak.lower()
@@ -1669,6 +1845,8 @@ def save_track(req):
             open(saved_path(logical), 'wb').write(out)
     if req.get('fall_zones') is not None:                 # zones de chute deplacees / redimensionnees / supprimees
         report += write_fall_zones(track, req['fall_zones'])
+    if req.get('cam_zones') is not None:                  # zones camera (parois roulables) ajoutees / modifiees
+        report += write_cam_zones(track, req['cam_zones'])
     if req.get('player_start'):
         logical = start_finish.main_map_file(track)
         data = base_file(track, logical)[0]
@@ -1752,7 +1930,7 @@ _art_cache, _model_cache = {}, {}
 def art_files(track):
     """Fichiers de carte qui placent du decor (maps/Octane/<Piste>/<Piste>_Art*.igz)."""
     if track not in _art_cache:
-        arc = pak_tool.IgaArchive(os.path.join(ARCHIVES, track_pak(track)))
+        arc = pak_tool.IgaArchive(pak_tool.real(os.path.join(ARCHIVES, track_pak(track))))
         _art_cache[track] = sorted(e.logical_name for e in arc.entries
                                    if e.logical_name.startswith(f'maps/Octane/{track}/{track}_Art')
                                    and e.logical_name.endswith('.igz'))
@@ -2249,6 +2427,86 @@ def sky_install_files(track):
     return entries, copies
 
 
+def sky_report(track):
+    """Controle du ciel AVANT installation / « Tester en jeu » (2026-11-12) : [(niveau, texte, correction)].
+    Refait le chemin du jeu : nom du ciel dans l'eclairage qui sera installe -> modele sky/... -> materiaux et textures
+    qu'ils demandent VRAIMENT (versions lues en course : update3 > update2 > update > archive de la piste ; c'est la que
+    se cachait le piege des pistes copiees, materiau partage qui demande les textures de la piste source). Chaque fichier
+    doit etre declare au manifeste apres installation (manifeste + ajouts de l'installation) ET present dans une archive
+    lue en course (ou copie par l'installation). Sinon le jeu n'affiche pas de ciel."""
+    out = []
+    try:
+        lf = lighting_file(track)
+        name = _sky_name(IgzFile(base_file(track, lf)[0]))
+        chosen = ambiance_sky(track)
+        if chosen and name != chosen['name']:
+            out.append(('attention', f"le ciel de {chosen['label']} est choisi mais pas écrit dans l'éclairage de la piste "
+                                     f"({os.path.basename(lf)})", 'sky'))
+        if not name:
+            if newmap_settings(track).get('strip_art'):
+                out.append(('attention', 'cette piste n\'a pas de ciel (son fond était un décor, retiré par « Nouvelle map ») : '
+                                         'grosses traînées en jeu → mode Décor › Ambiance › Ciel', 'sky'))
+            return out
+        model = 'sky/' + name.replace('\\', '/').strip('/').lower() + '.igz'
+        entries, copies = sky_install_files(track)
+        man = pkg_manifest.manifest_logical(track)
+        declared = {p.lower() for _, p in pkg_manifest.entries(pak_tool.read_latest(ARCHIVES, man, track_pak(track))[0])}
+        declared |= {p.lower() for _, p in entries}
+        copied = {k.lower() for k in copies}
+        src_pak = (chosen or {}).get('pak') or track_pak(track)
+
+        def read(lg):
+            try:
+                return pak_tool.read_latest(ARCHIVES, lg, track_pak(track), original=False)[0]
+            except KeyError:
+                pak = library.find_pak(ARCHIVES, lg, (src_pak,))
+                if pak is None:
+                    raise
+                return pak_tool.read_latest(ARCHIVES, lg, pak)[0]
+        items, todo, done, unreadable = [], [('sky_model', model)], set(), []
+        while todo:
+            typ, lg = todo.pop()
+            if lg.lower() in done:
+                continue
+            done.add(lg.lower())
+            items.append((typ, lg))
+            if typ == 'texture':
+                continue
+            try:
+                data = read(lg)
+            except KeyError:
+                unreadable.append(lg)
+                continue
+            for _, dep in library.tdep_entries(IgzFile(data)):
+                scheme, _, rest = dep.partition(':/')
+                if scheme in library.DEPS:
+                    t, prefix = library.DEPS[scheme]
+                    todo.append((t, prefix + rest))
+        short = lambda lg: re.split(r'[/!]', lg)[-1][:50]
+        not_declared = [lg for _, lg in items if lg.lower() not in declared]
+        absent = [lg for _, lg in items if lg.lower() not in copied and lg not in unreadable
+                  and not library.available(ARCHIVES, lg, track_pak(track))]
+        n_tex = sum(1 for t, _ in items if t == 'texture')
+        n_mat = sum(1 for t, _ in items if t == 'material_instances')
+        if unreadable or not_declared or absent:
+            bits = []
+            if unreadable:
+                bits.append(f"{len(unreadable)} fichier(s) introuvable(s) dans les archives ({', '.join(map(short, unreadable[:3]))})")
+            if not_declared:
+                bits.append(f"{len(not_declared)} non déclaré(s) au manifeste ({', '.join(map(short, not_declared[:3]))})")
+            if absent:
+                bits.append(f"{len(absent)} absent(s) des archives lues en course ({', '.join(map(short, absent[:3]))})")
+            out.append(('erreur', f"le ciel « {name} » ne s'affichera pas en jeu : " + ' ; '.join(bits)
+                                  + ' → mode Décor › Ambiance › Ciel', 'sky'))
+        else:
+            out.append(('ok', f"ciel « {name} » prévu : modèle, {n_mat} matériau(x) et {n_tex} texture(s) déclarés au "
+                              f"manifeste et présents dans les archives lues en course"
+                              + (f' ({len(copied)} fichier(s) copié(s) dans l\'archive de la piste)' if copied else ''), None))
+    except Exception as e:  # noqa: BLE001
+        out.append(('erreur', f'ciel incomplet : {e!r}', 'sky'))
+    return out
+
+
 def ambiance_info(track):
     z = IgzFile(pak_tool.read_latest(ARCHIVES, lighting_file(track), track_pak(track))[0])
     p = ambiance_path(track)
@@ -2513,7 +2771,8 @@ def preview_read(track, logical):
 def model_preview_binary(track, file_name):
     """u32 nb sommets, nb indices, nb groupes ; float32 positions[3n], uv[2n] ; uint32 indices[m] ;
     groupes (u32 debut, nb, 1 + indice de texture ou 0) ; u32 longueur + JSON [{ns, decal}] des textures."""
-    logical = model_logical_path(file_name)
+    # skin d'acteur (objets animes) : chemin logique direct 'actors/...igz', pose de repos
+    logical = file_name if file_name.lower().startswith('actors/') else model_logical_path(file_name)
     if logical not in _preview_cache and wall_mesh(track, logical):           # mur invisible : sa collision, sans texture
         pos, tris = wall_mesh(track, logical)
         P, I = np.asarray(pos, '<f4').reshape(-1, 3), np.asarray(tris, '<u4').reshape(-1)
@@ -2703,6 +2962,7 @@ def _tracked_files(track):
             (f'{track}_menu.json', menu_settings_path(track)),
             (f'{track}_lights.json', lights_path(track)),
             (f'{track}_ambiance.json', ambiance_path(track)),
+            (f'{track}_camera.json', camera_path(track)),
             (f'{track}_music.json', music_settings_path(track)),
             (f'{track}_times.json', times_path(track))]
     out += [('music_'+ os.path.basename(lg), music_path(track, lg)) for lg, _ in music_streams(track)]
@@ -2983,7 +3243,7 @@ def _ghost_data_original():
 
 
 def _ghost_original_time(f):
-    p = os.path.join(ghost_dir(), f)
+    p = pak_tool.real(os.path.join(ghost_dir(), f))       # jeu en deux dossiers : celui que le jeu lit
     for q in (p + GHOST_BACKUP, p):
         if os.path.exists(q):
             return race_times.igb_time(open(q, 'rb').read(4096))
@@ -3003,7 +3263,7 @@ def times_info(track):
             o = _ghost_original_time(x['file'])
             rows.append({'driver': x['driver'], 'file': x['file'], 'original': round(o, 3) if o else None,
                          'time': want[i] if i < len(want) and want[i] is not None else (round(o, 3) if o else None),
-                         'found': os.path.exists(os.path.join(ghost_dir(), x['file']))})
+                         'found': pak_tool.exists(os.path.join(ghost_dir(), x['file']))})
         ghosts = {'unlock_original': g['unlock'], 'unlock': (st.get('ghosts') or {}).get('unlock') or g['unlock'], 'ghosts': rows}
     return {'relic': relic, 'relic_original': orig, 'ghosts': ghosts, 'custom': bool(st)}
 
@@ -3100,7 +3360,7 @@ def apply_ghost_files(track, on=True):
     want = ((times_settings(track).get('ghosts') or {}).get('times') or []) if on else []
     done = []
     for i, x in enumerate(g['ghosts']):
-        p = os.path.join(ghost_dir(), x['file'])
+        p = pak_tool.real(os.path.join(ghost_dir(), x['file']))   # jeu en deux dossiers : celui que le jeu lit
         bak = p + GHOST_BACKUP
         t = want[i] if i < len(want) else None
         if t is not None:
@@ -5818,7 +6078,7 @@ def _menu_archives_index():
     de la premiere piste ouverte : les images d'une autre piste, rangees dans son archive, n'etaient jamais trouvees)."""
     if not _menu_arc_cache:
         tracks = {p.lower() for p in library.track_paks(ARCHIVES)}
-        for p in sorted(os.listdir(ARCHIVES)):
+        for p in pak_tool.listdir(ARCHIVES):
             low = p.lower()
             if low.endswith('.pak') and low != pak_tool.LAYER_ARCHIVE and (low.startswith(MENU_ARCHIVE_PREFIXES) or low in tracks):
                 try:
@@ -6204,6 +6464,8 @@ def auto_falls(req):
     points = _respawns_off_gaps(points, P, starts, end, ground)
     template = next((n for n in pool if f'{n}_camera' not in roots), pool[0])
     zones = falls.find_fall_zones(P, ground, road_ground(track), killz=killz) if req.get('zones', True) else []
+    if req.get('zones', True):
+        zones = sorted(zones + _water_fall_zones(track, P), key=lambda z: z['s'])
     zautos = sorted(n for n in roots if n.startswith(FALL_AUTO) and n[len(FALL_AUTO):].isdigit())
     if zones and FALL_TEMPLATE not in roots and not zautos:   # piste sans modele de zone : celui de Crash Cove
         donor = donor or _falls_donor()
@@ -6273,6 +6535,26 @@ def auto_falls(req):
     report.append(f'{len(zones)} zone(s) de chute' + (' : aucun trou ni vide à côté de la route' if not zones else
                   ' : ' + ', '.join(f"{z['dims'][0] / 39.37:.0f} × {z['dims'][1] / 39.37:.0f} m" for z in zones[:6])))
     return {'report': report, 'zones': zones, 'points': [p[1] for p in points], 'killz': killz}
+
+
+def _water_fall_zones(track, P):
+    """Zones de chute de l'eau profonde de la Creation (creator.json, track_creator._water) : 's' = abscisse du point du
+    parcours le plus proche ; une boite traversee par le parcours (route dans l'eau, pont) est ecartee."""
+    import falls
+    try:
+        boxes = json.load(open(creator_path(track))).get('water_falls') or []
+    except (OSError, ValueError):
+        return []
+    P = np.asarray(P, np.float64)
+    S = falls.arc(P)
+    out = []
+    for b in boxes:
+        box = {'center': [float(v) for v in b['center']], 'dims': [float(v) for v in b['dims']], 'side': 0, 'samples': 0}
+        if falls._crosses_route(box, P):
+            continue
+        box['s'] = float(S[int(np.argmin(np.linalg.norm(P[:, :2] - box['center'][:2], axis=1)))])
+        out.append(box)
+    return out
 
 
 def _set_pose(z, ent, pos, yaw):
@@ -6917,22 +7199,9 @@ def preinstall_check(track):
     if nm.get('strip_art') and move_away_files(track).get('occlusion') and 'occlusion' not in (nm.get('move_away') or []):
         add('attention', 'Occultation', 'les zones d\'occultation de l\'ancienne piste masquent des morceaux de ta map selon '
                                         'la caméra → mode Décor › Nouvelle map › cocher « Zones d\'occultation »', fix='occlusion')
-    # ciel : piste sans ciel (fond = decor retire par « Nouvelle map ») -> trainees en jeu
-    try:
-        sky = ambiance_sky(track)
-        own = _sky_name(IgzFile(pak_tool.read_latest(ARCHIVES, lighting_file(track), track_pak(track))[0]))
-        written = _sky_name(IgzFile(base_file(track, lighting_file(track))[0])) if sky else None
-        if sky and written != sky['name']:
-            add('attention', 'Ciel', f"le ciel de {sky['label']} est choisi mais pas écrit dans l'éclairage de la piste "
-                                     f"({os.path.basename(lighting_file(track))})", fix='sky')
-        elif sky:
-            n = len(sky_install_files(track)[1])
-            add('ok', 'Ciel', f"ciel de {sky['label']}" + (f' ({n} fichier(s) copié(s) dans l\'archive de la piste)' if n else ''))
-        elif not own and newmap_settings(track).get('strip_art'):
-            add('attention', 'Ciel', 'cette piste n\'a pas de ciel (son fond était un décor, retiré par « Nouvelle map ») : '
-                                     'grosses traînées en jeu → mode Décor › Ambiance › Ciel', fix='sky')
-    except Exception as e:  # noqa: BLE001
-        add('erreur', 'Ciel', f'ciel incomplet : {e}')
+    # ciel : ce que le jeu chargera vraiment (sky_report)
+    for level, text, fix in sky_report(track):
+        add(level, 'Ciel', text, fix=fix)
     # mini-carte : toujours celle de l'ancienne piste alors que le parcours a ete refait ?
     new_course = os.path.exists(road_source_path(track)) or newmap_settings(track).get('strip_art')
     mm = saved_path(minimap.minimap_file(track))
@@ -6981,6 +7250,136 @@ def preinstall_check(track):
         add('attention', 'Mémoire du jeu', f'poids non mesuré : {e}')
     return {'checks': out, 'errors': sum(c['level'] == 'erreur' for c in out),
             'warnings': sum(c['level'] == 'attention' for c in out)}
+
+
+def animated_path(track):
+    return os.path.join(OUT_DIR, f'{track}_animated.json')
+
+
+def animated_load(track):
+    """Objets animes de la piste : [{pak, file, entity, pos, yaw, scale, label?}] (out/editor/<piste>_animated.json)."""
+    p = animated_path(track)
+    try:
+        return json.load(open(p, encoding='utf-8')) if os.path.exists(p) else []
+    except ValueError:
+        return []
+
+
+_anim_src = {}
+
+
+def _read_any(logical):
+    """Fichier du jeu : archives communes, sinon l'archive de piste qui le contient (objets animes)."""
+    try:
+        return pak_tool.read_latest(ARCHIVES, logical)[0]
+    except KeyError:
+        pak = library.find_pak(ARCHIVES, logical)
+        if pak is None:
+            raise
+        return pak_tool.read_latest(ARCHIVES, logical, pak)[0]
+
+
+def anim_source(actor):
+    """(squelette du skin, {nom: (packfile, animation)}, apercu du skin) d'un acteur 'actors/...igz' ; animations dans
+    'anims/...hka' (meme chemin). Garde en memoire."""
+    if actor not in _anim_src:
+        skin = _read_any(actor)
+        hka = 'anims/' + actor[len('actors/'):][:-4] + '.hka'
+        anims = {k: v[:2] for k, v in havok_anim.animations(_read_any(hka)).items()}
+        _anim_src[actor] = (havok_anim.skin_skeleton(IgzFile(skin)), anims, preview.model_preview(skin, lambda lg: None), {})
+    return _anim_src[actor]
+
+
+def anim_list(actor):
+    """GET /api/anim_list : {anims: [noms], skinned: bool}"""
+    try:
+        skel, anims, pv, _ = anim_source(actor)
+    except Exception as e:  # noqa: BLE001 - pas d'animation lisible : apercu fixe
+        return {'anims': [], 'skinned': False, 'error': str(e)}
+    return {'anims': sorted(anims), 'skinned': 'joints' in pv}
+
+
+def anim_skin(actor):
+    """GET /api/anim_skin : float32 os[4n] + poids[4n], dans l'ordre des sommets de model_preview_binary."""
+    _, _, pv, _ = anim_source(actor)
+    return pv['joints'].astype('<f4').tobytes() + pv['weights'].astype('<f4').tobytes()
+
+
+def anim_frames(actor, name):
+    """GET /api/anim_frames : u32 images, u32 matrices, f32 images/s, puis float32 [images, matrices, 16]."""
+    skel, anims, _, cache = anim_source(actor)
+    if name not in cache:
+        an = havok_anim.spline_animation(*anims[name])
+        M = havok_anim.skin_matrices(skel, an)
+        cache[name] = struct.pack('<IIf', M.shape[0], M.shape[1], float(an['fps'])) + M.astype('<f4').tobytes()
+    return cache[name]
+
+
+ANIM_CATALOG_VERSION = 3
+_anim_catalog = {}
+
+
+def animated_catalog():
+    """Objets animes du jeu (animated.scan), garde sur le disque : le parcours de toutes les pistes prend quelques minutes."""
+    p = os.path.join(OUT_DIR, 'animated_catalog.json')
+    key = (ARCHIVES, ANIM_CATALOG_VERSION)
+    if _anim_catalog.get('key') != key:
+        rows = None
+        try:
+            d = json.load(open(p, encoding='utf-8'))
+            if d.get('archives') == ARCHIVES and d.get('version') == ANIM_CATALOG_VERSION:
+                rows = d['rows']
+        except (OSError, ValueError, KeyError):
+            pass
+        if rows is None:
+            rows = animated.scan(ARCHIVES, lambda f, t: progress.step(f'objets animés : {t}', f))
+            os.makedirs(OUT_DIR, exist_ok=True)
+            json.dump({'archives': ARCHIVES, 'version': ANIM_CATALOG_VERSION, 'rows': rows}, open(p, 'w', encoding='utf-8'))
+        _anim_catalog.update(key=key, rows=rows)
+    return _anim_catalog['rows']
+
+
+def animated_save(req):
+    """POST /api/animated_save : {track, items: [{pak, file, entity, name?, pos, yaw, rx?, ry?, scale}]} -> liste
+    enregistree. yaw = rotation autour de la verticale (Z), rx / ry = inclinaisons autour de X et Y (radians, ordre du
+    jeu R = Rz*Ry*Rx comme le decor ; 2026-11-12)."""
+    track, items = req['track'], []
+    for it in req.get('items') or []:
+        pos = [float(v) for v in it['pos']][:3]
+        row = {'pak': str(it['pak']), 'file': str(it['file']), 'entity': str(it['entity']), 'name': str(it.get('name') or ''),
+               'actor': str(it.get('actor') or ''), 'pos': pos, 'yaw': float(it.get('yaw') or 0.0),
+               'scale': max(0.05, min(20.0, float(it.get('scale') or 1.0)))}
+        for k in ('rx', 'ry'):
+            if float(it.get(k) or 0.0):
+                row[k] = float(it[k])
+        items.append(row)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    json.dump(items, open(animated_path(track), 'w', encoding='utf-8'), ensure_ascii=False)
+    return {'items': items}
+
+
+def animated_install(track, per_archive):
+    """Objets animes copies dans le 1er fichier _Art de la piste (version deja prevue a l'installation, sinon celle
+    enregistree / d'origine). -> (entrees du manifeste, {fichier: archive source} a copier dans l'archive de la piste)."""
+    items = animated_load(track)
+    arts = art_files(track)
+    if not items or not arts:
+        return [], {}
+    target = arts[0]
+    data = next((f[target] for f in per_archive.values() if target in f), None) or base_file(track, target)[0]
+    z = IgzFile(data)
+    # scripts deja declares par la piste (piste creee : chemins renommes) -> reutilises par les objets copies
+    man = pak_tool.read_latest(ARCHIVES, pkg_manifest.manifest_logical(track), track_pak(track))[0]
+    declared = {os.path.basename(p).lower(): _archive_case(track_pak(track), p)
+                for t, p in pkg_manifest.entries(man) if t == 'vsc'}
+    entries, copies, report = animated.inject(z, items, lambda lg, pak: pak_tool.read_latest(ARCHIVES, lg, pak)[0],
+                                              ARCHIVES, track_pak(track), declared)
+    for line in report:
+        print('objets animés :', line)
+    data = z.to_bytes()
+    for arc in pak_tool.archives_with(ARCHIVES, target, track_pak(track)):
+        per_archive[arc][target] = data
+    return entries, copies
 
 
 def _archive_case(pak, logical):
@@ -7039,6 +7438,8 @@ def install_plan(track):
             data = open(p, 'rb').read()
         for arc in pak_tool.archives_with(ARCHIVES, logical, track_pak(track)):
             per_archive[arc][logical] = data
+    # reglages de camera de la piste (Piste > Camera) : RETIRES le 2026-11-13, plus appliques (camera_install garde
+    # pour plus tard ; un <piste>_camera.json deja enregistre n'a plus d'effet : la camera d'origine revient)
     # modeles importes : NOUVEAUX fichiers, ajoutes a l'archive de la piste (seulement s'ils sont utilises)
     used = set()
     for art in art_files(track):
@@ -7090,6 +7491,18 @@ def install_plan(track):
     entries += [e for e in tp_entries if e not in entries]
     for logical, src_pak in tp_copies.items():
         per_archive[os.path.join(ARCHIVES, track_pak(track))][logical] = pak_tool.read_latest(ARCHIVES, logical, src_pak)[0]
+    # zones camera (parois roulables) : script TunnelCam de Sewer Speedway a declarer (copie si absent des archives communes)
+    cam_entries, cam_copies = cam_install_files(track)
+    entries += [e for e in cam_entries if e not in entries]
+    for logical, src_pak in cam_copies.items():
+        per_archive[os.path.join(ARCHIVES, track_pak(track))][_archive_case(src_pak, logical)] = \
+            pak_tool.read_latest(ARCHIVES, logical, src_pak)[0]
+    # objets animes (acteurs d'autres pistes) : copies dans le 1er fichier _Art au moment de l'installation
+    an_entries, an_copies = animated_install(track, per_archive)
+    entries += [e for e in an_entries if e not in entries]
+    for logical, src_pak in an_copies.items():
+        per_archive[os.path.join(ARCHIVES, track_pak(track))][_archive_case(src_pak, logical)] = \
+            pak_tool.read_latest(ARCHIVES, logical, src_pak)[0]
     # survol d'introduction : cameras reecrites, dans les archives de survol de la piste
     for arc, files in flyby_install_files(track).items():
         per_archive[arc].update(files)
@@ -7277,7 +7690,7 @@ def _set_installed(track, on, per_archive=None):
 def own_archives(track):
     """Archives propres a la piste (personne d'autre n'y installe) : la sienne et ses survols."""
     return {os.path.join(ARCHIVES, track_pak(track))} | \
-        {os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)}
+        {os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(pak_tool.listdir(ARCHIVES), track)}
 
 
 def _others_for(archives, track, report, plan=None):
@@ -7516,7 +7929,7 @@ def install_track(track):
     # archives de menu modifiees par une installation precedente et plus concernees : remises a l'origine (avec les
     # fichiers des autres pistes qui s'y trouvaient)
     # (idem pour les archives de survol quand les plans d'origine sont revenus)
-    stale = [a for a in menu_track_archives(track) + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)]
+    stale = [a for a in menu_track_archives(track) + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(pak_tool.listdir(ARCHIVES), track)]
              if a not in per_archive and (os.path.exists(pak_tool.backup_path(a)) or custom_category.layer_has(a))]
     others = _others_for(list(per_archive) + stale, track, kept, plan=per_archive)
     for arc in stale:
@@ -7602,10 +8015,29 @@ def creator_path(track):
     return os.path.join(OUT_DIR, f'{track}_creator.json')
 
 
+def creator_draft_path(track):
+    """Brouillon de la Creation copie sur le serveur par « Enregistrer » (2026-11-11) : il suit l'utilisateur d'un
+    navigateur a l'autre (le brouillon courant reste dans le navigateur, localStorage)."""
+    return os.path.join(OUT_DIR, f'{track}_creator_draft.json')
+
+
+def save_creator_draft(req):
+    """POST /api/creator_draft : {track, draft} -> enregistre la copie du brouillon."""
+    track, draft = req['track'], req.get('draft')
+    if not isinstance(draft, dict):
+        raise ValueError('brouillon invalide')
+    os.makedirs(OUT_DIR, exist_ok=True)
+    json.dump(draft, open(creator_draft_path(track), 'w'))
+    return {'ok': True, 'bytes': os.path.getsize(creator_draft_path(track))}
+
+
 def creator_info(track):
-    """GET /api/creator : trace du paveur enregistre ({points, closed, ground_z, kit}) et kits disponibles."""
+    """GET /api/creator : trace du paveur enregistre ({points, closed, ground_z, kit}), copie du brouillon (draft) et
+    kits disponibles."""
     saved = json.load(open(creator_path(track))) if os.path.exists(creator_path(track)) else None
-    return {'saved': saved, 'kits': {k: v['label'] for k, v in track_creator.KITS.items()}, 'order': list(track_creator.KITS),
+    dp = creator_draft_path(track)
+    draft = json.load(open(dp)) if os.path.exists(dp) else None
+    return {'saved': saved, 'draft': draft, 'kits': {k: v['label'] for k, v in track_creator.KITS.items()}, 'order': list(track_creator.KITS),
             'materials': {k: [{'label': m[4], 'color': m[5], 'png': m[1]} for m in v['materials']] for k, v in track_creator.KITS.items()},
             'kitinfo': {k: {'road_repeat': v['road_repeat'], 'ground_repeat': v['ground_repeat']} for k, v in track_creator.KITS.items()},
             'props': {k: {pk: {'label': p['label'], 'spacing': p['spacing'], 'scale': p['scale'], 'n': len(p['models']),
@@ -7638,9 +8070,13 @@ def create_build(req):
     progress.step('géométrie de la piste', 0.0)
     terrain = req.get('terrain')
     barriers = req.get('barriers') or 'curves'
-    obj, mtl, info = track_creator.build(pts, bool(req.get('closed')), ground_z, kit, terrain, barriers)
+    waters = [w for w in (req.get('waters') or []) if isinstance(w, dict) and (('x' in w and 'y' in w)
+                                                                          or (w.get('paint') and 'level' in w))]
+    obj, mtl, info = track_creator.build(pts, bool(req.get('closed')), ground_z, kit, terrain, barriers, waters)
     folder = os.path.join(OUT_DIR, 'creator', track)
     os.makedirs(folder, exist_ok=True)
+    for kind in info.get('water_kinds') or []:          # eau : image generee par type (pas de materiau d'eau importable)
+        open(os.path.join(folder, track_creator.water_png(kind)), 'wb').write(track_creator.water_texture(kind=kind))
     texs = track_creator.kit_textures(lambda lg, pak: pak_tool.read_latest(ARCHIVES, lg, pak)[0], kit, used=info['materials'])
     if info['mixes']:
         progress.step('fondus entre peintures', 0.02)
@@ -7652,7 +8088,8 @@ def create_build(req):
     open(os.path.join(folder, track_creator.OBJ_NAME), 'w', encoding='utf-8').write(obj)
     open(os.path.join(folder, track_creator.MTL_NAME), 'w', encoding='utf-8').write(mtl)
     json.dump({'points': pts, 'closed': bool(req.get('closed')), 'ground_z': ground_z, 'kit': kit, 'terrain': terrain,
-               'barriers': barriers, 'props': req.get('props') or []},
+               'barriers': barriers, 'props': req.get('props') or [], 'waters': waters,
+               'water_falls': info['water_falls']},              # zones de chute de l'eau profonde (auto_falls)
               open(creator_path(track), 'w'))
     # map vide : tout le decor et le sol d'origine retires, creation precedente supprimee ; wipe (« Repartir de
     # zéro ») : aussi tous les ajouts faits dans Edition (imports, objets de la bibliotheque, copies)
@@ -7664,6 +8101,8 @@ def create_build(req):
                       'remove': [g['key'] for g in added_groups(track) if req.get('wipe') or g['key'].startswith(prefix)]})
     surf = {m: {'collision': s is not None, 'surface': s if s is not None else 'none'}
             for m, s in {**track_creator.surfaces(kit), **info['mix_surfaces']}.items()}
+    for kind in track_creator.WATER_TYPES:                    # on passe a travers : fond du creux ou zone de chute
+        surf[track_creator.water_material(kind)] = {'collision': False, 'surface': 'none'}
     with progress.span(0.3, 0.85):
         res = import_folder({'track': track, 'folder': folder, 'files': [track_creator.OBJ_NAME], 'scale': 39.37,
                              'up': 'z', 'placement': 'absolute', 'materials': surf, 'road_material': 'Road',
@@ -7682,10 +8121,14 @@ def create_build(req):
                       + (f", {info['bridges']} pont(s)" if info['bridges'] else '')
                       + (f", {info['jumps']} saut(s)" if info['jumps'] else '')
                       + (f", barrières {info['walls_m']} m" if info['walls_m'] else '')
+                      + (f", {info['waters']} eau(x)" + (f" dont {len(info['water_falls'])} zone(s) profonde(s)" if info['water_falls'] else '')
+                         if info['waters'] else '')
+                      + ''.join(f' · {x}' for x in info['water_report'])
                       + (f", {sown['placed']} objet(s) de décor" if sown['placed'] else '')
                       + (f" ({dropped} trop près de la route ou au-dessus d'un saut, écarté(s))" if dropped else '')]
                       + res.get('report', []),
             'road': road, 'guide': info['guide'], 'exact': info['exact'], 'start': info['start'], 'yaw': info['yaw'],
+            'water_falls': len(info['water_falls']),
             # plancher de chute 30 m sous le point le plus bas (celui enregistre peut venir d'une ancienne map plus haute :
             # T905 a z 9512 au-dessus d'un sol a 6812 -> les karts « tombaient » des le depart)
             'killz': info['min_z'] - 30 * 39.37}
@@ -7928,7 +8371,7 @@ def uninstall_track(track):
         return {'restored': [], 'kept': [], 'not_installed': True}
     done, kept = [], []
     arcs = [os.path.join(ARCHIVES, n) for n in pak_tool.UPDATE_ARCHIVES + (track_pak(track),)] + menu_track_archives(track) \
-        + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(os.listdir(ARCHIVES), track)]
+        + [os.path.join(ARCHIVES, n) for n in flyby.flyby_paks(pak_tool.listdir(ARCHIVES), track)]
     arcs = [a for a in arcs if os.path.exists(pak_tool.backup_path(a)) or custom_category.layer_has(a)]
     others = _others_for(arcs, track, kept)                 # avant de l'oublier : ses fichiers sont dans le registre
     _set_installed(track, False)
@@ -7957,7 +8400,7 @@ def _zone_display(zone, lang, created):
     logical = f'maps/octane/{tid}/{tid}_zoneinfo_{lang}.lng'
     for pak in pak_tool.UPDATE_ARCHIVES + ('chunkinfos.pak', tid + '.pak'):
         p = os.path.join(ARCHIVES, pak)
-        if not os.path.exists(p):
+        if not pak_tool.exists(p):
             continue
         a, idx, lock = pak_tool.cached_archive(p)
         e = idx.get(logical)
@@ -8005,7 +8448,7 @@ def free_track_number():
     """Numero de piste creee (T9NN) libre dans le jeu ET sans sauvegarde dans l'editeur : apres un retour au jeu d'origine,
     les numeros sont de nouveau libres dans le jeu mais les fichiers de l'ancienne piste restent, et menu_track_create
     les effacerait (reset_track). Les c_T9NN_* (plans de survol laisses par une piste supprimee) ne comptent pas."""
-    paks = {f.lower() for f in os.listdir(ARCHIVES)}
+    paks = {f.lower() for f in pak_tool.listdir(ARCHIVES)}
     saved = [f.lower() for f in os.listdir(OUT_DIR)] if os.path.isdir(OUT_DIR) else []
     for n in range(1, 100):
         low = track_clone.new_id(NEW_TRACK_SOURCE, n).lower()
@@ -8071,7 +8514,7 @@ def retired_tracks():
     d'une piste supprimee : la suppression l'efface (reset_track) et ne laisse que quelques reglages."""
     if not os.path.isdir(OUT_DIR):
         return []
-    paks, info, out = {f.lower() for f in os.listdir(ARCHIVES)}, read_retired(), []
+    paks, info, out = {f.lower() for f in pak_tool.listdir(ARCHIVES)}, read_retired(), []
     for f in sorted(os.listdir(OUT_DIR)):
         m = re.match(r'^(T9\d\d_[A-Za-z_]+?)_newmap\.json$', f)
         if m and m.group(1).lower() + '.pak' not in paks:
@@ -8265,6 +8708,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, model_binary(q['track'][0], q['file'][0]), 'application/octet-stream')
             elif u.path == '/api/library':
                 self._send(200, library_catalog())
+            elif u.path == '/api/animated_catalog':          # objets animes du jeu (acteurs a skin)
+                self._send(200, animated_catalog())
+            elif u.path == '/api/animated':                  # objets animes poses sur la piste
+                self._send(200, animated_load(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/anim_list':                 # apercu anime : animations d'un acteur
+                self._send(200, anim_list(parse_qs(u.query)['actor'][0]))
+            elif u.path == '/api/anim_skin':
+                self._send(200, anim_skin(parse_qs(u.query)['actor'][0]), 'application/octet-stream')
+            elif u.path == '/api/anim_frames':
+                q = parse_qs(u.query)
+                self._send(200, anim_frames(q['actor'][0], q['anim'][0]), 'application/octet-stream')
             elif u.path == '/api/route_objects':
                 self._send(200, route_objects(parse_qs(u.query)['track'][0]))
             elif u.path == '/api/test_status':               # « Tester en jeu » : etape en cours
@@ -8312,7 +8766,7 @@ class Handler(BaseHTTPRequestHandler):
                        '/api/set_custom_material': 'Texture du modèle', '/api/import_texture': "Import de l'image",
                        '/api/newmap': 'Nouvelle map', '/api/undo_save': 'Annulation',
                        '/api/gen_ai_splines': 'Génération des splines IA', '/api/route_layout': 'Création du parcours',
-                       '/api/crates_auto': 'Placement des caisses', '/api/check': 'Vérification avant installation',
+                       '/api/crates_auto': 'Placement des caisses', '/api/check': 'Vérification avant installation', '/api/sky_check': 'Vérification du ciel',
                        '/api/alpha_textures': 'Analyse des textures', '/api/set_alpha_textures': 'Transparence des textures',
                        '/api/minimap': 'Mini-carte', '/api/folder_scan': 'Analyse du dossier',
                        '/api/import_folder': 'Import du dossier', '/api/export_obj': 'Export OBJ',
@@ -8377,6 +8831,7 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/route_layout': lambda: route_layout(req),
                       '/api/crates_auto': lambda: crates_auto(req),
                       '/api/check': lambda: preinstall_check(req['track']),
+                      '/api/sky_check': lambda: {'items': [{'level': l, 'text': t, 'fix': f} for l, t, f in sky_report(req['track'])]},
                       '/api/alpha_textures': lambda: alpha_texture_list(req['track']),
                       '/api/set_alpha_textures': lambda: with_history(req['track'], 'transparence des textures',
                                                                       lambda: set_alpha_textures(req['track'], req.get('wanted'))),
@@ -8393,6 +8848,10 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/set_surface': lambda: with_history(req['track'], 'type de sol', lambda: set_surface(req)),
                       '/api/object_alpha': lambda: with_history(req['track'], 'transparence', lambda: set_object_alpha(req)),
                       '/api/mesh_save': lambda: with_history(req['track'], 'forme d\'un objet', lambda: mesh_save(req)),
+                      '/api/creator_draft': lambda: save_creator_draft(req),
+                      '/api/animated_save': lambda: animated_save(req),
+                      '/api/camera_settings': lambda: set_camera_settings(req) if 'values' in req
+                      else {'values': camera_settings(req['track']), 'original': camera_original(req['track'])},
                       '/api/recolor': lambda: with_history(req['track'], 'couleur d\'un objet', lambda: recolor(req)),
                       '/api/double_sided': lambda: with_history(req['track'], 'faces des deux côtés', lambda: set_double_sided(req)),
                       '/api/object_glow': lambda: with_history(req['track'], 'texture lumineuse', lambda: set_object_glow(req)),
@@ -8452,7 +8911,7 @@ def configure(archives=None, out_dir=None, project_dir=None, config=None):
     cote de l'exe ; sinon ceux du projet). A appeler avant de servir."""
     global ARCHIVES, OUT_DIR, PROJECT_DIR, CONFIG
     if archives:
-        ARCHIVES = archives
+        ARCHIVES = pak_tool.set_layout(archives)['archives']      # jeu en un ou deux dossiers (voir pak_tool)
     if out_dir:
         OUT_DIR = out_dir
     if project_dir:
@@ -8465,11 +8924,23 @@ def configure(archives=None, out_dir=None, project_dir=None, config=None):
 CONFIG = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'ctr_editor_config.json')
 
 
+def game_layout(path):
+    """Organisation du jeu pour ce dossier « archives » : {'archives' (dossier du jeu de base), 'update' (racine de
+    la mise a jour <ID>-UPDATE / <ID>-patch) ou None si le jeu est en un seul dossier}. Detectee comme shadPS4 le fait :
+    dossier voisin du meme nom suivi de -UPDATE ou -patch ; le dossier choisi peut aussi etre celui de la mise a jour."""
+    base, up = pak_tool.detect_layout(path)
+    return {'archives': base, 'update': up}
+
+
 def valid_archives(path):
-    """Dossier « archives » du jeu (CUSA13795) : update.pak et au moins une archive de piste."""
+    """Dossier « archives » du jeu (CUSA13795) : update.pak et au moins une archive de piste, dans ce dossier ou, pour
+    un jeu en deux dossiers, dans celui de la mise a jour."""
     try:
-        names = {n.lower() for n in os.listdir(path)}
-    except (OSError, TypeError):
+        lay = game_layout(path)
+        names = {n.lower() for n in os.listdir(lay['archives'])}
+        if lay['update'] and os.path.isdir(os.path.join(lay['update'], 'archives')):
+            names |= {n.lower() for n in os.listdir(os.path.join(lay['update'], 'archives'))}
+    except (OSError, TypeError, ValueError):
         return False
     return 'update.pak' in names and any(n.startswith('t1') and n.endswith('.pak') for n in names)
 
@@ -8502,9 +8973,10 @@ def set_archives(path):
     if not valid_archives(path):
         raise ValueError(f'{path} ne contient pas les archives du jeu (update.pak, t111_crash_cove.pak…). '
                          'Choisis le dossier « archives » du jeu installé pour shadPS4.')
-    if os.path.normcase(path) != os.path.normcase(ARCHIVES):
-        ARCHIVES = path
-        clear_caches()
+    path = game_layout(path)['archives']                # dossier de la mise a jour choisi : jeu de base a cote
+    ARCHIVES = path
+    pak_tool.set_layout(path)
+    clear_caches()
     save_config(archives=path)
     return path
 
@@ -8603,7 +9075,9 @@ def set_settings(req):
 
 
 def archives_info():
-    return {'path': ARCHIVES, 'valid': valid_archives(ARCHIVES)}
+    lay = game_layout(ARCHIVES) if ARCHIVES else {'update': None}
+    return {'path': ARCHIVES, 'valid': valid_archives(ARCHIVES), 'update': lay['update'],
+            'layout': 'separe' if lay['update'] else 'unique'}
 
 
 def choose_archives(req):
@@ -8611,7 +9085,8 @@ def choose_archives(req):
     path = req.get('path') or ask_archives_folder()
     if not path:
         return {'ok': False, 'cancelled': True, **archives_info()}
-    return {'ok': True, 'path': set_archives(path), 'valid': True}
+    set_archives(path)
+    return {'ok': True, **archives_info()}
 
 
 def update_apply():

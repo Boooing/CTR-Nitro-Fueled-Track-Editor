@@ -9,6 +9,7 @@ L'OBJ est ecrit en metres, z vers le haut, coordonnees du jeu (import « absolut
 """
 import io
 import math
+from collections import defaultdict
 
 import numpy as np
 
@@ -948,6 +949,61 @@ SKIRT_MIN = 0.6                  # m : bord de route a plus de ca au-dessus du s
 DECK = 1.2                       # m : epaisseur du tablier
 
 
+ROOF_CLEAR = 8.0                 # m : relief a plus de ca au-dessus de la route = plafond (la route passe dessous)
+ROOF_EDGE = 0.3                  # m : le plafond s'etend tant que le raccord a abaisse le sol de plus de ca
+ROOF_REACH = 60.0                # m : ... et au plus a ca de la route qu'il couvre (pas le long des tranchees)
+ROOF_THICK = 6.0                 # m : epaisseur de la dalle de terre qui relie les hauteurs au-dessus de la route
+ROOF_KEEP, ROOF_KEEP_R = 12.0, 40.0   # m : au-dessus de la route, bande gardee jusqu'a ca sous le sommet a moins de ROOF_KEEP_R
+
+
+def _roof_mask(xs, ys, H0, H, C, dig):
+    """Tunnel (2026-11-11) : relief passe par-dessus la route avec le pinceau « Deplacer sur le cote » ou « Creuser sous
+    la route » (masque dig ; sans lui, une tranchee profonde deviendrait un tunnel). Le raccord (_conform) abaisse le sol
+    jusqu'a la route ; la ou, SUR la route marquee, le relief (H0) est au moins ROOF_CLEAR au-dessus de la route, il est
+    garde au-dessus comme un plafond, etendu aux sommets voisins que le raccord a abaisses (parois du tunnel), a
+    ROOF_REACH au plus et toujours a ROOF_CLEAR / 2 au moins au-dessus de la route couverte. creator.js roofMask idem.
+    -> (masque (ny, nx) des sommets du plafond, ref (dessus de la route couverte), masque de la route) ou None."""
+    low = H0 - H
+    if dig is None or len(xs) < 2 or not (low >= ROOF_CLEAR).any():
+        return None
+    cell = xs[1] - xs[0]
+    road = np.zeros(H.shape, bool)
+    rz = np.full(H.shape, -np.inf)                       # dessus de la route (la plus haute) sous chaque sommet
+    for x, y, z, w in C[:, :4]:
+        r = w / 2
+        a0, a1 = max(0, int((x - r - xs[0]) // cell)), min(len(xs) - 1, int((x + r - xs[0]) // cell) + 1)
+        b0, b1 = max(0, int((y - r - ys[0]) // cell)), min(len(ys) - 1, int((y + r - ys[0]) // cell) + 1)
+        if a1 < a0 or b1 < b0:
+            continue
+        X, Y = np.meshgrid(xs[a0:a1 + 1], ys[b0:b1 + 1])
+        inside = np.hypot(X - x, Y - y) < r
+        road[b0:b1 + 1, a0:a1 + 1] |= inside
+        sub = rz[b0:b1 + 1, a0:a1 + 1]
+        sub[inside] = np.maximum(sub[inside], z + ROAD_LIFT)
+    free = H0 - rz                                       # hauteur libre mesuree depuis la ROUTE
+    roof = road & (free >= ROOF_CLEAR) & dig
+    if not roof.any():
+        return None
+    allowed = (low > ROOF_EDGE) & (~road | (free >= ROOF_CLEAR))
+
+    def grow(m):                                         # maximum des 4 voisins (et de soi)
+        g = m.copy()
+        g[1:, :] = np.maximum(g[1:, :], m[:-1, :])
+        g[:-1, :] = np.maximum(g[:-1, :], m[1:, :])
+        g[:, 1:] = np.maximum(g[:, 1:], m[:, :-1])
+        g[:, :-1] = np.maximum(g[:, :-1], m[:, 1:])
+        return g
+    ref = np.where(roof, rz, -np.inf)
+    for _ in range(int(math.ceil(ROOF_REACH / cell))):
+        r2 = grow(ref)
+        d = roof | (grow(roof.astype(np.int8)).astype(bool) & allowed & (H0 >= r2 + ROOF_CLEAR / 2))
+        if (d == roof).all():
+            break
+        ref = np.where(d & ~roof, r2, ref)
+        roof = d
+    return roof, ref, road
+
+
 def _dig_mask(terrain, xs, ys):
     """Sommets « creuses sous la route » (outil Creuser de la Creation, terrain['dig'] 0 / 1 sur la grille complete),
     sur la grille coupee (xs, ys) ; None si rien de creuse."""
@@ -1218,7 +1274,208 @@ def _barriers(ob, C, L, left, right, rows, gap, closed, mode):
     return count
 
 
-def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curves'):
+WATER_DEEP = 1.5        # m : plus d'eau que ca -> zone de chute (reapparition) ; moins : on roule au fond
+WATER_DZ = -5.0         # m (0,3 puis 1 avant, le 2026-11-12 ; creator.js idem) : niveau par defaut sous le bord le plus bas du creux
+WATER_REPEAT = 24.0     # m : repetition de la texture d'eau
+WATER_FALL_TILE = 40.0  # m : zones de chute de l'eau profonde, en carreaux (reapparition proche de l'endroit de la chute)
+# types d'eau (2026-11-12 ; creator.js WATER_TYPES) : couleur de base (r, g, b) et ecart des ondulations. Matiere « Water »
+# pour l'eau claire (anciens brouillons), « Water_<type> » sinon ; image water.png / water_<type>.png
+WATER_TYPES = {'clear': ((0.10, 0.42, 0.62), (0.10, 0.16, 0.20)), 'lagoon': ((0.08, 0.55, 0.58), (0.10, 0.18, 0.14)),
+               'swamp': ((0.22, 0.30, 0.13), (0.08, 0.10, 0.05)), 'dark': ((0.06, 0.16, 0.27), (0.05, 0.08, 0.12)),
+               'mud': ((0.36, 0.26, 0.16), (0.08, 0.06, 0.04))}
+
+
+def water_kind(w):
+    return w.get('type') if isinstance(w, dict) and w.get('type') in WATER_TYPES else 'clear'
+
+
+def water_material(kind):
+    return 'Water' if kind == 'clear' else f'Water_{kind}'
+
+
+def water_png(kind):
+    return 'water.png' if kind == 'clear' else f'water_{kind}.png'
+
+
+def paint_mask(terrain, xs, ys, verts):
+    """Sommets peints (indices sur la grille complete du terrain) -> masque sur la grille coupee (xs, ys)."""
+    n, cell = int(terrain['n']), terrain['cell'] / INCH
+    i0 = int(round((xs[0] - terrain['x0'] / INCH) / cell))
+    j0 = int(round((ys[0] - terrain['y0'] / INCH) / cell))
+    mask = np.zeros((len(ys), len(xs)), bool)
+    for v in verts or []:
+        v = int(v)
+        j, i = v // n - j0, v % n - i0
+        if 0 <= j < len(ys) and 0 <= i < len(xs):
+            mask[j, i] = True
+    return mask
+
+
+def water_basin(xs, ys, H, x, y, dz, road_z=None):
+    """Creux du sol au point (x, y) (metres) rempli jusqu'a son bord le plus bas + dz (m) : (niveau, masque des sommets
+    sous l'eau [ny, nx]) ou None. Meme calcul que creator.js waterBasin : descente au fond, inondation par le bas (les
+    petits creux de la pente sont remplis aussi, 2026-11-12) jusqu'au bord du terrain ou a la route posee au sol
+    (road_z : dessus de la route sous chaque sommet, -inf sans route), puis sommets relies sous le niveau."""
+    import heapq
+    ny, nx = H.shape
+    a = int(np.argmin(np.abs(xs - x)))
+    b = int(np.argmin(np.abs(ys - y)))
+    if not (0 < a < nx - 1 and 0 < b < ny - 1):
+        return None
+    for _ in range(4 * max(nx, ny)):                     # point sur la pente : on descend au fond
+        best = (b, a)
+        for nb, na in ((b, a - 1), (b, a + 1), (b - 1, a), (b + 1, a)):
+            if H[nb, na] < H[best]:
+                best = (nb, na)
+        if best == (b, a):
+            break
+        b, a = best
+        if not (0 < a < nx - 1 and 0 < b < ny - 1):
+            return None
+    seen = np.zeros(H.shape, bool)
+    level, spill = float(H[b, a]), None
+    heap = [(level, b, a)]
+    seen[b, a] = True
+    while heap:
+        h, vb, va = heapq.heappop(heap)
+        level = max(level, h)
+        if va in (0, nx - 1) or vb in (0, ny - 1):
+            spill = level
+            break
+        if road_z is not None and -np.inf < road_z[vb, va] < h + 2.0:   # route au sol (pas un pont au-dessus)
+            spill = level
+            break
+        for nb, na in ((vb, va - 1), (vb, va + 1), (vb - 1, va), (vb + 1, va)):
+            if not seen[nb, na]:
+                seen[nb, na] = True
+                heapq.heappush(heap, (float(H[nb, na]), nb, na))
+    L = (level if spill is None else spill) + dz
+    if H[b, a] >= L:
+        return None
+    mask = np.zeros(H.shape, bool)
+    mask[b, a] = True
+    stack = [(b, a)]
+    while stack:
+        vb, va = stack.pop()
+        for nb, na in ((vb, va - 1), (vb, va + 1), (vb - 1, va), (vb + 1, va)):
+            if 0 <= nb < ny and 0 <= na < nx and not mask[nb, na] and H[nb, na] < L:
+                mask[nb, na] = True
+                stack.append((nb, na))
+    return L, mask
+
+
+def water_texture(size=512, kind='clear'):
+    """Image d'eau (PNG) du type kind (WATER_TYPES) : ondulations douces, reflets, raccord sur les bords."""
+    from PIL import Image
+    import io
+    u = np.linspace(0, 2 * np.pi, size, endpoint=False)
+    X, Y = np.meshgrid(u, u)
+    w = (np.sin(3 * X + 2 * Y) + 0.9 * np.sin(5 * Y - 4 * X + 1.3) + 0.8 * np.sin(2 * X - 6 * Y + 0.7)
+         + 0.5 * np.sin(9 * X + 7 * Y + 0.4) + 0.45 * np.sin(11 * Y - 8 * X + 2.6) + 0.3 * np.sin(17 * X + 3 * Y + 1.1))
+    w = (w - w.min()) / (w.max() - w.min())
+    (r0, g0, b0), (dr, dg, db) = WATER_TYPES.get(kind, WATER_TYPES['clear'])
+    r = r0 + dr * w
+    g = g0 + dg * w
+    bl = b0 + db * w
+    hi = np.clip((w - 0.9) * 3, 0, 1) * (0.4 if kind == 'mud' else 1.0)   # reflets
+    rgb = np.stack([r + 0.5 * hi, g + 0.4 * hi, bl + 0.3 * hi], -1)
+    buf = io.BytesIO()
+    Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8), 'RGB').save(buf, 'PNG')
+    return buf.getvalue()
+
+
+def _road_top(xs, ys, C):
+    """Dessus de la route (la plus haute) sous chaque sommet de la grille (metres), -inf hors de la route."""
+    cell = xs[1] - xs[0]
+    rz = np.full((len(ys), len(xs)), -np.inf)
+    for x, y, z, w in C[:, :4]:
+        r = w / 2
+        a0, a1 = max(0, int((x - r - xs[0]) // cell)), min(len(xs) - 1, int((x + r - xs[0]) // cell) + 1)
+        b0, b1 = max(0, int((y - r - ys[0]) // cell)), min(len(ys) - 1, int((y + r - ys[0]) // cell) + 1)
+        if a1 < a0 or b1 < b0:
+            continue
+        X, Y = np.meshgrid(xs[a0:a1 + 1], ys[b0:b1 + 1])
+        inside = np.hypot(X - x, Y - y) < r
+        sub = rz[b0:b1 + 1, a0:a1 + 1]
+        sub[inside] = np.maximum(sub[inside], z + ROAD_LIFT)
+    return rz
+
+
+def _water(ob, xs, ys, H, waters, hole, terrain=None, C=None):
+    """Surfaces d'eau (objets CreatorWaterNN, matiere du type d'eau, sans collision) et zones de chute de l'eau profonde.
+    waters = [{x, y, dz, type}] (creux remplis) ou [{paint: 1, level, v: [sommets], type}] (eau peinte au pinceau,
+    niveau absolu en pouces ; sous l'eau = sommets peints dont le sol est plus bas). -> (nb d'eaux, zones [{'center',
+    'dims'} pouces], rapport, types utilises)."""
+    count, zones, report, kinds = 0, [], [], set()
+    nyc, nxc = len(ys) - 1, len(xs) - 1
+    road_z = _road_top(xs, ys, C) if C is not None and len(xs) > 1 and any(not w.get('paint') for w in waters or []) else None
+    for k, w in enumerate(waters or []):
+        r = None
+        try:
+            if w.get('paint'):
+                if terrain:
+                    L = float(w['level']) / INCH
+                    mask = paint_mask(terrain, xs, ys, w.get('v')) & (H < L)
+                    r = (L, mask) if mask.any() else None
+            else:
+                r = water_basin(xs, ys, H, float(w['x']) / INCH, float(w['y']) / INCH, float(w.get('dz', WATER_DZ * INCH)) / INCH, road_z)
+        except (KeyError, TypeError, ValueError):
+            r = None
+        if r is None:
+            report.append(f'eau {k + 1} : ' + ('aucune zone peinte sous son niveau' if w.get('paint') else 'plus de creux à cet endroit'))
+            continue
+        L, mask = r
+        cell = mask[:-1, :-1] | mask[1:, :-1] | mask[:-1, 1:] | mask[1:, 1:]
+        cells = [(a, b) for b, a in np.argwhere(cell) if not hole[b, a]]
+        # eau peinte : bord en biais (case a 3 coins = triangle, moins de 3 : rien ; creator.js idem)
+        tris = []
+        if w.get('paint'):
+            full, tris = [], []
+            for a, b in cells:
+                q = [(a, b), (a + 1, b), (a + 1, b + 1), (a, b + 1)]
+                inside = [mask[qb, qa] for qa, qb in q]
+                if all(inside):
+                    full.append((a, b))
+                elif sum(inside) == 3:
+                    tris.append([c for c, ok in zip(q, inside) if ok])
+            cells = full
+        if not cells and not tris:
+            continue
+        count += 1
+        kind = water_kind(w)
+        kinds.add(kind)
+        ob.obj(f'CreatorWater{count:02d}', water_material(kind))
+        vid = {}
+
+        def v(a, b):
+            if (a, b) not in vid:
+                vid[(a, b)] = ob.vert((xs[a], ys[b], L), (xs[a] / WATER_REPEAT, ys[b] / WATER_REPEAT))
+            return vid[(a, b)]
+        for a, b in cells:
+            ob.quad(v(a, b), v(a + 1, b), v(a + 1, b + 1), v(a, b + 1))
+        for c3 in tris:                                  # coins dans le sens trigonometrique (ordre de la case)
+            ob.f.append('f ' + ' '.join(f'{i}/{i}' for i in (v(*c) for c in c3)))
+        # eau profonde : boites de chute de WATER_FALL_TILE m, dessus 1 m sous la surface, jusqu'au fond
+        deep = mask & ((L - H) > WATER_DEEP)
+        if deep.any():
+            step = max(1, int(round(WATER_FALL_TILE / float(xs[1] - xs[0]))))
+            for b0 in range(0, len(ys), step):
+                for a0 in range(0, len(xs), step):
+                    sub = deep[b0:b0 + step, a0:a0 + step]
+                    if not sub.any():
+                        continue
+                    jj, ii = np.nonzero(sub)
+                    half = float(xs[1] - xs[0]) / 2
+                    x0, x1 = xs[a0 + ii.min()] - half, xs[a0 + ii.max()] + half
+                    y0, y1 = ys[b0 + jj.min()] - half, ys[b0 + jj.max()] + half
+                    top = L - 1.0
+                    bot = float(H[b0:b0 + step, a0:a0 + step][sub].min()) - 1.0
+                    zones.append({'center': [(x0 + x1) / 2 * INCH, (y0 + y1) / 2 * INCH, (top + bot) / 2 * INCH],
+                                  'dims': [(x1 - x0) * INCH, (y1 - y0) * INCH, max(2.0, top - bot) * INCH]})
+    return count, zones, report, kinds
+
+
+def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curves', waters=None):
     """-> (texte OBJ, texte MTL, infos {length, guide, exact (pouces), start, yaw, ground_tiles, min_z (pouces), ...}).
     barriers : 'none' | 'curves' (exterieur des virages serres) | 'all' (les deux bords partout, sauf sauts)."""
     K = KITS[kit]
@@ -1267,9 +1524,39 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
 
     # terrain raccorde a la route, en carreaux de GROUND_TILE m et par matiere (matiere d'une case : la plus presente
     # a ses 4 coins)
-    H = _conform(xs, ys, H, C, closed, left, right, _dig_mask(terrain, xs, ys),
+    H0 = H.copy()                                        # relief (avant raccord) : plafond des tunnels
+    dig = _dig_mask(terrain, xs, ys)
+    H = _conform(xs, ys, H, C, closed, left, right, dig,
                  float((terrain or {}).get('blend') or BLEND_SLOPE), H - gz)
     H, _ = _clear_road(xs, ys, H, left, right, rows, gap, ns)
+    RM = _roof_mask(xs, ys, H0, H, C, dig)
+    roof = RM[0] if RM is not None else None
+    span = None
+    if roof is not None:
+        # partie du pont de terre au-dessus de la route (sommets de la route et leurs 4 voisins) : DALLE avec le vide
+        # dessous, sol au niveau de la route. Ailleurs (flancs des buttes reliees) : relief plein jusqu'au sol, sinon il
+        # pendait en rideaux fins. creator.js refreshTerrainMesh / refreshRoof idem
+        rd = RM[2]
+        near = rd.copy()
+        near[1:, :] |= rd[:-1, :]
+        near[:-1, :] |= rd[1:, :]
+        near[:, 1:] |= rd[:, :-1]
+        near[:, :-1] |= rd[:, 1:]
+        span = roof & near
+        # au-dessus de la route, seule la partie haute de la bande reste (ROOF_KEEP sous son sommet local) : ses bords en
+        # pente (flancs etires par le pinceau) pendaient en voiles jusque pres de la route. creator.js roofMask idem
+        k = int(round(ROOF_KEEP_R / cell))
+        drop = []
+        for b, a in np.argwhere(span):
+            win = span[max(0, b - k):b + k + 1, max(0, a - k):a + k + 1]
+            peak = H0[max(0, b - k):b + k + 1, max(0, a - k):a + k + 1][win].max()
+            if H0[b, a] < max(RM[1][b, a] + ROOF_CLEAR + ROOF_THICK, peak - ROOF_KEEP):
+                drop.append((b, a))
+        for b, a in drop:
+            roof[b, a] = span[b, a] = False
+        H = np.where(span, np.minimum(H, RM[1] - ROAD_LIFT - 0.25), H)
+        # flancs des buttes reliees : rendus au relief, la bande et les buttes ne font qu'un bloc (2026-11-11)
+        H = np.where(roof & ~span, H0, H)
     # sauts : seule la route s'arrete, le sol dessous reste (demande du 2026-11-05 ; avant : _hole_cells, trou jusqu'au
     # plancher de chute)
     hole = np.zeros((len(ys) - 1, len(xs) - 1), bool)
@@ -1309,6 +1596,9 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
                 for a, b in cells:
                     ob.quad(v(a, b), v(a + 1, b), v(a + 1, b + 1), v(a, b + 1))
 
+    # eau des creux (outil du Relief « Remplir d'eau », 2026-11-12) : surface plane au niveau, sans collision
+    n_water, water_falls, water_rep, water_kinds = _water(ob, xs, ys, H, waters, hole, terrain, C)
+
     # ponts : la ou la route passe nettement au-dessus du terrain (au-dessus d'elle-meme), tablier en roche
     # (flancs de DECK m sous les bords et dessous) ; la collision n'est que la route
     g = np.array([_height(xs, ys, H, x, y) for x, y in C[:, :2]])
@@ -1345,13 +1635,72 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
             ob.quad(ob.vert(bl0, (0, 0)), ob.vert(bl1, (1, 0)), ob.vert(br1, (1, 1)), ob.vert(br0, (0, 1)))   # dessous
         n_bridges = max(n_bridges, 1)
 
+    # tunnels : terre gardee au-dessus de la route, en VOLUME FERME (2026-11-11 ; creator.js refreshRoof idem) :
+    #   dessus = relief (H0) ; dessous = dalle de ROOF_THICK m (jamais a moins de ROOF_CLEAR au-dessus de la route), qui
+    #   rejoint le sol la ou il remonte (buttes reliees) ; vide dessous jusqu'a la route ;
+    #   parois sur tout le tour (aux entrees : facade, l'entree reste ouverte). Le jeu n'affiche que la face avant :
+    #   dessus vers le haut, dessous vers le bas, parois dans les deux sens. Matiere du sol de la case.
+    n_roof = 0
+    if roof is not None:
+        _, rref, rroad = RM
+        nyc, nxc = len(ys) - 1, len(xs) - 1
+        # cases du pont : 4 coins dans le plafond, un au moins au-dessus de la route (le reste = flancs, rendus au relief :
+        # un seul bloc avec les buttes ; dessus de la bande dans le prolongement du sol)
+        # ... un coin au-dessus de la route, les autres dans le pont OU sur du relief haut que la bande touche (pas abaisse
+        # par le raccord, ROOF_CLEAR au moins au-dessus de la route) : la bande s'y soude sans trou (creator.js idem)
+        rc_ = np.zeros((nyc, nxc), bool)
+        for b, a in np.argwhere((span[:-1, :-1] | span[1:, :-1] | span[:-1, 1:] | span[1:, 1:]) & ~hole):
+            q = ((b, a), (b, a + 1), (b + 1, a), (b + 1, a + 1))
+            ref = max(rref[v] for v in q if span[v])
+            rc_[b, a] = all(roof[v] or (H0[v] - H[v] <= ROOF_EDGE and H[v] >= ref + ROOF_CLEAR) for v in q)
+        top_z = lambda a, b: H0[b, a] if roof[b, a] else H[b, a]
+
+        def bot_z(a, b):
+            # au-dessus de la route : DALLE de ROOF_THICK m sous le relief, jamais a moins de ROOF_CLEAR de la route
+            # (l'utilisateur, 2026-11-11 : « je ne veux pas que ca descende jusqu'a la route, juste rejoindre deux parties
+            # hautes ») ; sur les buttes, le dessous rejoint leur dessus (fusion)
+            if not span[b, a]:
+                return top_z(a, b)
+            return min(H0[b, a] - 0.5, max(H0[b, a] - ROOF_THICK, H[b, a], rref[b, a] + ROOF_CLEAR))
+        rcells = defaultdict(list)
+        for b in range(nyc):
+            for a in range(nxc):
+                if rc_[b, a]:
+                    rcells[int(CM[b, a])].append((a, b))
+        for m, cells in rcells.items():
+            used.add(m)
+            ob.obj(f'CreatorRoof{m:02d}_{NAMES[m]}', NAMES[m])
+            vt, vb = {}, {}
+
+            def rv(a, b, d, f):
+                if (a, b) not in d:
+                    d[(a, b)] = ob.vert((xs[a], ys[b], f(a, b)), (xs[a] / rep, ys[b] / rep))
+                return d[(a, b)]
+            for a, b in cells:
+                ob.quad(rv(a, b, vt, top_z), rv(a + 1, b, vt, top_z), rv(a + 1, b + 1, vt, top_z), rv(a, b + 1, vt, top_z))
+                ob.quad(rv(a, b, vb, bot_z), rv(a, b + 1, vb, bot_z), rv(a + 1, b + 1, vb, bot_z), rv(a + 1, b, vb, bot_z))
+                for da, db, (pa, pb), (qa, qb) in ((0, -1, (a, b), (a + 1, b)), (1, 0, (a + 1, b), (a + 1, b + 1)),
+                                                    (0, 1, (a + 1, b + 1), (a, b + 1)), (-1, 0, (a, b + 1), (a, b))):
+                    na, nb = a + da, b + db
+                    if (0 <= na < nxc and 0 <= nb < nyc and rc_[nb, na]) or not (span[pb, pa] or span[qb, qa]):
+                        continue                                 # pas de paroi entre deux sommets de butte (relief)
+                    sl = float(np.hypot(xs[qa] - xs[pa], ys[qb] - ys[pb]))
+                    w = (ob.vert((xs[pa], ys[pb], top_z(pa, pb)), (0, top_z(pa, pb) / rep)),
+                         ob.vert((xs[qa], ys[qb], top_z(qa, qb)), (sl / rep, top_z(qa, qb) / rep)),
+                         ob.vert((xs[qa], ys[qb], bot_z(qa, qb)), (sl / rep, bot_z(qa, qb) / rep)),
+                         ob.vert((xs[pa], ys[pb], bot_z(pa, pb)), (0, bot_z(pa, pb) / rep)))
+                    ob.quad(*w)
+                    ob.quad(*w[::-1])
+                n_roof += 1
+
     n_walls = _barriers(ob, C, L, left, right, rows, gap, closed, barriers)
     # fondus : images composees apres coup (mix_textures), leurs deux peintures doivent etre decodees
     mix_used = [x for i, x in enumerate(mixes) if MIX0 + i in used]
     base_used = {m for m in used if m < MIX0} | {m for x in mix_used for m in x[:2]}
     mtl ='newmtl Road\nKd 0.8 0.7 0.5\nmap_Kd road.png\n\n' + \
         ('newmtl StartLine\nKd 1 1 1\nmap_Kd checker.png\n\n' if not gap[0] else '') + ('newmtl Bridge\nKd 0.5 0.5 0.5\nmap_Kd rock.png\n\n' if n_bridges or skirts else '') + \
-        ('newmtl Wall\nKd 0.5 0.5 0.5\nmap_Kd rock.png\n\n' if n_walls else '') + ''.join(
+        ('newmtl Wall\nKd 0.5 0.5 0.5\nmap_Kd rock.png\n\n' if n_walls else '') + \
+        ''.join(f'newmtl {water_material(k)}\nKd 0.2 0.5 0.75\nmap_Kd {water_png(k)}\n\n' for k in sorted(water_kinds)) + ''.join(
         f'newmtl {name}\nKd 0.8 0.7 0.5\nmap_Kd {png}\n\n' for m, (name, png, *_) in enumerate(MATS) if m in used) + ''.join(
         f'newmtl {_mix_name(*x)}\nKd 0.8 0.7 0.5\nmap_Kd {_mix_name(*x)}.png\n\n' for x in mix_used)
     yaw = math.atan2(T[0, 1], T[0, 0])
@@ -1364,9 +1713,10 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
             'mixes': [(_mix_name(*x), MATS[x[0]][1], MATS[x[1]][1], x[2]) for x in mix_used],
             # surface de collision d'un fondu : celle de la peinture dominante
             'mix_surfaces': {_mix_name(*x): MATS[x[1] if x[2] > 2 else x[0]][3] for x in mix_used},
-            'bridges': int(n_bridges), 'jumps': int(np.count_nonzero(gap & ~np.roll(gap, 1))), 'walls_m': round(n_walls * STEP),
+            'bridges': int(n_bridges), 'tunnel_cells': int(n_roof), 'jumps': int(np.count_nonzero(gap & ~np.roll(gap, 1))), 'walls_m': round(n_walls * STEP),
             'min_z': float(min(H.min(), road_z.min())) * INCH,
-            '_ground': (xs, ys, H, hole, C)}                     # sol genere (metres) : hauteur des objets semes
+            'waters': int(n_water), 'water_falls': water_falls, 'water_report': water_rep, 'water_kinds': sorted(water_kinds),
+            '_ground': (xs, ys, H, hole, C, roof)}                     # sol genere (metres) : hauteur des objets semes
     return ob.text(MTL_NAME), mtl, info
 
 
@@ -1469,14 +1819,45 @@ def prop_seat(ground, x, y, yaw, r, s, role):
     return low / INCH - PROP_SINK, -math.asin(max(-1.0, min(1.0, ly))), math.atan2(lx, 1 / n)
 
 
+STEEP_MAX = 80.0     # degres : aucun objet seme au-dela (creator.js STEEP_MAX, meme mesure)
+
+
+def prop_steep(ground, x, y, r, s):
+    """Pente la plus forte du sol genere autour du pied (a 1 m et sur l'emprise), en degres (creator.js seatOf)."""
+    z0 = ground_height(ground, x, y)
+    if z0 is None:
+        return 0.0
+    rt = max(INCH, 0.7 * r * s * INCH)
+    steep = 0.0
+    for rr in (INCH, rt):
+        for i in range(8):
+            a = i * math.pi / 4
+            z = ground_height(ground, x + rr * math.cos(a), y + rr * math.sin(a))
+            if z is not None:
+                steep = max(steep, abs(z - z0) / rr)
+    return math.degrees(math.atan(steep))
+
+
 def props_items(kit, props, ground, dims):
     """Objets semes du brouillon [{t, m, x, y, yaw, s}] -> items de place_library_many, poses sur le sol genere (prop_seat) par
     leur base (sauf rochers : par leur origine) ; ecartes si l'objet touche la route (prop_conflict) ou un trou de saut.
     Chaque objet peut venir d'un autre theme (p['k'], sinon kit).
     dims(theme) -> {type: [{'r', 'zmin', 'zmax'} (metres) par modele]}. -> (items, nb ecartes)."""
     C = ground[4]
+    roof = ground[5] if len(ground) > 5 else None
+    xs, ys = ground[0], ground[1]
+
+    def under_roof(x, y):
+        if roof is None or xs is None or len(xs) < 2:
+            return False
+        a = int(round((x / INCH - xs[0]) / (xs[1] - xs[0])))
+        b = int(round((y / INCH - ys[0]) / (ys[1] - ys[0])))
+        return 0 <= b < roof.shape[0] and 0 <= a < roof.shape[1] and bool(roof[b, a])
     out, dropped = [], 0
     for p in props or []:
+        if not p.get('road') and under_roof(p['x'], p['y']):
+            dropped += 1
+            continue
         k = p.get('k') or kit
         d = (KITS.get(k, {}).get('props') or {}).get(p.get('t'))
         if not d:
@@ -1488,15 +1869,33 @@ def props_items(kit, props, ground, dims):
         rock = p['t'] in ROCK_KINDS
         fs = foot_share({**d, 'rock': rock})
         yaw = float(p.get('yaw', 0.0))
-        seated = prop_seat(ground, p['x'], p['y'], yaw, r, s, prop_role(p['t'], d.get('big')))
-        if seated is None:                                           # au-dessus d'un trou de saut
-            dropped += 1
-            continue
-        low, rx, ry = seated                                         # m : bas de l'objet
-        if prop_conflict(r, zmin, zmax, s, low, p['x'] / INCH, p['y'] / INCH, C, fs):
+        mx, my = p['x'] / INCH, p['y'] / INCH
+        # pose a la main SUR la route (p['road'], 2026-11-11) : a plat sur le passage le plus haut sous l'objet ; seule
+        # une route plus haute (pont) peut alors l'ecarter. Plus sur la route (trace modifie) : pose normale.
+        on = (np.hypot(C[:, 0] - mx, C[:, 1] - my) < C[:, 3] / 2) if p.get('road') else None
+        if on is not None and on.any():
+            low = float(C[on, 2].max()) + ROAD_LIFT - PROP_SINK
+            rx = ry = 0.0
+            Cc = C[C[:, 2] >= low + PROP_LEVEL]
+        else:
+            if prop_steep(ground, p['x'], p['y'], r, s) > STEEP_MAX:     # falaise (objet seme avant la limite)
+                dropped += 1
+                continue
+            seated = prop_seat(ground, p['x'], p['y'], yaw, r, s, prop_role(p['t'], d.get('big')))
+            if seated is None:                                       # au-dessus d'un trou de saut
+                dropped += 1
+                continue
+            low, rx, ry = seated                                     # m : bas de l'objet
+            Cc = C
+        # decalage en hauteur donne a la main (outil Modifier de la Creation, pouces)
+        low += float(p.get('dz') or 0.0) / INCH
+        if len(Cc) and prop_conflict(r, zmin, zmax, s, low, mx, my, Cc, fs):
             dropped += 1
             continue
         z = (low - (0.0 if rock else zmin * s)) * INCH
+        # inclinaison donnee a la main (outil Modifier, 2026-11-12 ; radians) en plus de celle de la pente du sol
+        rx += float(p.get('rx') or 0.0)
+        ry += float(p.get('ry') or 0.0)
         out.append({'model': d['models'][m], 'pak': d['pak'], 'pos': [p['x'], p['y'], z],
                     'yaw': yaw, 'rot': [rx, ry], 'scale': s})
     return out, dropped

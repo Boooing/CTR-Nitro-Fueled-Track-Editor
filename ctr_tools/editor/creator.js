@@ -39,7 +39,7 @@ let MATERIALS = [                     // ordre = indice de peinture (matieres du
 let EXTRA_MATS = [];
 // dig : sous une route en hauteur, le sol n'est plus colle a la route (relief garde, route en pont) ; fill : l'inverse
 const TOOLS = [['raise', '⬆ Monter'], ['lower', '⬇ Creuser'], ['flatten', '▬ Aplanir'], ['smooth', '〰 Lisser'],
-               ['dig', '⛏ Creuser sous la route'], ['fill', '↺ Reboucher sous la route']];
+               ['dig', '⛏ Creuser sous la route'], ['fill', '↺ Reboucher sous la route'], ['water', '💧 Remplir d\'eau']];
 
 // ---- manette : chaque action lit une entree, bouton (b) ou demi-axe (a + sens s), valeur 0..1. Touches au choix,
 // gardees dans le navigateur (localStorage) ; numeros = disposition standard (Xbox : 0 A, 1 B, 2 X, 3 Y, 4 LB,
@@ -224,6 +224,10 @@ export function initCreator(ctx) {
   const brush =new THREE.Mesh(new THREE.RingGeometry(0.92, 1, 48), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthTest: false }));
   brush.visible = false;
   group.add(far, terrainMesh, road, banks, edgeL, edgeR, center, startMark, startLine, paver, brush);
+  // tunnels (track_creator._roof_mask) : relief garde au-dessus de la route comme un plafond, dessine des deux cotes
+  const roofMesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  roofMesh.visible = false; group.add(roofMesh);
+  // ponts de terre (outil Relief « Relier deux sommets ») et trait d'apercu entre le 1er sommet et la souris
 
   // panneau
   const panel = document.createElement('div');
@@ -261,17 +265,32 @@ export function initCreator(ctx) {
       <span>Qualité</span><select id="crq" style="width:100%" title="Résolution de la vue et détail des objets pendant la création. Auto : la résolution baisse toute seule si la carte graphique peine, remonte si elle a de la marge. Maximale : objets d'origine. Basse : objets très simplifiés, pour les petits PC. Aucun effet sur la piste générée."><option value="auto">Auto</option><option value="0">Maximale</option><option value="2">Moyenne</option><option value="3">Basse</option></select>
     </div></details>
     ${H('Outil')}
-    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px"><button id="crmroute" style="grid-column:span 3">🛣 Route</button><button id="crmedges" style="grid-column:span 3">↔ Bords</button><button id="crmterrain" style="grid-column:span 2">⛰ Relief</button><button id="crmpaint" style="grid-column:span 2">🎨 Peinture</button><button id="crmprops" style="grid-column:span 2">🌴 Décor</button></div>
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px"><button id="crmroute" style="grid-column:span 2">🛣 Route</button><button id="crmedges" style="grid-column:span 2">↔ Bords</button><button id="crmbridge" style="grid-column:span 2" title="Faire passer une route au-dessus d'une autre là où elles se croisent">🌉 Pont</button><button id="crmterrain" style="grid-column:span 2">⛰ Relief</button><button id="crmpaint" style="grid-column:span 2">🎨 Peinture</button><button id="crmprops" style="grid-column:span 2">🌴 Décor</button></div>
     <div id="credges" hidden>
       <details class="crhelp"><summary>ℹ Comment faire</summary><div class="note">Clic sur un bord de la route : une poignée apparaît. Flèche rouge (vers l'extérieur) : élargir ou amincir ce côté. Flèche bleue (vers le haut) : relever ou abaisser le bord (virage relevé). Les points voisins suivent en douceur, le terrain dessous se raccorde. Clic droit : tourner la vue.</div></details>
-      <label style="display:block;margin-bottom:6px">Étendue : <b id="credgerv">30</b> m<input id="credger" type="range" min="5" max="150" value="30" style="width:100%"></label>
+      <div style="margin-bottom:6px">Zone sélectionnée : <b id="credgerv">30</b> m de part et d'autre
+        <div style="display:flex;gap:4px;align-items:center;margin-top:2px">
+          <button id="credgerminus" title="Réduire la zone ( - )" style="min-width:30px">−</button>
+          <input id="credger" type="range" min="5" max="150" value="30" style="flex:1;min-width:0" title="Étendue de la zone autour du point cliqué (trait jaune ; extrémités : points blancs)">
+          <button id="credgerplus" title="Agrandir la zone ( + )" style="min-width:30px">+</button></div></div>
       <div id="credgeinfo" class="note" style="margin-bottom:4px">Clique sur un bord de la route.</div>
       <div id="credgeset" style="${row};margin-bottom:6px;display:none">
         <span>Largeur (m)</span><input id="credgew" type="number" step="0.5" min="5" max="60" title="Distance de ce bord au tracé du paveur">
         <span>Relevé (m)</span><input id="credgeh" type="number" step="0.5" min="-10" max="15" title="Hauteur du bord par rapport au tracé : positif = relevé">
         <span></span><button id="credgereset">↺ Ce passage à plat</button>
+        <span></span><button id="credgesmooth" title="Largeur et relevé de ce bord en ligne droite entre les deux extrémités de la zone (points blancs) : bosses et creux entre les deux effacés">〰 Lisser entre les extrémités</button>
       </div>
       <button id="credgeall" class="danger" style="width:100%;margin-top:4px">🗑 Tous les bords à plat (largeur symétrique)</button>
+    </div>
+    <div id="crbridge" hidden>
+      <details class="crhelp"><summary>ℹ Comment faire</summary><div class="note">Clique sur la route là où elle croise une autre route. La route cliquée monte au-dessus de l'autre en pente douce, sans talus : le sol reste dessous et l'autre route passe sous le pont. Ctrl+Z pour annuler.</div></details>
+      <div class="crcard"><h4>Pont</h4>
+      <label style="display:block;margin-bottom:6px" title="Espace libre entre l'autre route et le dessous du pont">Hauteur sous le pont : <b id="crbrhv">8</b> m<input id="crbrh" type="range" min="5" max="30" value="8" style="width:100%"></label>
+      <label style="display:block;margin-bottom:6px" title="Longueur de chaque rampe, avant et après le pont. Plus long : pente plus douce">Longueur des rampes : <b id="crbrlv">80</b> m<input id="crbrl" type="range" min="30" max="200" step="10" value="80" style="width:100%"></label>
+      <div id="crbrinfo" class="note" style="margin-bottom:6px">Clique sur un croisement de la route.</div>
+      <button id="crbrgo" class="primary" style="width:100%;margin-bottom:4px" disabled>🌉 Faire passer cette route au-dessus</button>
+      <button id="crbrswap" style="width:100%" disabled title="C'est l'autre route qui monte au-dessus">⇅ L'autre route passe dessus</button>
+      </div>
     </div>
     <div id="crroute">
       <div class="note" style="margin:8px 0 0">Conduis le paveur : la route se pose derrière lui. Ferme la boucle en revenant dans le cercle vert.</div>
@@ -305,6 +324,17 @@ export function initCreator(ctx) {
       <div class="note">⛏ Creuser sous la route : sous une route en hauteur, le sol n'est plus collé à elle (place pour du décor, la route devient un pont). ↺ Reboucher : le sol se raccorde de nouveau.</div></details>
       <div class="crcard"><h4>Outil de relief</h4>
       <div id="crtools" style="display:flex;flex-wrap:wrap;gap:4px">${TOOLS.map(([k, l]) => `<button data-tool="${k}">${l}</button>`).join('')}</div></div>
+      <div id="crwatercard" class="crcard" hidden><h4>💧 Eau</h4>
+        <div id="crwhelp" class="note" style="font-size:12px;margin-bottom:6px"></div>
+        <label style="display:flex;gap:6px;align-items:center;margin-bottom:6px" title="Couleur de l'eau, pour l'eau sélectionnée et les nouvelles">Type
+          <select id="crwtype" style="flex:1"></select></label>
+        <label id="crwhrow" style="display:none;margin-bottom:6px" title="Hauteur de la nouvelle eau peinte au-dessus du sol cliqué au début du trait">Hauteur de l'eau peinte : <b id="crwhv">1</b> m au-dessus du sol<input id="crwh" type="range" min="0" max="20" step="0.5" value="1" style="width:100%"></label>
+        <div id="crwlist" style="margin-bottom:6px"></div>
+        <label id="crwlevelrow" style="display:none;margin-bottom:6px" title="Hauteur de l'eau par rapport au bord le plus bas du trou">Niveau : <b id="crwlv"></b> m sous le bord<input id="crwlevel" type="range" min="-20" max="0" step="0.1" value="-5" style="width:100%"></label>
+        <label id="crwplevelrow" style="display:none;margin-bottom:6px" title="Niveau de l'eau peinte, par rapport au sol cliqué au début du trait">Niveau : <b id="crwplv"></b> m au-dessus du sol de départ<input id="crwplevel" type="range" min="-5" max="30" step="0.5" value="1" style="width:100%"></label>
+        <div class="note" style="font-size:12px;margin-bottom:6px">Moins de 1,5 m d'eau : on roule au fond. Plus profond : on tombe et on réapparaît sur la route. Clique dans une eau pour la sélectionner.</div>
+        <button id="crwclear" class="danger" style="width:100%">🗑 Retirer toute l'eau</button>
+      </div>
     </div>
     <div id="crpaint" hidden>
       <details class="crhelp"><summary>ℹ Comment faire</summary>
@@ -356,8 +386,24 @@ export function initCreator(ctx) {
           <div id="crpgrid" style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:2px 6px;background:var(--panel)"></div>
         </div>
         <div class="crcard"><h4>2. Au pinceau</h4>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px"><button id="crpsow">🌱 Semer</button><button id="crperase">🧽 Effacer</button></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px"><button id="crpsow">🌱 Semer</button><button id="crperase">🧽 Effacer</button><button id="crpedit" title="Clic sur un objet : le déplacer, le tourner ou changer sa taille">✋ Modifier</button></div>
           <div id="crbrushslot"></div>
+          <div id="crpeditbox" hidden>
+            <div id="crpeinfo" class="note" style="font-size:12px">Clique sur un objet (posé à la main ou par le décor automatique) pour le modifier.</div>
+            <div id="crpeset" style="display:none">
+              <div class="crchips" style="margin:6px 0"><button data-ptm="translate" title="W">✥ Déplacer</button><button data-ptm="rotate" title="E">⟳ Tourner</button><button data-ptm="scale" title="R">⤢ Taille</button></div>
+              <div class="crrow2" style="margin-bottom:6px">
+                <span title="Rotation autour de la verticale">Rotation Z (°)</span><input id="crpeyaw" type="number" step="5" style="width:100%" title="Rotation autour de la verticale">
+                <span title="Inclinaison autour de l'axe X (rouge), en plus de la pente du sol">Inclinaison X (°)</span><input id="crperx" type="number" step="5" min="-180" max="180" style="width:100%" title="Inclinaison autour de l'axe X (rouge), en plus de la pente du sol">
+                <span title="Inclinaison autour de l'axe Y (vert), en plus de la pente du sol">Inclinaison Y (°)</span><input id="crpery" type="number" step="5" min="-180" max="180" style="width:100%" title="Inclinaison autour de l'axe Y (vert), en plus de la pente du sol">
+                <span>Taille (×)</span><input id="crpes" type="number" step="0.05" min="0.05" max="20" style="width:100%">
+                <span title="Décalage au-dessus (ou au-dessous) du sol. 0 : posé sur le sol, il suit le relief.">Hauteur (m)</span><input id="crpedz" type="number" step="0.5" style="width:100%" title="Décalage au-dessus (ou au-dessous) du sol. 0 : posé sur le sol, il suit le relief.">
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px"><button id="crpeground" title="Hauteur remise à 0 : l'objet suit de nouveau le sol">⤓ Au sol</button><button id="crpedup" title="Copie posée à côté (Ctrl+D)">⧉ Dupliquer</button><button id="crpedel" class="danger" title="Suppr">🗑 Supprimer</button></div>
+              <div id="crpewarn" class="note" style="font-size:11px;margin-top:4px;color:var(--err)" hidden></div>
+              <div class="note" style="font-size:11px;margin-top:4px">W déplacer · E tourner · R taille · Suppr · Échap : désélectionner</div>
+            </div>
+          </div>
         </div>
         <div class="crcard"><h4>3. Ou le long de la route</h4>
           <label style="display:block;margin-bottom:4px;font-size:12px">Jusqu'à <b id="crpfarv"></b> m du bord<input id="crpfar" type="range" min="10" max="200" value="60" style="width:100%"></label>
@@ -392,6 +438,7 @@ export function initCreator(ctx) {
   let propKinds = {};                 // {'theme|type': {label, spacing (m), scale [min, max], n (modeles), dims, names}}
   const kindOf = p => propKinds[p.k + '|' + p.t];
   S.props = []; S.propErase = false; S.propAcc = 0; S.propsDirty = false; S.lastProps = 0;
+  S.waters = []; S.waterSel = -1;                    // eau des trous (outil du Relief, renderWater)
   const propGroup = new THREE.Group(); group.add(propGroup);
   // vrais modeles du jeu (comme dans le Decor), a la bonne taille ; repere gris de la taille reelle pendant le chargement
   const propModels = {}, markerMat = new THREE.MeshLambertMaterial({ color: 0x8a8580, transparent: true, opacity: 0.6 });
@@ -445,14 +492,39 @@ export function initCreator(ctx) {
     for (const p of S.props) if (p.x >= box.x0 - 200 * IN && p.x <= box.x1 + 200 * IN && p.y >= box.y0 - 200 * IN && p.y <= box.y1 + 200 * IN) seats.delete(p);
   };
   const RING = Array.from({ length: 8 }, (_, k) => [Math.cos(k * Math.PI / 4), Math.sin(k * Math.PI / 4)]);
+  // 2026-11-11 : aucun objet sur une pente de plus de 80 degres (pinceau, le long de la route, automatique ; ceux deja
+  // semes y sont masques et ecartes a la generation, track_creator.STEEP_MAX)
+  const STEEP_MAX = 80;
+  // decor automatique : objet refuse si le sol monte sur son corps de plus de max(60 cm, 15 % de sa hauteur) au-dessus
+  // de sa base (enfonce dans la montee). Rochers (faits pour etre a moitie enterres) et herbes : non concernes
+  const buriedTooMuch = p => { const st = seatOf(p); if (st.onRoad || p.t === 'rock' || kindOf(p)?.rock) return false;
+                               return st.bury > Math.max(0.6 * IN, 0.15 * st.h); };
+  // objet pose a la main SUR la route (p.road = 1, pinceau seulement) : passage le plus haut sous lui, ou null
+  function roadUnder(p) {
+    const G = roadIndex(), a = Math.floor(p.x / G.size), b = Math.floor(p.y / G.size);
+    let top = null;
+    for (let u = a - 1; u <= a + 1; u++) for (let v = b - 1; v <= b + 1; v++) {
+      for (const q of G.cells.get(u * 100003 + v) || []) if (Math.hypot(p.x - q[0], p.y - q[1]) < q[3] / 2 && (top === null || q[2] > top)) top = q[2];
+    }
+    return top;
+  }
   function seatOf(p) {
     let st = seats.get(p);
     if (st) return st;
+    if (p.road) {                                            // sur la route : a plat sur son revetement (track_creator idem)
+      const rz = roadUnder(p);
+      if (rz !== null) { st = { low: rz + 6 - 0.3 * IN, rx: 0, ry: 0, off: null, deg: 0, onRoad: true }; seats.set(p, st); return st; }
+    }
     const k = kindOf(p), d = dimOf(p), size = d.r * IN * p.s, rt = Math.max(IN, 0.7 * size), z0 = shownAt(p.x, p.y);
     let gx = 0, gy = 0;
     for (const [c, s] of RING) { const z = shownAt(p.x + rt * c, p.y + rt * s); gx += z * c; gy += z * s; }
     gx /= 4 * rt; gy /= 4 * rt;
     const g = Math.hypot(gx, gy), lim = Math.tan((k?.tilt ?? 0) * Math.PI / 180);
+    // pente : la plus forte autour du pied (a 1 m et sur l'emprise). Le plan moyen seul l'adoucissait sous les gros
+    // objets : il en restait sur des falaises (2026-11-11)
+    let steep = g;
+    for (const r of [IN, rt]) for (const [c, s] of RING) steep = Math.max(steep, Math.abs(shownAt(p.x + r * c, p.y + r * s) - z0) / r);
+    const deg = Math.atan(steep) * 180 / Math.PI;
     if (g > lim) { const f = g ? lim / g : 0; gx *= f; gy *= f; }
     const rf = (k?.seat ?? 0.3) * size;
     let low = z0;
@@ -460,29 +532,39 @@ export function initCreator(ctx) {
       const dx = f * rf * c, dy = f * rf * s;
       low = Math.min(low, shownAt(p.x + dx, p.y + dy) - gx * dx - gy * dy);
     }
+    // enfoncement : hauteur du sol au-dessus de la base de l'objet sous son corps (cote du haut d'une pente)
+    let bury = 0;
+    const rb = 0.45 * size;
+    for (const f of [0.5, 1]) for (const [c, s] of RING) {
+      const dx = f * rb * c, dy = f * rb * s;
+      bury = Math.max(bury, shownAt(p.x + dx, p.y + dy) - (low + gx * dx + gy * dy));
+    }
     const n = Math.hypot(gx, gy, 1), nx = -gx / n, ny = -gy / n, cy = Math.cos(p.yaw), sy = Math.sin(p.yaw);
-    st = { low: low - 0.3 * IN, rx: -Math.asin(-sy * nx + cy * ny), ry: Math.atan2(cy * nx + sy * ny, 1 / n), off: null };
+    st = { low: low - 0.3 * IN, rx: -Math.asin(-sy * nx + cy * ny), ry: Math.atan2(cy * nx + sy * ny, 1 / n), off: null, deg,
+           bury: bury + 0.3 * IN, h: (d.zmax - d.zmin) * IN * p.s };
     seats.set(p, st);
     return st;
   }
   const propLow = p => seatOf(p).low;
   // pose de l'origine : par la base (rochers : par l'origine, faits pour etre a moitie enterres)
-  const propZ = p => propLow(p) - (p.t === 'rock' ? 0 : dimOf(p).zmin * IN * p.s);
+  // p.dz : decalage en hauteur donne a la main (outil Modifier, pouces), 0 = pose sur le sol
+  const propZ = p => propLow(p) + (p.dz || 0) - (p.t === 'rock' ? 0 : dimOf(p).zmin * IN * p.s);
   // route touchee (track_creator.prop_conflict) : au niveau de la route, seul le pied compte ; une route plus haute
   // (pont, rampe) ne doit croiser aucune partie de l'objet tant que le dessous de son tablier est sous son sommet
   function propConflict(p) {
-    const k = kindOf(p), d = dimOf(p), base = propLow(p), top = base + (d.zmax - d.zmin) * IN * p.s;
+    const k = kindOf(p), d = dimOf(p), base = propLow(p) + (p.dz || 0), top = base + (d.zmax - d.zmin) * IN * p.s;
     const clear = (k?.clear ?? 1) * IN, foot = footOf(p) + clear, full = 0.9 * d.r * IN * p.s + clear;
     const level = (k?.level ?? 1.5) * IN, deck = (k?.deck ?? 1.2) * IN;
     // seuls les points de route proches sont testes (3 879 objets x 1 789 points : 190 ms a chaque fin de trait)
     const G = roadIndex(), reach = Math.max(foot, full) + G.half;
     const a0 = Math.floor((p.x - reach) / G.size), a1 = Math.floor((p.x + reach) / G.size);
     const b0 = Math.floor((p.y - reach) / G.size), b1 = Math.floor((p.y + reach) / G.size);
+    const onRoad = !!p.road;                                 // pose a la main sur la route : seul un pont au-dessus gene
     for (let a = a0; a <= a1; a++) for (let b = b0; b <= b1; b++) {
       const cell = G.cells.get(a * 100003 + b); if (!cell) continue;
       for (const q of cell) {
         const hd = Math.hypot(p.x - q[0], p.y - q[1]) - q[3] / 2;
-        if (q[2] < base + level ? hd < foot : q[2] - deck < top + IN && hd < full) return true;
+        if (q[2] < base + level ? !onRoad && hd < foot : q[2] - deck < top + IN && hd < full) return true;
       }
     }
     return false;
@@ -520,17 +602,17 @@ export function initCreator(ctx) {
       // la route a change depuis le semis (pont, rampe) : objet ecarte a la generation, donc pas montre
       if (!kindOf(p)) { off++; continue; }                // famille inconnue : ignoree aussi a la generation
       const st = seatOf(p);
-      st.off ??= propConflict(p) || !inTerrain(p);
+      st.off ??= propConflict(p) || !inTerrain(p) || (!st.onRoad && (st.deg > STEEP_MAX || inRoof(p)));
       if (st.off) { off++; continue; }
       const m = p.m % (kindOf(p)?.n || 1), mdl = propModel(p.k, p.t, m), d = dimOf(p), o = propDummy;
       if (mdl) o.scale.setScalar(p.s);
       else o.scale.set(d.r * IN * p.s * 0.6, d.r * IN * p.s * 0.6, (d.zmax - d.zmin) * IN * p.s);
-      o.rotation.set(st.rx, st.ry, p.yaw); o.position.set(p.x, p.y, propZ(p) + (mdl ? 0 : d.zmin * IN * p.s));
+      o.rotation.set(st.rx + (p.rx || 0), st.ry + (p.ry || 0), p.yaw); o.position.set(p.x, p.y, propZ(p) + (mdl ? 0 : d.zmin * IN * p.s));
       o.updateMatrix();
       const key = `${Math.floor(p.x / PROP_ZONE)},${Math.floor(p.y / PROP_ZONE)}|${mdl ? `${p.k}|${p.t}|${m}|${lod}` : ''}`;
       let b = buckets.get(key);
-      if (!b) buckets.set(key, b = { g: mdl ? mdl.g : markerGeo, mats: mdl ? mdl.mats : markerMat, list: [], maxR: 0 });
-      b.list.push(...o.matrix.elements);
+      if (!b) buckets.set(key, b = { g: mdl ? mdl.g : markerGeo, mats: mdl ? mdl.mats : markerMat, list: [], props: [], maxR: 0 });
+      b.list.push(...o.matrix.elements); b.props.push(p);    // instance -> objet (clic de l'outil Modifier)
       b.maxR = Math.max(b.maxR, mdl ? (mdl.g.boundingSphere?.radius || 100) * p.s : Math.max(d.r * IN * p.s, (d.zmax - d.zmin) * IN * p.s));
     }
     // seules les zones qui ont change repartent a la carte graphique : tout refaire a chaque objet pose, plusieurs fois par
@@ -548,8 +630,9 @@ export function initCreator(ctx) {
       if (!changed && im.count === n) { for (let i = 0; i < b.list.length; i++) if (a[i] !== Math.fround(b.list[i])) { changed = true; break; } }
       else changed = true;
       if (changed) { a.set(b.list); im.count = n; im.instanceMatrix.needsUpdate = true; im.computeBoundingSphere(); }
-      im.userData.maxR = b.maxR;
+      im.userData.maxR = b.maxR; im.userData.props = b.props;
     }
+    if (S.propSelP) syncPropSel();
     Q.cull = 0;                                           // masquage des petits objets (qualite basse) refait aussitot
     syncAi();
     const stat = `${S.props.length - off} objet(s) semé(s)` +
@@ -565,10 +648,13 @@ export function initCreator(ctx) {
                            if (!a.length) return null;
                            const [k, t, m] = a[Math.floor(Math.random() * a.length)].split('|'); return { k, t, m: +m }; };
   // c : objet deja choisi ({k, t, m, s?}), sinon tire dans la selection
-  function tryProp(x, y, c = pickSel()) {
+  // manual : pinceau (l'objet peut etre pose sur la route : p.road) ; le semis le long de la route ne le fait pas
+  function tryProp(x, y, c = pickSel(), manual = false) {
     if (!c) return false;
     const k = kindOf(c), [a, b] = k.scale;
     const p = { k: c.k, t: c.t, m: c.m, x, y, yaw: +(Math.random() * 2 * Math.PI).toFixed(3), s: c.s ?? +(a + Math.random() * (b - a)).toFixed(2) };
+    if (manual && roadUnder(p) !== null) p.road = 1;
+    if (!seatOf(p).onRoad && seatOf(p).deg > STEEP_MAX) return false;     // falaise : rien n'y tient
     if (propConflict(p) || !inTerrain(p)) return false;
     const sp = k.spacing * IN;
     // pas de chevauchement : corps des deux objets (moitie de leur emprise) + espacement de leur famille
@@ -736,7 +822,7 @@ export function initCreator(ctx) {
     function put(c, m, x, y) {
       const k = c.d, [a, b] = k.scale;
       const p = { k: c.k, t: c.t, m, x, y, yaw: +(rnd() * 2 * Math.PI).toFixed(3), s: +(a + rnd() * (b - a)).toFixed(2), ai: 1 };
-      if (!inTerrain(p) || propConflict(p)) return false;
+      if (!inTerrain(p) || seatOf(p).deg > STEEP_MAX || buriedTooMuch(p) || propConflict(p)) return false;
       const sp = k.spacing * IN, bp = body(p);
       const clash = q => { const gap = !!k.big !== !!kindOf(q)?.big ? 0 : Math.max(sp, (kindOf(q)?.spacing || 3) * IN) * 0.8;
         return Math.hypot(q.x - x, q.y - y) < Math.max(gap, bp + body(q)); };
@@ -822,18 +908,51 @@ export function initCreator(ctx) {
     }
     return { count, missing, borrowed: [...borrowed] };
   }
+  // points d'eau du decor automatique (2026-11-13) : parfois (2 fois sur 3) 1 a 3 creux du relief, n'importe ou (aussi
+  // au bord de la route) mais jamais sur la route (1 m de marge), remplis presque a ras bord (eau marquee ai : repartent
+  // avec le decor automatique). -> nombre d'eaux posees
+  function aiWaters(rnd, D) {
+    const T = S.terrain; if (!T || !S.shown) return 0;
+    if (rnd() < 1 / 3) return 0;
+    const want = 1 + Math.floor(rnd() * 3), n = T.n, types = ['clear', 'clear', 'lagoon', 'swamp'];
+    const taken = new Uint8Array(n * n);
+    for (const w of S.waters) { const b = waterBasin(w); if (b) b.region.forEach((r, v) => { if (r) taken[v] = 1; }); }
+    let got = 0;
+    for (let tr = 0; tr < 400 && got < want; tr++) {
+      const i = 2 + Math.floor(rnd() * (n - 4)), j = 2 + Math.floor(rnd() * (n - 4)), v = j * n + i;
+      if (D[v] < 2 * IN || taken[v]) continue;
+      const w = { x: Math.round(T.x0 + i * T.cell), y: Math.round(T.y0 + j * T.cell),
+                  dz: -Math.round((0.3 + rnd() * 1.2) * 10) / 10 * IN, type: types[Math.floor(rnd() * types.length)], ai: 1 };
+      const b = waterBasin(w);
+      if (!b || b.count < 25 || b.count > 6000 || b.level - b.bottom < 1 * IN) continue;
+      let ok = true;
+      for (let u = 0; u < b.region.length && ok; u++) if (b.region[u] && (taken[u] || D[u] < 1 * IN)) ok = false;
+      if (!ok || roadInWater(b)) continue;
+      b.region.forEach((r, u) => { if (r) taken[u] = 1; });
+      S.waters.push(w); got++;
+    }
+    return got;
+  }
+  function inAiWater(x, y) {                                    // objet dans une eau du decor automatique
+    const T = S.terrain, n = T.n, v = Math.round((y - T.y0) / T.cell) * n + Math.round((x - T.x0) / T.cell);
+    return S.waters.some(w => w.ai && waterBasin(w)?.region[v]);
+  }
   function aiDecor() {
     if (S.points.length < 8) { status('Trace d\'abord une route : le décor se construit autour d\'elle', 'err'); return; }
     const seed = (Date.now() ^ (Math.random() * 2 ** 31)) >>> 0;
     let s = seed;                                                 // mulberry32
     const rnd = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
     S.props = S.props.filter(p => !p.ai);
+    S.waters = S.waters.filter(w => !w.ai); if (S.waterSel >= S.waters.length) S.waterSel = -1;
     aiClearRelief();
     const amp = +$('craiamp').value;
     if (amp > 0) aiRelief(amp, rnd, roadDistance());
     refreshTerrainMesh(); rebuild();
+    const nw = aiWaters(rnd, roadDistance());                   // points d'eau dans les creux (parfois)
     const o = aiOptions();
     const { count: c, missing, borrowed } = aiPlace(rnd, o);
+    if (nw) S.props = S.props.filter(p => !p.ai || !inAiWater(p.x, p.y));     // rien de pose dans l'eau
+    renderWater(); syncWaterLevel();
     renderProps(); saveDraft(); aiSaveOptions();
     const n = Object.values(c).reduce((a, b) => a + b, 0), names = S.info?.kits || {};
     // bilan sous le bouton : ce qui a ete pose, ce qui vient d'un autre theme, ce qui manque (et comment l'obtenir)
@@ -841,15 +960,18 @@ export function initCreator(ctx) {
     const tt = s => window.CTR_I18N?.t(s) ?? s;
     const parts = ['tree', 'shrub', 'cover', 'rock', 'prop', 'house', 'road', 'big'].filter(r => c[r]).map(r => `${c[r]} ${tt(AI_ROLE_LABEL[r])}`);
     let rep = `<b>${n} ${tt('objet(s)')}</b>` + (parts.length ? ' : ' + parts.join(', ') : '');
+    if (nw) rep += `<br>💧 ${nw} ${tt('point(s) d\'eau dans les creux')}`;
     if (borrowed.length) rep += `<br>↪ ${tt('Empruntés à :')} ${borrowed.map(k => tt(names[k] || k).replace(/ \(.*/, '')).join(', ')}`;
     if (missing.length) rep += `<br>⚠ ${tt('Rien de disponible pour :')} ${missing.map(r => tt(AI_ROLE_LABEL[r])).join(', ')}`
       + (o.borrow < 2 ? ' — ' + tt('passe « Objets d\'autres thèmes » sur « Tous les thèmes adaptés au sol »') : '');
     $('crairep').innerHTML = rep; $('crairep').hidden = false;
-    status(`Décor automatique : ${n} objet(s)` + (c.big ? `, dont ${c.big} gros en fond de carte` : '') + (amp ? `, relief jusqu'à ${amp} m` : ''), n ? 'ok' : 'err');
+    status(`Décor automatique : ${n} objet(s)` + (c.big ? `, dont ${c.big} gros en fond de carte` : '') + (amp ? `, relief jusqu'à ${amp} m` : '')
+           + (nw ? `, ${nw} point(s) d'eau` : ''), n ? 'ok' : 'err');
   }
   function aiRemove() {
     S.props = S.props.filter(p => !p.ai); aiClearRelief();
-    refreshTerrainMesh(); rebuild(); renderProps(); saveDraft();
+    S.waters = S.waters.filter(w => !w.ai); if (S.waterSel >= S.waters.length) S.waterSel = -1;
+    refreshTerrainMesh(); rebuild(); renderWater(); syncWaterLevel(); renderProps(); saveDraft();
     $('crairep').hidden = true;
     status('Décor automatique retiré : tes objets et ton relief restent', 'ok');
   }
@@ -878,7 +1000,7 @@ export function initCreator(ctx) {
     aiShowValues(); aiSaveOptions();
   }
   function syncAi() {
-    const has = S.props.some(p => p.ai) || S.terrain?.aih?.some(v => v);
+    const has = S.props.some(p => p.ai) || S.terrain?.aih?.some(v => v) || S.waters.some(w => w.ai);
     $('craigo').textContent = has ? '🎲 Régénérer un autre décor' : '🤖 Créer le décor';
     $('crairm').hidden = !has;
   }
@@ -1081,7 +1203,7 @@ export function initCreator(ctx) {
     if (!cBuf || cBuf.N !== N) cBuf = { N, h0: new Float32Array(N), acc: new Float32Array(N), runD: new Float32Array(N), runV: new Float32Array(N),
                                         last: new Int32Array(N), low: new Float32Array(N) };
     const { h0, acc, runD, runV, last } = cBuf;
-    if (S.shown?.length !== N) rg = null;
+    if (S.raw?.length !== N) rg = null;
     const I0 = rg ? rg.i0 : 0, I1 = rg ? rg.i1 : n - 1, J0 = rg ? rg.j0 : 0, J1 = rg ? rg.j1 : n - 1;
     for (let j = J0; j <= J1; j++) for (let i = I0, v = j * n + I0; i <= I1; i++, v++) {
       h0[v] = S.groundZ + T.h[v]; acc[v] = runD[v] = Infinity; last[v] = -99;
@@ -1136,13 +1258,15 @@ export function initCreator(ctx) {
         last[v] = k;
       }
     }
-    const out = S.shown?.length === N ? S.shown : new Float32Array(N);
+    // S.raw : sol raccorde ; S.shown (affiche) en est une copie ou les ponts de terre sont fusionnes (refreshTerrainMesh)
+    const out = S.raw?.length === N ? S.raw : new Float32Array(N);
     for (let j = J0; j <= J1; j++) for (let i = I0, v = j * n + I0; i <= I1; i++, v++) {
       const a = runD[v] < Infinity ? Math.min(acc[v], runV[v]) : acc[v];
       out[v] = a < Infinity && !T.dig?.[v] ? a : h0[v];                // creuse sous la route : relief garde
     }
     clearRoad(out, EL, ER, P, rg);
-    S.shown = out;
+    S.raw = out;
+    if (S.shown?.length !== N || S.shown === out) S.shown = Float32Array.from(out);
     // hauteurs extremes (recherche sous la souris, boite englobante) ; plan de fond : toujours sous le sol (sinon il
     // apparait dans les creux, en aplat beige)
     let low = rg ? S.shownLow : S.groundZ, high = rg ? S.shownHigh : S.groundZ;
@@ -1230,7 +1354,7 @@ export function initCreator(ctx) {
   // texture d'un fondu : composee une fois les 2 images chargees (la 1re s'affiche en attendant)
   const mixTex = new Map();
   function mixMaterial(key, A, B, level) {
-    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, map: kitTexture(A.png, A.kit) });
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, map: kitTexture(A.png, A.kit) });
     const url = m => `/api/creator_texture?kit=${m.kit}&f=${m.png}`;
     const img = m => new Promise((ok, ko) => { const e = new Image(); e.onload = () => ok(e); e.onerror = ko; e.src = url(m); });
     (mixTex.get(key) || mixTex.set(key, Promise.all([img(A), img(B)]).then(([a, b]) => {
@@ -1323,9 +1447,139 @@ export function initCreator(ctx) {
     used.forEach((m, g) => terrainGeo.addGroup(start[m], count[m] * 6, g));
     terrainMesh.material = used.map(m => { const key = sigOf(m, mixes), mix = m > last ? mixes[m - last - 1] : null, mt = matOf(mix ? mix[0] : m), mb = mix && matOf(mix[1]);
       if (!terrainMats.has(key)) terrainMats.set(key, mix && mt.png && mb.png ? mixMaterial(key, mt, mb, mix[2]) : new THREE.MeshBasicMaterial({ vertexColors: true,
+        side: THREE.DoubleSide,                               // dessous des ponts de terre (refreshRoof) avec la meme matiere
         ...(mt.png ? { map: kitTexture(mt.png, mt.kit) } : { color: new THREE.Color(...mt.color) }) }));
       return terrainMats.get(key); });
-    terrainFaces = { paint: tp.slice(), last, used, mixes, fade, sig: used.map(c => sigOf(c, mixes)).join() };
+    terrainFaces = { paint: tp.slice(), last, used, mixes, fade, sig: used.map(c => sigOf(c, mixes)).join(),
+                     best, mats: new Map(used.map((m, g) => [m, terrainMesh.material[g]])) };
+  }
+  // ---- tunnels (2026-11-11 ; meme calcul que track_creator._roof_mask) : la ou le relief marque (pinceau Deplacer sur
+  // le cote, ou Creuser sous la route) passe a plus de ROOF_CLEAR au-dessus de la route, il reste au-dessus comme un
+  // plafond et la route passe dessous. Sans marque, une tranchee profonde reste une tranchee. ----
+  const ROOF_CLEAR = 8 * IN, ROOF_EDGE = 0.3 * IN, ROOF_REACH = 60 * IN, ROOF_THICK = 6 * IN, ROOF_KEEP = 12 * IN, ROOF_KEEP_R = 40 * IN;
+  let roofRoad = { src: null };
+  function roofRoadZ() {                                      // dessus de la route sous chaque sommet (NaN hors route)
+    const T = S.terrain, n = T.n, c = T.cell, E = S.eff || effPoints(), key = `${T.x0}|${T.y0}|${c}|${n}`;
+    if (roofRoad.src === E && roofRoad.key === key) return roofRoad.rz;
+    const rz = new Float32Array(n * n).fill(NaN);
+    for (const q of E) {
+      if (q[4]) continue;
+      const r = q[3] / 2, z = q[2] + 6;
+      const i0 = Math.max(0, Math.floor((q[0] - r - T.x0) / c)), i1 = Math.min(n - 1, Math.ceil((q[0] + r - T.x0) / c));
+      const j0 = Math.max(0, Math.floor((q[1] - r - T.y0) / c)), j1 = Math.min(n - 1, Math.ceil((q[1] + r - T.y0) / c));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        const v = j * n + i;
+        if (Math.hypot(T.x0 + i * c - q[0], T.y0 + j * c - q[1]) < r && !(rz[v] >= z)) rz[v] = z;
+      }
+    }
+    roofRoad = { src: E, key, rz };
+    return rz;
+  }
+  function roofMask() {                                       // sommets du plafond (Uint8Array) ou null
+    const T = S.terrain; if (!T?.dig || !T.dig.some(v => v)) return null;
+    const n = T.n, N = n * n, H = S.raw; if (!H || H.length !== N) return null;
+    const rz = roofRoadZ(), h0 = v => S.groundZ + T.h[v], low = v => h0(v) - H[v];
+    const roof = new Uint8Array(N), ref = new Float32Array(N);
+    let front = [];
+    for (let v = 0; v < N; v++) if (T.dig[v] && rz[v] === rz[v] && h0(v) - rz[v] >= ROOF_CLEAR) { roof[v] = 1; ref[v] = rz[v]; front.push(v); }
+    if (!front.length) return null;
+    const ok = (w, r) => !roof[w] && low(w) > ROOF_EDGE && h0(w) >= r + ROOF_CLEAR / 2 && (rz[w] !== rz[w] || h0(w) - rz[w] >= ROOF_CLEAR);
+    for (let d = 1, maxD = Math.ceil(ROOF_REACH / T.cell); d <= maxD && front.length; d++) {
+      const next = [];
+      for (const v of front) {
+        const i = v % n, j = (v - i) / n;
+        for (const w of [i > 0 ? v - 1 : -1, i < n - 1 ? v + 1 : -1, j > 0 ? v - n : -1, j < n - 1 ? v + n : -1])
+          if (w >= 0 && ok(w, ref[v])) { roof[w] = 1; ref[w] = ref[v]; next.push(w); }
+      }
+      front = next;
+    }
+    roof.ref = ref;                                           // dessus de la route couverte, par sommet (volume du tunnel)
+    // partie au-dessus de la route (sommets de la route et leurs 4 voisins) : dalle avec le vide dessous ; le reste
+    // (flancs des buttes reliees) est plein jusqu'au sol (track_creator : span)
+    const onRoad = v => rz[v] === rz[v];
+    roof.span = new Uint8Array(N);
+    for (let v = 0; v < N; v++) if (roof[v]) {
+      const i = v % n, j = (v - i) / n;
+      roof.span[v] = onRoad(v) || (i > 0 && onRoad(v - 1)) || (i < n - 1 && onRoad(v + 1)) || (j > 0 && onRoad(v - n)) || (j < n - 1 && onRoad(v + n)) ? 1 : 0;
+    }
+    // au-dessus de la route, seule la partie haute de la bande reste (ROOF_KEEP sous son sommet local) : ses bords en pente
+    // pendaient en voiles jusque pres de la route (track_creator idem)
+    const k = Math.round(ROOF_KEEP_R / T.cell), drop = [];
+    for (let v = 0; v < N; v++) if (roof.span[v]) {
+      const i = v % n, j = (v - i) / n;
+      let peak = -Infinity;
+      for (let b = Math.max(0, j - k); b <= Math.min(n - 1, j + k); b++) for (let a = Math.max(0, i - k); a <= Math.min(n - 1, i + k); a++)
+        if (roof.span[b * n + a]) peak = Math.max(peak, h0(b * n + a));
+      if (h0(v) < Math.max(ref[v] + ROOF_CLEAR + ROOF_THICK, peak - ROOF_KEEP)) drop.push(v);
+    }
+    for (const v of drop) roof[v] = roof.span[v] = 0;
+    return roof;
+  }
+  // objet seme sur l'emprise d'un plafond : ni dessus ni dans le tunnel (ecarte a la generation aussi)
+  const inRoof = p => { const T = S.terrain, R = S.roof; if (!R || !T) return false;
+    const i = Math.round((p.x - T.x0) / T.cell), j = Math.round((p.y - T.y0) / T.cell);
+    return i >= 0 && j >= 0 && i < T.n && j < T.n && !!R[j * T.n + i]; };
+  function refreshRoof() {
+    const R = roofMask(), had = !!S.roof;
+    S.roof = R;
+    if (had !== !!R) clearSeats();
+    roofMesh.geometry.dispose(); roofMesh.geometry = new THREE.BufferGeometry();
+    if (!R) { roofMesh.visible = false; return; }
+    // FUSIONNE AU RELIEF, meme calcul que la generation (track_creator, « tunnels ») : les flancs des buttes reliees sont
+    // le relief lui-meme (S.shown, refreshTerrainMesh) ; seule la partie au-dessus de la route est dessinee ici, son dessus
+    // dans le prolongement du relief (meme hauteur, meme ombrage, memes peintures case par case), dessous = dalle de
+    // ROOF_THICK (jamais a moins de ROOF_CLEAR de la route) qui rejoint le dessus des buttes a ses bouts
+    const T = S.terrain, n = T.n, c = T.cell, H = S.shown, rep = (S.kitInfo?.ground_repeat || 12) * IN;
+    // dessus : relief du pont ; hors du pont, le sol affiche (bloc ou butte que la bande rejoint)
+    const top = v => R[v] ? S.groundZ + T.h[v] : H[v];
+    // case du pont : un coin au moins au-dessus de la route, les autres dans le pont OU sur du relief haut que la bande
+    // touche (pas abaisse par le raccord, au moins ROOF_CLEAR au-dessus de la route) : la bande s'y soude sans trou
+    const cellOk = new Uint8Array((n - 1) * (n - 1));
+    for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
+      const a = j * n + i, q = [a, a + 1, a + n, a + n + 1];
+      if (!q.some(v => R.span[v])) continue;
+      const ref = Math.max(...q.filter(v => R.span[v]).map(v => R.ref[v]));
+      cellOk[j * (n - 1) + i] = q.every(v => R[v] || (S.groundZ + T.h[v] - S.raw[v] <= ROOF_EDGE && H[v] >= ref + ROOF_CLEAR)) ? 1 : 0;
+    }
+    const isCell = (i, j) => i >= 0 && j >= 0 && i < n - 1 && j < n - 1 && cellOk[j * (n - 1) + i] === 1;
+    const bot = v => R.span[v] ? Math.min(top(v) - 0.5 * IN, Math.max(top(v) - ROOF_THICK, H[v], R.ref[v] + ROOF_CLEAR)) : top(v);
+    // ombrage du relief (refreshTerrainMesh) d'apres la surface vue de dessus : pont compris
+    const surf = top, in2 = 1 / (2 * c);
+    const shade = v => {
+      const i = v % n, j = (v - i) / n, a = i > 0 ? v - 1 : v, b = i < n - 1 ? v + 1 : v, d0 = j > 0 ? v - n : v, d1 = j < n - 1 ? v + n : v;
+      const nx = -(surf(b) - surf(a)) * in2, ny = -(surf(d1) - surf(d0)) * in2, dot = (nx * 0.45 + ny * -0.35 + 0.82) / Math.sqrt(nx * nx + ny * ny + 1);
+      return Math.min(1, 0.55 + 0.5 * Math.max(0, dot));
+    };
+    const best = terrainFaces.best, groups = new Map(), bz = new Map();
+    const B = v => { if (!bz.has(v)) bz.set(v, bot(v)); return bz.get(v); };
+    let out = null;
+    const P = (v, z, s) => { const x = T.x0 + (v % n) * c, y = T.y0 + Math.floor(v / n) * c; out.pos.push(x, y, z); out.uv.push(x / rep, y / rep); out.col.push(s, s, s); };
+    const tri = (a, za, b, zb, d, zd, s) => { P(a, za, s ?? shade(a)); P(b, zb, s ?? shade(b)); P(d, zd, s ?? shade(d)); };
+    for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
+      if (!isCell(i, j)) continue;
+      const code = best?.[j * (n - 1) + i] ?? 0;
+      out = groups.get(code) || groups.set(code, { pos: [], uv: [], col: [] }).get(code);
+      const a = j * n + i, q = [a, a + 1, a + n + 1, a + n], t = v => top(v) - 2;           // -2 : comme le relief
+      tri(q[0], t(q[0]), q[1], t(q[1]), q[2], t(q[2])); tri(q[0], t(q[0]), q[2], t(q[2]), q[3], t(q[3]));       // dessus
+      tri(q[0], B(q[0]), q[2], B(q[2]), q[1], B(q[1]), 0.45); tri(q[0], B(q[0]), q[3], B(q[3]), q[2], B(q[2]), 0.45);   // dessous
+      for (const [di, dj, p, r] of [[0, -1, q[0], q[1]], [1, 0, q[1], q[2]], [0, 1, q[2], q[3]], [-1, 0, q[3], q[0]]]) {
+        if (isCell(i + di, j + dj) || !(R.span[p] || R.span[r])) continue;      // paroi (pas entre deux sommets de butte)
+        tri(p, t(p), r, t(r), r, B(r), 0.6); tri(p, t(p), r, B(r), p, B(p), 0.6);
+      }
+    }
+    const pos = [], uv = [], col = [], mats = [];
+    for (const [code, g] of groups) {
+      roofMesh.geometry.addGroup(pos.length / 3, g.pos.length / 3, mats.length);
+      mats.push(terrainFaces.mats?.get(code) || terrainMesh.material[0] || roofMesh.userData.mat0);
+      for (const x of g.pos) pos.push(x);
+      for (const x of g.uv) uv.push(x);
+      for (const x of g.col) col.push(x);
+    }
+    roofMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    roofMesh.geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    roofMesh.geometry.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    roofMesh.material = mats;
+    roofMesh.visible = pos.length > 0;
   }
   // box : zone modifiee (monde), le reste du maillage ne bouge pas ; sans box : tout le terrain
   function refreshTerrainMesh(box = null) {
@@ -1334,6 +1588,19 @@ export function initCreator(ctx) {
     let rg = box && S.shown?.length === N && terrainGeo.attributes.position?.count === N ? gridRange(box) : null;
     if (box && !rg && S.shown?.length === N && terrainGeo.attributes.position?.count === N) { refreshTerrainFaces(); return; }   // hors du terrain
     conform(rg);
+    // pont de terre fusionne au relief (track_creator idem) : sous la partie au-dessus de la route, sol au niveau de la
+    // route (vide jusqu'a la dalle) ; flancs des buttes reliees rendus au relief (un seul bloc avec la bande)
+    S.shown.set(S.raw);
+    const under = roofMask(), mods = new Set();
+    if (under) for (let v = 0; v < N; v++) if (under[v]) {
+      S.shown[v] = under.span[v] ? Math.min(S.raw[v], under.ref[v] - 16) : S.groundZ + T.h[v];   // ref : dessus de la route
+      mods.add(v);
+    }
+    if (rg) for (const v of [...mods, ...(S.mods || [])]) {   // modifie hors de la zone recalculee : tout renvoyer
+      const i = v % n, j = (v - i) / n;
+      if (i < rg.i0 || i > rg.i1 || j < rg.j0 || j > rg.j1) { rg = null; break; }
+    }
+    S.mods = mods;
     const fresh = !terrainGeo.attributes.position || terrainGeo.attributes.position.count !== N;
     if (fresh) {                                              // nouvelle taille
       terrainGeo.dispose(); terrainGeo = new THREE.BufferGeometry(); terrainMesh.geometry = terrainGeo;
@@ -1374,10 +1641,284 @@ export function initCreator(ctx) {
     }
     pos.needsUpdate = col.needsUpdate = true;
     refreshTerrainFaces();
+    refreshRoof();
+    scheduleWater();                                          // eau des trous : niveau et forme d'apres le nouveau sol
     // boite englobante d'apres les hauteurs extremes, sans reparcourir les sommets
     const e = (n - 1) * cell, bb = terrainGeo.boundingBox ||= new THREE.Box3(), bs = terrainGeo.boundingSphere ||= new THREE.Sphere();
     bb.min.set(T.x0, T.y0, S.shownLow - 2); bb.max.set(T.x0 + e, T.y0 + e, S.shownHigh - 2);
     bb.getCenter(bs.center); bs.radius = bb.min.distanceTo(bb.max) / 2;
+  }
+  // ---- eau (2026-11-12) : outil du Relief « Remplir d'eau ». Un clic dans un creux le remplit jusqu'a son bord le plus
+  // bas (la ou l'eau deborderait), + un decalage reglable (dz, pouces ; par defaut 30 cm sous le bord). S.waters =
+  // [{x, y, dz}] : seul le point clique est garde, forme et niveau recalcules d'apres le sol (track_creator.water_basins
+  // idem a la generation). Moins de WATER_DEEP d'eau : on roule au fond ; plus : zone de chute (reapparition) ----
+  // WATER_DZ : nouvelle eau sous le bord (5 m, reglable jusqu'a 20 m ; 30 cm puis 1 m avant, le 2026-11-12 ;
+  // track_creator.WATER_DZ idem). Trou moins profond : eau a mi-profondeur (newWaterAt)
+  const WATER_DEEP = 1.5 * IN, WATER_DZ = -5.0 * IN;
+  // types d'eau (couleur ; track_creator.WATER_TYPES, meme ordre et memes couleurs)
+  const WATER_TYPES = { clear: ['Eau claire', 0x2f7fd0], lagoon: ['Lagon', 0x22b5b5], swamp: ['Marais', 0x55702f],
+                        dark: ['Eau sombre', 0x1d3a58], mud: ['Boue', 0x6b5034] };
+  const waterType = w => WATER_TYPES[w?.type] ? w.type : 'clear';
+  // eau peinte au pinceau (S.waters : {paint: 1, base, level, v: [sommets], type}) : sous l'eau = sommets peints dont
+  // le sol est sous le niveau (le relief plus haut fait la rive)
+  function paintBasin(w) {
+    const T = S.terrain, H = S.shown; if (!T || !H || H.length !== T.n ** 2) return null;
+    const region = new Uint8Array(T.n ** 2), L = w.level;
+    let count = 0, deep = 0, bottom = Infinity;
+    for (const v of w._set || w.v || []) if (v >= 0 && v < H.length && H[v] < L) {
+      region[v] = 1; count++; bottom = Math.min(bottom, H[v]); if (L - H[v] > WATER_DEEP) deep++;
+    }
+    return { level: L, spill: L, region, count, deep, bottom, paint: true };
+  }
+  function scheduleWater() { clearTimeout(S.waterTimer); S.waterTimer = setTimeout(() => renderWater(), 250); }
+  // tas binaire minimal (hauteur, sommet)
+  function minHeap() {
+    const h = [], k = [];
+    const up = i => { while (i > 0) { const p = (i - 1) >> 1; if (h[p] <= h[i]) break; [h[p], h[i]] = [h[i], h[p]]; [k[p], k[i]] = [k[i], k[p]]; i = p; } };
+    const down = i => { for (;;) { const l = 2 * i + 1, r = l + 1; let m = i;
+      if (l < h.length && h[l] < h[m]) m = l; if (r < h.length && h[r] < h[m]) m = r;
+      if (m === i) return; [h[m], h[i]] = [h[i], h[m]]; [k[m], k[i]] = [k[i], k[m]]; i = m; } };
+    return { get size() { return h.length; },
+      push(p, v) { h.push(p); k.push(v); up(h.length - 1); },
+      pop() { const p = h[0], v = k[0], lp = h.pop(), lv = k.pop(); if (h.length) { h[0] = lp; k[0] = lv; down(0); } return [p, v]; } };
+  }
+  // bassin d'un point d'eau sur le sol affiche : {level, spill, region (sommets), count, deep, bottom, seed} ou null
+  function waterBasin(w) {
+    if (w.paint) return paintBasin(w);
+    const T = S.terrain, H = S.shown; if (!T || !H || H.length !== T.n ** 2) return null;
+    const n = T.n;
+    let i = Math.round((w.x - T.x0) / T.cell), j = Math.round((w.y - T.y0) / T.cell);
+    if (i < 1 || j < 1 || i >= n - 1 || j >= n - 1) return null;
+    let seed = j * n + i;
+    for (let guard = 0; guard < 4 * n; guard++) {           // point clique sur la pente du creux : on descend au fond
+      let best = seed;
+      for (const u of [seed - 1, seed + 1, seed - n, seed + n]) if (H[u] < H[best]) best = u;
+      if (best === seed) break;
+      seed = best; const bi = seed % n, bj = (seed - bi) / n;
+      if (bi < 1 || bj < 1 || bi >= n - 1 || bj >= n - 1) return null;
+    }
+    // inondation par le bas (2026-11-12 : jusqu'au VRAI bord) : l'eau monte et remplit aussi les petits creux de la pente
+    // (avant : arret au premier petit creux, eau au fond d'un grand trou) ; elle deborde la ou elle atteint le bord du
+    // terrain ou la route posee au sol. Niveau = point le plus bas du bord (track_creator.water_basin idem)
+    const seen = new Uint8Array(n * n), heap = minHeap();
+    let level = H[seed], spill = null;
+    heap.push(H[seed], seed); seen[seed] = 1;
+    while (heap.size) {
+      const [h, v] = heap.pop();
+      if (h > level) level = h;
+      const vi = v % n, vj = (v - vi) / n;
+      if (vi === 0 || vj === 0 || vi === n - 1 || vj === n - 1) { spill = level; break; }
+      const rz = roadUnder({ x: T.x0 + vi * T.cell, y: T.y0 + vj * T.cell });
+      if (rz !== null && rz < h + 2 * IN) { spill = level; break; }      // route au sol (pas un pont au-dessus)
+      for (const u of [v - 1, v + 1, v - n, v + n]) if (!seen[u]) { seen[u] = 1; heap.push(H[u], u); }
+    }
+    spill ??= level;
+    const L = spill + (w.dz ?? WATER_DZ), region = new Uint8Array(n * n);
+    let count = 0, deep = 0, bottom = Infinity;
+    if (H[seed] < L) {
+      const st = [seed]; region[seed] = 1;
+      while (st.length) {
+        const v = st.pop(); count++; bottom = Math.min(bottom, H[v]); if (L - H[v] > WATER_DEEP) deep++;
+        const vi = v % n, vj = (v - vi) / n;
+        for (const [u, ok] of [[v - 1, vi > 0], [v + 1, vi < n - 1], [v - n, vj > 0], [v + n, vj < n - 1]])
+          if (ok && !region[u] && H[u] < L) { region[u] = 1; st.push(u); }
+      }
+    }
+    return { level: L, spill, region, count, deep, bottom, seed };
+  }
+  // sommets deja sous une eau (sauf l'eau skip) : pas d'eau sur de l'eau (2026-11-12)
+  function waterOccupied(skip) {
+    const T = S.terrain, occ = new Uint8Array(T.n ** 2);
+    for (const w of S.waters) if (w !== skip) { const b = waterBasin(w); if (b) for (let v = 0; v < occ.length; v++) if (b.region[v]) occ[v] = 1; }
+    return occ;
+  }
+  // route dans l'eau (passage sous le niveau) : nombre de points
+  function roadInWater(b) {
+    const T = S.terrain, n = T.n; let k = 0;
+    for (const q of effPoints()) {
+      const i = Math.round((q[0] - T.x0) / T.cell), j = Math.round((q[1] - T.y0) / T.cell);
+      if (i >= 0 && j >= 0 && i < n && j < n && b.region[j * n + i] && q[2] < b.level) k++;
+    }
+    return k;
+  }
+  function renderWater() {
+    S.waterGroup ??= (() => { const g = new THREE.Group(); group.add(g); return g; })();
+    S.waterMats ??= {};
+    const wmat = (type, sel) => S.waterMats[type + (sel ? '+' : '')] ??= (() => {
+      const c = new THREE.Color(WATER_TYPES[type][1]); if (sel) c.lerp(new THREE.Color(0xffffff), 0.35);
+      // opaque (2026-11-12) comme en jeu (image d'eau sans transparence) : le sol peint dessous ne teinte plus l'eau
+      return new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+    })();
+    const wg = S.waterGroup;
+    S.waterHoverCache = null;                                // creux libres / occupes a recalculer
+    for (const m of wg.children) m.geometry.dispose();
+    wg.clear();
+    S.waterInfo = [];
+    const T = S.terrain; if (!T) return;
+    const n = T.n, cell = T.cell;
+    S.waters.forEach((w, k) => {
+      const b = waterBasin(w);
+      S.waterInfo.push(b && b.count ? { level: b.level, spill: b.spill, count: b.count, deep: b.deep, depth: b.level - b.bottom,
+                                        road: roadInWater(b), area: b.count * (cell / IN) ** 2 } : null);
+      if (!b || !b.count) return;
+      // cases dont un coin est sous l'eau : surface plane au niveau (le relief plus haut la cache sur la rive)
+      const pos = [];
+      for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
+        const v = j * n + i, R = b.region, q = [R[v], R[v + 1], R[v + n + 1], R[v + n]], k4 = q[0] + q[1] + q[2] + q[3];
+        if (!k4) continue;
+        const x0 = T.x0 + i * cell, y0 = T.y0 + j * cell, x1 = x0 + cell, y1 = y0 + cell, z = b.level - 2;
+        const C = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        // eau peinte : bord en biais (case a 3 coins = triangle, moins de 3 : rien) ; trou : case entiere (la rive cache le bord)
+        if (!w.paint || k4 === 4) pos.push(x0, y0, z, x1, y0, z, x1, y1, z, x0, y0, z, x1, y1, z, x0, y1, z);
+        else if (k4 === 3) for (let c = 0; c < 4; c++) if (q[c]) pos.push(C[c][0], C[c][1], z);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.computeVertexNormals();
+      const m = new THREE.Mesh(g, wmat(waterType(w), k === S.waterSel));
+      m.renderOrder = 5; wg.add(m);
+    });
+    renderWaterList();
+  }
+  function renderWaterList() {
+    const box = $('crwlist'); if (!box) return;
+    const f1 = v => (v / IN).toFixed(1).replace('.', ',');
+    box.innerHTML = S.waters.length ? S.waters.map((w, k) => {
+      const inf = S.waterInfo?.[k];
+      const txt = (w.paint ? '🖌 ' : '') + WATER_TYPES[waterType(w)][0] + ' · ' + (!inf ? '<span style="color:var(--err)">' + (w.paint ? 'aucune zone peinte sous le niveau' : 'pas de creux ici (le niveau est sous le sol)') + '</span>'
+        : `${Math.round(inf.area)} m², ${f1(inf.depth)} m au plus profond · ${inf.deep ? '<b>profond</b> : on tombe' : 'peu profond : on roule au fond'}`
+          + (inf.road ? ' · <span style="color:var(--err)">⚠ la route passe dans l\'eau</span>' : ''));
+      return `<div data-w="${k}" style="display:flex;gap:4px;align-items:center;padding:3px 4px;border-radius:4px;cursor:pointer;${k === S.waterSel ? 'background:#56b8ff22' : ''}">
+        <span style="flex:1;font-size:12px">💧 ${k + 1} · ${txt}</span><button data-wdel="${k}" title="Retirer cette eau">🗑</button></div>`;
+    }).join('') : '<div class="note" style="font-size:12px">Aucune eau. Clique au fond d\'un trou creusé pour le remplir.</div>';
+    box.querySelectorAll('[data-w]').forEach(r => r.onclick = e => {
+      if (e.target.dataset.wdel != null) { S.waters.splice(+e.target.dataset.wdel, 1); S.waterSel = -1; renderWater(); syncWaterLevel(); saveDraft(); return; }
+      S.waterSel = +r.dataset.w; renderWater(); syncWaterLevel();
+    });
+  }
+  function syncWaterLevel() {
+    const w = S.waters[S.waterSel];
+    $('crwlevelrow').style.display = w && !w.paint ? 'block' : 'none';
+    $('crwplevelrow').style.display = w?.paint ? 'block' : 'none';
+    if (w && !w.paint) { $('crwlevel').value = ((w.dz ?? WATER_DZ) / IN).toFixed(1); $('crwlv').textContent = (-(w.dz ?? WATER_DZ) / IN).toFixed(1).replace('.', ','); }
+    if (w?.paint) { const h = (w.level - w.base) / IN; $('crwplevel').value = h.toFixed(1); $('crwplv').textContent = h.toFixed(1).replace('.', ','); }
+    $('crwtype').value = w ? waterType(w) : (S.waterType || 'clear');
+  }
+  // mode de l'outil Eau : fill (remplir un trou, clic), paint / erase (pinceau)
+  function setWaterMode(m) {
+    m = 'fill';                                             // Peindre / Effacer retires (2026-11-12, demande utilisateur)
+    S.waterMode = m;
+    panel.querySelectorAll('[data-wm]').forEach(b => b.classList.toggle('primary', b.dataset.wm === m));
+    $('crwhrow').style.display = m === 'paint' ? 'block' : 'none';
+    $('crwhelp').textContent = m === 'fill' ? 'Clique au fond d\'un trou creusé : il se remplit jusqu\'à un peu sous son bord.'
+      : m === 'paint' ? 'Peins le lac ou la rivière au pinceau. Le niveau est pris au début du trait (sol cliqué + hauteur ci-dessous) ; là où le sol est plus haut, c\'est la rive. Repeindre depuis une eau peinte sélectionnée l\'agrandit.'
+      : 'Passe le pinceau sur de l\'eau peinte pour l\'effacer.';
+    if (S.mode === 'terrain' && S.tool === 'water') $('crbrush').hidden = m === 'fill';
+  }
+  // pinceau de l'eau : debut du trait (eau peinte a agrandir ou nouvelle, au niveau du sol clique + hauteur)
+  function waterStrokeStart(p) {
+    if (S.waterMode !== 'paint') return;
+    const T = S.terrain, i = Math.round((p.x - T.x0) / T.cell), j = Math.round((p.y - T.y0) / T.cell), v = j * T.n + i;
+    // trait commence dans une eau peinte : elle s'agrandit (meme niveau) ; sinon nouvelle eau
+    let w = S.waters.find(x => x.paint && (x.v.includes(v) || waterBasin(x)?.region[v]));
+    if (w) S.waterSel = S.waters.indexOf(w);
+    else if (waterOccupied(null)[v]) { status('Il y a déjà de l\'eau ici : sélectionne-la pour changer son niveau ou son type', 'err'); S.waterBlock = null; return; }
+    else {
+      const base = Math.round(p.z);
+      w = { paint: 1, base, level: base + Math.round((+$('crwh').value) * IN), v: [], type: S.waterType || 'clear' };
+      S.waters.push(w); S.waterSel = S.waters.length - 1;
+    }
+    w._set = new Set(w.v);
+    S.waterBlock = waterOccupied(w);                        // le pinceau ne peint pas sur les autres eaux
+    syncWaterLevel();
+  }
+  function waterBrush(p) {
+    const T = S.terrain, n = T.n, c = T.cell, r = S.radius;
+    const ci = (p.x - T.x0) / c, cj = (p.y - T.y0) / c, rc = r / c;
+    const i0 = Math.max(0, Math.floor(ci - rc)), i1 = Math.min(n - 1, Math.ceil(ci + rc));
+    const j0 = Math.max(0, Math.floor(cj - rc)), j1 = Math.min(n - 1, Math.ceil(cj + rc));
+    const w = S.waters[S.waterSel];
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      if (Math.hypot(i - ci, j - cj) / rc >= 1) continue;
+      const v = j * n + i;
+      if (S.waterMode === 'paint' && w?._set) { if (!S.waterBlock?.[v]) w._set.add(v); }
+      else if (S.waterMode === 'erase') for (const x of S.waters) if (x.paint) { x._set ??= new Set(x.v); x._set.delete(v); }
+    }
+    const now = performance.now();
+    if (!S.waterDrawAt || now - S.waterDrawAt > 120) { S.waterDrawAt = now; renderWater(); }
+  }
+  function waterStrokeEnd() {
+    S.waterBlock = null;
+    for (const w of S.waters) if (w._set) { w.v = [...w._set].sort((a, b) => a - b); delete w._set; }
+    const before = S.waters.length;
+    S.waters = S.waters.filter(w => !w.paint || w.v.length);
+    if (S.waters.length !== before) S.waterSel = -1;
+    renderWater(); syncWaterLevel(); saveDraft();
+  }
+  // nouvelle eau au point p : WATER_DZ sous le bord ; trou moins profond que ca : eau a mi-profondeur.
+  // -> {w, b, taken (indice d'une eau deja dans ce creux, sinon -1)} ou null (pas de creux)
+  function newWaterAt(p) {
+    const w = { x: Math.round(p.x), y: Math.round(p.y), dz: WATER_DZ, type: S.waterType || 'clear' };
+    let b = waterBasin(w);
+    if (!b || !b.count) {
+      const b0 = waterBasin({ ...w, dz: 0 });
+      if (!b0 || !b0.count || b0.spill - b0.bottom < 0.4 * IN) return null;
+      w.dz = -Math.round((b0.spill - b0.bottom) / 2 / IN * 10) / 10 * IN;
+      b = waterBasin(w); if (!b || !b.count) return null;
+    }
+    let taken = -1;
+    for (let k = 0; k < S.waters.length && taken < 0; k++) {
+      const o = waterBasin(S.waters[k]);
+      if (o && o.region.some((r, v) => r && b.region[v])) taken = k;
+    }
+    return { w, b, taken };
+  }
+  // survol avec l'outil Eau : curseur goutte sur un creux ou l'on peut mettre de l'eau (resultat garde par fond du creux)
+  const DROP_CURSOR = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 2C12 2 5 10.5 5 15a7 7 0 0 0 14 0C19 10.5 12 2 12 2z" fill="#3a9be8" stroke="#fff" stroke-width="1.6"/><ellipse cx="9.5" cy="15" rx="1.6" ry="2.6" fill="#fff" opacity=".7"/></svg>')}") 12 22, pointer`;
+  function waterHover(e) {
+    const now = performance.now();
+    if (S.waterHoverAt && now - S.waterHoverAt < 90) return;
+    S.waterHoverAt = now;
+    const p = pick(e), T = S.terrain, H = S.shown;
+    let ok = false;
+    if (p && T && H) {
+      const n = T.n; let i = Math.round((p.x - T.x0) / T.cell), j = Math.round((p.y - T.y0) / T.cell);
+      if (i >= 1 && j >= 1 && i < n - 1 && j < n - 1) {
+        let seed = j * n + i;
+        for (let g = 0; g < 4 * n; g++) {                    // meme descente que waterBasin : fond du creux
+          let best = seed; for (const u of [seed - 1, seed + 1, seed - n, seed + n]) if (H[u] < H[best]) best = u;
+          if (best === seed) break; seed = best;
+        }
+        S.waterHoverCache ??= new Map();
+        if (!S.waterHoverCache.has(seed)) { const r = newWaterAt(p); S.waterHoverCache.set(seed, !!r && r.taken < 0); }
+        ok = S.waterHoverCache.get(seed);
+      }
+    }
+    canvas.style.cursor = ok ? DROP_CURSOR : '';
+    S.waterCursor = ok;
+  }
+  function waterPointerDown(e) {
+    const p = pick(e); if (!p) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    // clic dans une eau existante : la selectionne
+    const T = S.terrain, n = T.n, i = Math.round((p.x - T.x0) / T.cell), j = Math.round((p.y - T.y0) / T.cell);
+    for (let k = 0; k < S.waters.length; k++) {
+      const b = waterBasin(S.waters[k]);
+      if (b?.region[j * n + i]) { S.waterSel = k; renderWater(); syncWaterLevel(); status(`Eau ${k + 1} sélectionnée : règle son niveau ou retire-la`); return; }
+    }
+    const r = newWaterAt(p);
+    if (!r) { status('Pas de creux ici : clique au fond d\'un trou creusé (outil ⬇ Creuser)', 'err'); return; }
+    // le creux touche une eau existante (meme trou clique sur sa pente, ou lac peint dedans) : pas de 2e eau
+    if (r.taken >= 0) {
+      S.waterSel = r.taken; renderWater(); syncWaterLevel();
+      status(`Il y a déjà de l'eau dans ce creux (eau ${r.taken + 1}, sélectionnée) : règle son niveau ou retire-la`, 'err'); return;
+    }
+    const w = r.w;
+    S.waters.push(w); S.waterSel = S.waters.length - 1;
+    renderWater(); syncWaterLevel(); saveDraft();
+    const inf = S.waterInfo[S.waterSel];
+    status(`Trou rempli : ${Math.round(inf.area)} m², ${(inf.depth / IN).toFixed(1).replace('.', ',')} m au plus profond` +
+           (inf.deep ? ' (profond : on y tombe, réapparition sur la route)' : ' (peu profond : on roule au fond)') +
+           (inf.road ? ' — ⚠ la route passe dans l\'eau : baisse le niveau' : ''), inf.road ? 'err' : 'ok');
   }
   // nouvelle taille du carre de base : relief et peinture reechantillonnes (centre garde)
   function resizeTerrain(size) {
@@ -1393,6 +1934,7 @@ export function initCreator(ctx) {
     S.terrain = T;
   }  function applyBrush(dt) {
     const T = S.terrain, p = S.mouse; if (!T || !p) return;
+    if (S.mode === 'terrain' && S.tool === 'water') { waterBrush(p); return; }   // eau peinte / effacee (relief inchange)
     if (S.mode === 'props') {                                 // semer / effacer des objets
       if (S.propErase) {
         const n = S.props.length; S.props = S.props.filter(q => Math.hypot(q.x - p.x, q.y - p.y) > S.radius);
@@ -1402,7 +1944,7 @@ export function initCreator(ctx) {
       while (S.propAcc >= 1) {
         S.propAcc -= 1;
         const a = Math.random() * 2 * Math.PI, r = S.radius * Math.sqrt(Math.random());
-        if (tryProp(p.x + r * Math.cos(a), p.y + r * Math.sin(a))) S.propsDirty = true;
+        if (tryProp(p.x + r * Math.cos(a), p.y + r * Math.sin(a), pickSel(), true)) S.propsDirty = true;
       }
       return;
     }
@@ -1465,6 +2007,7 @@ export function initCreator(ctx) {
   }
 
   const draftKey = () => 'ctr_creator_' + getTrack();
+  // ponts de terre : liste creuse [sommet, hauteur, ...] et epaisseur (upt)
   const packTerrain = T => T && { x0: T.x0, y0: T.y0, cell: T.cell, n: T.n, h: Array.from(T.h, v => Math.round(v)), paint: Array.from(T.paint),
                                   ...(T.dig?.some(v => v) ? { dig: Array.from(T.dig) } : {}) };
   // relief du decor automatique (pouces, entiers 16 bits en base64) : 2,7 caracteres par sommet, pour le retirer apres reouverture
@@ -1478,7 +2021,7 @@ export function initCreator(ctx) {
   let draftTimer = 0;
   const saveDraft = () => { draftTimer ||= setTimeout(writeDraft, 1000); histSchedule(); };
   addEventListener('pagehide', () => { if (draftTimer) writeDraft(); });
-  const writeDraft = () => { clearTimeout(draftTimer); draftTimer = 0; try { localStorage.setItem(draftKey(), JSON.stringify({ points: S.points, closed: S.closed, ground_z: S.groundZ, start: S.points.length <= 1 ? S.start : undefined, width: S.width, barriers: $('crbar').value, props: S.props, kit: $('crkit').value, sel: [...S.sel], far: +$('crpfar').value,
+  const writeDraft = () => { clearTimeout(draftTimer); draftTimer = 0; try { localStorage.setItem(draftKey(), JSON.stringify({ at: Date.now(), points: S.points, closed: S.closed, ground_z: S.groundZ, start: S.points.length <= 1 ? S.start : undefined, width: S.width, barriers: $('crbar').value, props: S.props, waters: S.waters, kit: $('crkit').value, sel: [...S.sel], far: +$('crpfar').value,
                                                                                    terrain: packFull(S.terrain) })); } catch (e) { /* sans importance */ } };
   const closeR = () => Math.max(CLOSE_DIST, S.width * 0.8);
 
@@ -1490,7 +2033,7 @@ export function initCreator(ctx) {
   function histSnap() {
     const T = S.terrain;
     return { meta: JSON.stringify({ points: S.points, closed: S.closed, width: S.width, barriers: $('crbar').value,
-                                    kit: $('crkit').value, sel: [...S.sel], far: $('crpfar').value, props: S.props,
+                                    kit: $('crkit').value, sel: [...S.sel], far: $('crpfar').value, props: S.props, waters: S.waters,
                                     t: T && [T.x0, T.y0, T.cell, T.n, T.size] }),
              h: T?.h.slice(), paint: T?.paint.slice(), dig: T?.dig?.slice(), aih: T?.aih?.slice() };
   }
@@ -1515,7 +2058,12 @@ export function initCreator(ctx) {
   }
   function histRestore(s) {
     const m = JSON.parse(s.meta);
+    // objet selectionne (outil Modifier) : retrouve dans l'etat remis par sa place dans la liste
+    const si = S.propSelP ? S.props.indexOf(S.propSelP) : -1;
     S.points = m.points; S.closed = m.closed; S.props = m.props; S.sel = new Set(m.sel);
+    S.propSelP = si >= 0 && S.props[si] ? S.props[si] : null;
+    if (!S.propSelP) selectProp(null);
+    S.waters = m.waters || []; if (S.waterSel >= S.waters.length) S.waterSel = -1;
     $('crbar').value = m.barriers; $('crpfar').value = m.far; $('crpfarv').textContent = m.far;
     if (m.t) {
       S.terrain = { x0: m.t[0], y0: m.t[1], cell: m.t[2], n: m.t[3], size: m.t[4], h: s.h.slice(), paint: s.paint.slice(),
@@ -1523,7 +2071,7 @@ export function initCreator(ctx) {
       $('crsize').value = String(m.t[4]);
     }
     if ($('crkit').value !== m.kit) { $('crkit').value = m.kit; applyKit(); } else syncSel();
-    setWidth(m.width); placeFromPoints(); S.slope = 0; S.back = 0;
+    setWidth(m.width); placeFromPoints(); S.back = 0;          // pente du bout de route reprise (placeFromPoints)
     if (S.edgeSel && S.edgeSel.i >= S.points.length) selectEdge(null);
     S.terrainDirty = S.dirtyT = false;
     refreshTerrainMesh(); rebuild(); renderProps(); if (S.edgeSel) placeEdge();
@@ -1589,6 +2137,17 @@ export function initCreator(ctx) {
     S.pos = new THREE.Vector3(p[0], p[1], p[2]); S.roll = rollOf(p); setRollTarget(S.roll); setTalus(!p[9]);
     if (S.points.length > 1) { const q = S.points[S.points.length - 2]; S.yaw = Math.atan2(p[1] - q[1], p[0] - q[0]); }
     else S.yaw = S.start.yaw;
+    S.slope = slopeOfEnd();
+  }
+  // pente du bout de la route (2026-11-12) : apres un recul, le paveur repart dans la continuite (montee / descente
+  // gardee) au lieu de repartir a plat, ce qui faisait une bosse. Moyenne sur ~12 m (points de 4 m), bornee comme au volant
+  function slopeOfEnd() {
+    const n = S.points.length; if (n < 2) return 0;
+    const a = S.points[Math.max(0, n - 4)], b = S.points[n - 1];
+    let run = 0;
+    for (let i = Math.max(1, n - 3); i < n; i++) run += Math.hypot(S.points[i][0] - S.points[i - 1][0], S.points[i][1] - S.points[i - 1][1]);
+    if (run < 1 || a[4] || b[4]) return 0;                   // saut (trou) au bout : pas de pente a reprendre
+    return Math.max(-SLOPE_MAX, Math.min(SLOPE_MAX, (b[2] - a[2]) / run));
   }
   const length = () => S.points.reduce((a, p, i) => i ? a + Math.hypot(p[0] - S.points[i - 1][0], p[1] - S.points[i - 1][1]) : 0, 0);
   const nearStart = () => S.points.length > 2 && length() > CLOSE_MIN_LEN &&
@@ -1871,7 +2430,7 @@ export function initCreator(ctx) {
       S.closed = false;
       S.back += speed * rev * dt;
       while (S.back >= STEP && S.points.length > 1) { growPave(S.points[S.points.length - 1]); S.points.pop(); S.back -= STEP; changed = true; }
-      placeFromPoints(); S.slope = 0;
+      placeFromPoints();                                     // pente du bout de route reprise (plus de bosse)
     } else if (steer && !S.closed && S.points.length === 1) {
       S.yaw += steer * dt * 1.5; S.start = { ...S.start, yaw: S.yaw };    // orienter le depart sur place
     }
@@ -1933,30 +2492,34 @@ export function initCreator(ctx) {
     hudTex.needsUpdate = true;
   }
   // mode Decor : onglet « Automatique » (reglages + bouton, pas de pinceau) ou « À la main » (liste d'objets + pinceau)
-  const noBrush = () => S.mode === 'props' && S.propTab !== 'man';
+  const noBrush = () => (S.mode === 'props' && (S.propTab !== 'man' || S.propEdit)) || (S.mode === 'terrain' && S.tool === 'water' && (S.waterMode || 'fill') === 'fill');
   function setPropTab(t) {
     S.propTab = t === 'man' ? 'man' : 'auto';
     try { localStorage.setItem('ctr_creator_proptab', S.propTab); } catch (e) { /* sans importance */ }
     $('crptauto').classList.toggle('primary', S.propTab === 'auto'); $('crptman').classList.toggle('primary', S.propTab === 'man');
     $('crpaneauto').hidden = S.propTab !== 'auto'; $('crpaneman').hidden = S.propTab !== 'man';
-    if (S.propTab === 'auto') { S.brushing = false; brush.visible = false; }
+    if (S.propTab === 'auto') { S.brushing = false; brush.visible = false; selectProp(null); }
   }
   function setMode(m) {
     const was = S.mode;
     if (S.pickStart) { S.pickStart = false; $('crstartpick').classList.remove('primary'); }
     S.mode = m; S.brushing = false;
     $('crroute').hidden = m !== 'route'; $('crterrain').hidden = m !== 'terrain'; $('crpaint').hidden = m !== 'paint';
-    $('crprops').hidden = m !== 'props'; $('crtreset').hidden = m === 'props' || m === 'route' || m === 'edges';
+    $('crprops').hidden = m !== 'props'; $('crtreset').hidden = m === 'props' || m === 'route' || m === 'edges' || m === 'bridge';
     $('crtreset').textContent = m === 'paint' ? '🗑 Effacer toute la peinture' : '🗑 Remettre tout le relief à plat';
     // reglages du pinceau : dans le bloc « Au pinceau » en mode Decor, sous l'outil sinon
     const slot = m === 'props' ? $('crbrushslot') : $('crbrushhome'), box = $('crbrush');
     if (box.parentNode !== slot) slot.appendChild(box);
     box.classList.toggle('crcard', m !== 'props');
     if (m === 'props') setPropTab(S.propTab);
-    $('crbrush').hidden = m === 'route' || m === 'edges'; $('credges').hidden = m !== 'edges';
+    $('crbrush').hidden = m === 'route' || m === 'edges' || m === 'bridge' || (m === 'terrain' && S.tool === 'water' && (S.waterMode || 'fill') === 'fill');
+    $('credges').hidden = m !== 'edges';
+    $('crbridge').hidden = m !== 'bridge';
     $('crspeedrow').style.display = m === 'terrain' ? 'block' : 'none';   // (l'attribut hidden ne suffit pas : display en ligne)
     if (m !== 'edges') selectEdge(null);
-    for (const [id, k] of [['crmroute', 'route'], ['crmedges', 'edges'], ['crmterrain', 'terrain'], ['crmpaint', 'paint'], ['crmprops', 'props']]) $(id).classList.toggle('primary', m === k);
+    if (m !== 'bridge') selectBridge(null);
+    if (m !== 'props') selectProp(null);
+    for (const [id, k] of [['crmroute', 'route'], ['crmedges', 'edges'], ['crmbridge', 'bridge'], ['crmterrain', 'terrain'], ['crmpaint', 'paint'], ['crmprops', 'props']]) $(id).classList.toggle('primary', m === k);
     paver.visible = m === 'route'; brush.visible = false;
     S.chase = m === 'route'; orbit.enabled = !S.chase;
     // pinceaux : clic gauche = pinceau, clic droit = tourner la vue, clic milieu = deplacer (molette : zoom)
@@ -1969,6 +2532,7 @@ export function initCreator(ctx) {
       orbit.target.copy(S.pos); camera.position.set(S.pos.x - 120 * IN, S.pos.y - 160 * IN, S.pos.z + 220 * IN);
       camera.up.set(0, 0, 1); camera.lookAt(S.pos); orbit.update();
       status(m === 'edges' ? 'Bords : clique sur un bord de la route, puis tire la flèche rouge (largeur) ou bleue (relevé)'
+           : m === 'bridge' ? 'Pont : clique sur la route là où elle croise une autre route (clic droit : tourner la vue)'
            : m === 'props' ? 'Décor : clic gauche maintenu pour semer ou effacer des objets (clic droit : tourner la vue)'
            : m === 'paint' ? 'Peinture : clic gauche maintenu pour peindre le sol (clic droit : tourner la vue)'
                            : 'Relief : clic gauche maintenu pour sculpter (clic droit : tourner la vue)');
@@ -1980,6 +2544,10 @@ export function initCreator(ctx) {
   function setTool(k) {
     S.tool = k;
     panel.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('primary', b.dataset.tool === k));
+    // eau : un clic, pas de pinceau
+    $('crwatercard').hidden = k !== 'water';
+    if (S.mode === 'terrain') $('crbrush').hidden = k === 'water' && (S.waterMode || 'fill') === 'fill';
+    if (k === 'water') { brush.visible = false; setWaterMode(S.waterMode || 'fill'); renderWater(); syncWaterLevel(); }
   }
   function setPaint(i) {
     S.paint = i;
@@ -2025,14 +2593,20 @@ export function initCreator(ctx) {
   view.addEventListener('pointerdown', e => {
     if (!S.active || S.mode === 'route' || e.button !== 0 || e.target !== canvas) return;
     if (S.mode === 'edges') { edgePointerDown(e); return; }
+    if (S.mode === 'bridge') { bridgePointerDown(e); return; }
+    if (S.mode === 'props' && S.propTab === 'man' && S.propEdit) { propPointerDown(e); return; }
+    if (S.mode === 'terrain' && S.tool === 'water' && (S.waterMode || 'fill') === 'fill') { waterPointerDown(e); return; }
     if (noBrush()) return;
     const p = pick(e); if (!p) return;
     S.mouse = p; S.brushing = true; S.strokeRoad = null; S.flatZ = heightAt(p.x, p.y) - S.groundZ;
+    if (S.mode === 'terrain' && S.tool === 'water') waterStrokeStart(p);      // eau peinte : niveau pris ici
     orbit.enabled = false; canvas.setPointerCapture?.(e.pointerId);
     e.preventDefault(); e.stopImmediatePropagation();
   }, true);
   view.addEventListener('pointermove', e => {
-    if (!S.active || S.mode === 'route' || S.mode === 'edges' || (e.target !== canvas && !S.brushing)) return;
+    if (!S.active || S.mode === 'route' || S.mode === 'edges' || S.mode === 'bridge' || (e.target !== canvas && !S.brushing)) return;
+    if (S.mode === 'terrain' && S.tool === 'water' && !S.brushing) { brush.visible = false; waterHover(e); return; }
+    if (S.waterCursor) { canvas.style.cursor = ''; S.waterCursor = false; }
     if (noBrush()) { brush.visible = false; return; }
     const p = pick(e);
     brush.visible = !!p;
@@ -2042,6 +2616,7 @@ export function initCreator(ctx) {
   const endBrush = e => {
     if (!S.brushing) return;
     S.brushing = false; orbit.enabled = true;
+    if (S.mode === 'terrain' && S.tool === 'water') { waterStrokeEnd(); e?.stopImmediatePropagation?.(); return; }   // relief inchange
     // fin du trait : la zone peinte seulement ; talus et objets suivent le relief (rien de tout ca pour la peinture et le decor)
     if (S.mode === 'terrain') { refreshTerrainMesh(S.strokeBox); rebuild(); renderProps(); }
     else if (S.mode === 'paint') refreshTerrainMesh(S.strokeBox);
@@ -2051,7 +2626,7 @@ export function initCreator(ctx) {
   };
   view.addEventListener('pointerup', endBrush, true);
   view.addEventListener('click', e => { if (S.active && S.mode !== 'route' && e.target === canvas) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
-  canvas.addEventListener('pointerleave', () => { brush.visible = false; });
+  canvas.addEventListener('pointerleave', () => { brush.visible = false; if (S.waterCursor) { canvas.style.cursor = ''; S.waterCursor = false; } });
 
   // ---- outil Bords : clic sur un bord de la route -> poignee (gizmo) ; fleche rouge (vers l'exterieur) : elargir /
   // amincir ce cote, fleche bleue (vers le haut) : relever / abaisser le bord (virage releve). Les points voisins
@@ -2062,11 +2637,154 @@ export function initCreator(ctx) {
   edgeHandle.renderOrder = 20; edgeHandle.visible = false; group.add(edgeHandle);
   const edgeLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffcc33, depthTest: false }));
   edgeLine.renderOrder = 19; edgeLine.visible = false; group.add(edgeLine);
+  // extremites de la zone selectionnee (2026-11-12) : reperes blancs, bornes de « Lisser »
+  const edgeEnds = [0, 1].map(() => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(1.1 * IN, 14, 10), new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }));
+    m.renderOrder = 20; m.visible = false; group.add(m); return m;
+  });
   const tc = ctx.TransformControls ? new ctx.TransformControls(camera, canvas) : null;
   if (tc) {
     tc.setSpace('local'); tc.showY = false; group.add(tc.getHelper ? tc.getHelper() : tc);
     tc.addEventListener('dragging-changed', e => { orbit.enabled = !e.value; e.value ? edgeDragStart() : edgeDragEnd(); });
     tc.addEventListener('objectChange', edgeDrag);
+  }
+
+  // ---- mode Decor, outil « Modifier » (2026-11-12) : clic sur un objet seme -> boite jaune + poignees (deplacer en x / y
+  // / hauteur, tourner autour de la verticale, taille uniforme). L'objet reste pose sur le sol (seatOf) ; la hauteur
+  // tiree devient un decalage p.dz. Un objet du decor automatique modifie devient un objet « a la main » (p.ai retire :
+  // « Retirer le décor automatique » ou un nouveau decor automatique le gardent) ----
+  const selHold = new THREE.Object3D(), selBox = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+    new THREE.LineBasicMaterial({ color: 0xffcc33, depthTest: false }));
+  selHold.rotation.order = 'ZYX'; selBox.renderOrder = 20; selHold.add(selBox); selHold.visible = false; group.add(selHold);
+  const propProxy = new THREE.Object3D(); group.add(propProxy);
+  propProxy.rotation.order = 'ZYX';                                    // ordre du jeu (inclinaisons X / Y puis cap Z)
+  const ptc = ctx.TransformControls ? new ctx.TransformControls(camera, canvas) : null;
+  if (ptc) {
+    ptc.setSpace('local'); group.add(ptc.getHelper ? ptc.getHelper() : ptc);
+    ptc.addEventListener('dragging-changed', e => { orbit.enabled = !e.value; e.value ? propDragStart() : propDragEnd(); });
+    ptc.addEventListener('objectChange', propDrag);
+  }
+  S.propSelP = null; S.propEdit = false;
+  function setPropGizmo(m) {
+    if (!ptc) return;
+    ptc.setMode(m);
+    ptc.showX = ptc.showY = ptc.showZ = true;                          // tourner : 3 axes (2026-11-12 ; avant : verticale seule)
+    panel.querySelectorAll('[data-ptm]').forEach(b => b.classList.toggle('primary', b.dataset.ptm === m));
+  }
+  function selectProp(p) {
+    S.propSelP = p || null;
+    if (!p) { ptc?.detach(); selHold.visible = false; $('crpeset').style.display = 'none';
+              $('crpeinfo').textContent = 'Clique sur un objet (posé à la main ou par le décor automatique) pour le modifier.'; return; }
+    $('crpeset').style.display = 'block';
+    syncPropSel(); ptc?.attach(propProxy); setPropGizmo(ptc?.getMode() || 'translate');
+  }
+  function syncPropSel() {
+    const p = S.propSelP; if (!p) return;
+    if (!S.props.includes(p)) { selectProp(null); return; }
+    const st = seatOf(p), d = dimOf(p), mdl = propModel(p.k, p.t, p.m % (kindOf(p)?.n || 1));
+    selHold.position.set(p.x, p.y, propZ(p)); selHold.rotation.set(st.rx + (p.rx || 0), st.ry + (p.ry || 0), p.yaw); selHold.scale.setScalar(p.s);
+    if (mdl) { const g = mdl.g; g.boundingBox || g.computeBoundingBox(); const bb = g.boundingBox;
+               bb.getCenter(selBox.position); bb.getSize(selBox.scale); }
+    else { selBox.position.set(0, 0, (d.zmin + d.zmax) / 2 * IN); selBox.scale.set(1.4 * d.r * IN, 1.4 * d.r * IN, Math.max(IN, (d.zmax - d.zmin) * IN)); }
+    selBox.scale.max(new THREE.Vector3(IN / 2, IN / 2, IN / 2));
+    const off = !!st.off;
+    selBox.material.color.setHex(off ? 0xff5050 : 0xffcc33); selHold.visible = true;
+    if (!ptc?.dragging) { propProxy.position.set(p.x, p.y, propZ(p)); propProxy.rotation.set(p.rx || 0, p.ry || 0, p.yaw); propProxy.scale.setScalar(p.s); }
+    const k = kindOf(p), name = k?.names?.[p.m % (k?.n || 1)] || p.t;
+    $('crpeinfo').innerHTML = `<b>${name}</b> · ${k?.label || p.t}${p.ai ? ' · décor automatique' : ''}`;
+    const put = (id, v) => { const el = $(id); if (document.activeElement !== el) el.value = v; };
+    put('crpeyaw', Math.round((((p.yaw * 180 / Math.PI) % 360) + 360) % 360));
+    put('crperx', Math.round((p.rx || 0) * 180 / Math.PI)); put('crpery', Math.round((p.ry || 0) * 180 / Math.PI)); put('crpes', +p.s.toFixed(2)); put('crpedz', +((p.dz || 0) / IN).toFixed(1));
+    const w = $('crpewarn');
+    w.hidden = !off;
+    if (off) w.textContent = st.deg > STEEP_MAX ? 'Sur une pente trop forte : il ne sera pas posé.'
+      : !inTerrain(p) ? 'Hors du terrain : il ne sera pas posé.' : 'Il touche la route (ou un pont) : il ne sera pas posé. Pose-le sur la route ou plus loin.';
+  }
+  // l'objet a change : pose recalculee (sol, route dessous), objet « a la main », vue
+  function propChanged(p) {
+    delete p.ai;
+    if (roadUnder(p) !== null) p.road = 1; else delete p.road;
+    seats.delete(p); renderProps();
+  }
+  function propDragStart() { const p = S.propSelP; if (p) S.propDrag = { z: propZ(p), dz: p.dz || 0, s: p.s }; }
+  function propDrag() {
+    const p = S.propSelP, b = S.propDrag; if (!p || !b) return;
+    const m = ptc.getMode();
+    if (m === 'translate') {
+      p.x = Math.round(propProxy.position.x); p.y = Math.round(propProxy.position.y);
+      p.dz = Math.round(b.dz + propProxy.position.z - b.z); if (Math.abs(p.dz) < 1) delete p.dz;
+    } else if (m === 'rotate') {                              // 3 axes (2026-11-12) : inclinaisons X / Y en plus de la pente du sol
+      const r = propProxy.rotation;
+      p.yaw = +r.z.toFixed(3);
+      for (const [k, v] of [['rx', r.x], ['ry', r.y]]) { const a = +v.toFixed(3); if (Math.abs(a) < 1e-3) delete p[k]; else p[k] = a; }
+    }
+    else {
+      // taille uniforme : l'axe tire le plus donne le facteur
+      const sc = propProxy.scale, f = [sc.x, sc.y, sc.z].reduce((a, v) => Math.abs(v / b.s - 1) > Math.abs(a - 1) ? v / b.s : a, 1);
+      p.s = +Math.max(0.05, Math.min(20, b.s * f)).toFixed(2); sc.setScalar(p.s);
+    }
+    propChanged(p);
+  }
+  function propDragEnd() { S.propDrag = null; syncPropSel(); saveDraft(); }
+  function propTyped() {
+    const p = S.propSelP; if (!p) return;
+    const yaw = +$('crpeyaw').value, s = +$('crpes').value, dz = +$('crpedz').value;
+    if (Number.isFinite(yaw)) p.yaw = +(yaw * Math.PI / 180).toFixed(3);
+    for (const k of ['rx', 'ry']) {
+      const v = +$('crpe' + k).value;
+      if (Number.isFinite(v)) { const a = +(Math.max(-180, Math.min(180, v)) * Math.PI / 180).toFixed(3); if (a) p[k] = a; else delete p[k]; }
+    }
+    if (Number.isFinite(s) && s > 0) p.s = +Math.max(0.05, Math.min(20, s)).toFixed(2);
+    if (Number.isFinite(dz)) { p.dz = Math.round(dz * IN); if (!p.dz) delete p.dz; }
+    propChanged(p); syncPropSel(); saveDraft();
+  }
+  function propDelete() {
+    const p = S.propSelP; if (!p) return;
+    S.props = S.props.filter(q => q !== p); selectProp(null); renderProps(); saveDraft(); status('Objet supprimé (Ctrl+Z pour annuler)');
+  }
+  function propDuplicate() {
+    const p = S.propSelP; if (!p) return;
+    const step = Math.max(2 * IN, 1.2 * dimOf(p).r * IN * p.s), q = { ...p, x: Math.round(p.x + step * Math.cos(p.yaw)), y: Math.round(p.y + step * Math.sin(p.yaw)) };
+    S.props.push(q); propChanged(q); selectProp(q); saveDraft(); status('Objet dupliqué : la copie est sélectionnée');
+  }
+  // clic : objet sous la souris (instance touchee), sinon le plus proche du point du sol clique
+  function propPointerDown(e) {
+    if (ptc?.axis) return;                                     // sur une poignee : le gizmo s'en occupe
+    const b = canvas.getBoundingClientRect();
+    ndc.set(((e.clientX - b.left) / b.width) * 2 - 1, -((e.clientY - b.top) / b.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    let p = null;
+    for (const h of ray.intersectObject(propGroup, true)) {
+      const L = h.object.userData.props;
+      if (h.object.visible && L && h.instanceId != null && L[h.instanceId]) { p = L[h.instanceId]; break; }
+    }
+    if (!p) {
+      const g = pick(e);
+      if (g) { let bd = Infinity;
+        for (const q of S.props) { const d = Math.hypot(q.x - g.x, q.y - g.y); if (d < Math.max(2 * IN, 0.6 * dimOf(q).r * IN * q.s) && d < bd) { bd = d; p = q; } } }
+    }
+    if (!p) { selectProp(null); return; }                     // a cote : la vue tourne
+    selectProp(p);
+    e.preventDefault(); e.stopImmediatePropagation();
+  }
+  addEventListener('keydown', e => {
+    if (!S.active || !S.propSelP || S.mode !== 'props' || typing(e) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (e.ctrlKey || e.metaKey) { if (k !== 'd') return; propDuplicate(); }
+    else if (k === 'w' || k === 'z') setPropGizmo('translate');
+    else if (k === 'e') setPropGizmo('rotate');
+    else if (k === 'r') setPropGizmo('scale');
+    else if (e.key === 'Delete') propDelete();
+    else if (e.key === 'Escape') selectProp(null);
+    else return;
+    e.preventDefault(); e.stopImmediatePropagation();
+  }, true);
+  function setPropTool(t) {
+    S.propErase = t === 'erase'; S.propEdit = t === 'edit';
+    for (const [id, k] of [['crpsow', 'sow'], ['crperase', 'erase'], ['crpedit', 'edit']]) $(id).classList.toggle('primary', t === k);
+    $('crbrushslot').hidden = S.propEdit; $('crpeditbox').hidden = !S.propEdit;
+    if (S.propEdit) { S.brushing = false; brush.visible = false; status('Modifier : clique sur un objet du décor (clic droit : tourner la vue)'); }
+    else selectProp(null);
   }
   const clampv = (v, [a, b]) => Math.max(a, Math.min(b, v));
   // distance le long du trace entre deux points bruts (boucle : par le plus court)
@@ -2077,6 +2795,41 @@ export function initCreator(ctx) {
     return cum.map(c => { const d = Math.abs(c - cum[i]); return S.closed ? Math.min(d, tot - d) : d; });
   }
   const edgeReach = () => +$('credger').value * IN;
+  // points de la zone autour de i, dans l'ordre du trace (de l'extremite arriere a l'extremite avant ; boucle : par-dessus
+  // la fermeture). Meme critere que les poids (distance le long du trace < etendue)
+  function edgeZone(i) {
+    const n = S.points.length, arc = arcDists(i), R = edgeReach(), step = k => S.closed ? (k + n) % n : k;
+    let a = i, b = i;
+    for (let g = 0; g < n; g++) { const k = step(a - 1); if (k < 0 || k === b || arc[k] >= R) break; a = k; }
+    for (let g = 0; g < n; g++) { const k = step(b + 1); if (k >= n || k === a || arc[k] >= R) break; b = k; }
+    const out = [a];
+    for (let k = a; k !== b; ) { k = step(k + 1); out.push(k); }
+    return out;
+  }
+  function setEdgeZone(m) {                                   // − / + : zone reduite / agrandie de 5 m
+    const r = $('credger'), v = Math.max(+r.min, Math.min(+r.max, +r.value + m));
+    r.value = v; $('credgerv').textContent = v; placeEdge();
+  }
+  // « Lisser » (2026-11-12) : largeur et releve du bord choisi en ligne droite (selon la distance le long du trace) entre
+  // les deux extremites de la zone ; l'autre bord ne change pas
+  function edgeSmooth() {
+    const sel = S.edgeSel; if (!sel) return;
+    const Z = edgeZone(sel.i);
+    if (Z.length < 3) { status('Zone trop courte : agrandis-la (+) pour lisser', 'err'); return; }
+    const k0 = sel.side > 0 ? 0 : 1, base = S.points.map(edgesOf), P = S.points;
+    const s = [0];
+    for (let j = 1; j < Z.length; j++) s.push(s[j - 1] + Math.hypot(P[Z[j]][0] - P[Z[j - 1]][0], P[Z[j]][1] - P[Z[j - 1]][1]));
+    const A = base[Z[0]], B = base[Z[Z.length - 1]], tot = s[s.length - 1] || 1;
+    for (let j = 1; j < Z.length - 1; j++) {
+      const t = s[j] / tot, v = base[Z[j]].slice(), p = P[Z[j]];
+      v[k0] = clampv(A[k0] + (B[k0] - A[k0]) * t, EDGE_W); v[k0 + 2] = clampv(A[k0 + 2] + (B[k0 + 2] - A[k0 + 2]) * t, EDGE_H);
+      while (p.length < 5) p.push(p.length === 3 ? S.width : 0);
+      p[5] = Math.round(v[0]); p[6] = Math.round(v[1]); p[7] = Math.round(v[2]); p[8] = Math.round(v[3]);
+      p[3] = p[5] + p[6];
+    }
+    refreshTerrainMesh(); rebuild(); renderProps(); saveDraft(); placeEdge();
+    status(`Bord ${sel.side > 0 ? 'gauche' : 'droit'} lissé sur ${Math.round(tot / IN)} m, entre les deux points blancs`, 'ok');
+  }
   const weights = i => arcDists(i).map(d => d < edgeReach() ? 0.5 * (1 + Math.cos(Math.PI * d / edgeReach())) : 0);
   // poignee et trait sur le bord selectionne (gauche : side = 1, droit : -1)
   function placeEdge() {
@@ -2091,6 +2844,9 @@ export function initCreator(ctx) {
     E.forEach((p, k) => { if (w[k] > 0) pts.push(p[0] + p[6] * sd * p[3] / 2, p[1] + p[7] * sd * p[3] / 2, p[2] + 30 + sd * p[5]); });
     edgeLine.geometry.dispose(); edgeLine.geometry = new THREE.BufferGeometry();
     edgeLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); edgeLine.visible = true;
+    const Z = edgeZone(sel.i);
+    [Z[0], Z[Z.length - 1]].forEach((k, j) => { const p = E[k];
+      edgeEnds[j].position.set(p[0] + p[6] * sd * p[3] / 2, p[1] + p[7] * sd * p[3] / 2, p[2] + 30 + sd * p[5]); edgeEnds[j].visible = true; });
     const [wl, wr, hl, hr] = edgesOf(S.points[sel.i]);
     $('credgeinfo').innerHTML = `Bord <b>${sd > 0 ? 'gauche' : 'droit'}</b> (sens de la course)`;
     $('credgew').value = ((sd > 0 ? wl : wr) / IN).toFixed(1); $('credgeh').value = ((sd > 0 ? hl : hr) / IN).toFixed(1);
@@ -2098,7 +2854,7 @@ export function initCreator(ctx) {
   }
   function selectEdge(sel) {
     S.edgeSel = sel;
-    if (!sel) { tc?.detach(); edgeHandle.visible = edgeLine.visible = false; $('credgeset').style.display = 'none';
+    if (!sel) { tc?.detach(); edgeHandle.visible = edgeLine.visible = edgeEnds[0].visible = edgeEnds[1].visible = false; $('credgeset').style.display = 'none';
                 $('credgeinfo').textContent = 'Clique sur un bord de la route.'; return; }
     placeEdge(); tc?.attach(edgeHandle);
   }
@@ -2156,6 +2912,107 @@ export function initCreator(ctx) {
     refreshTerrainMesh(); rebuild(); renderProps(); saveDraft(); placeEdge();
   }
 
+  // ---- outil Pont (2026-11-11) : clic sur un croisement -> la route cliquee monte au-dessus de l'autre, rampes en
+  // cosinus de part et d'autre, sans talus sur le tablier (le sol suit alors le passage du dessous, conform). La
+  // generation fait le reste comme pour un pont pose en conduisant (flancs du tablier a plus de 2,5 m du sol) ----
+  const bridgeLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x5ad1ff, depthTest: false }));
+  bridgeLine.renderOrder = 19; bridgeLine.visible = false; group.add(bridgeLine);
+  const bridgeMark = new THREE.Mesh(new THREE.SphereGeometry(2 * IN, 16, 12), new THREE.MeshBasicMaterial({ color: 0x5ad1ff, depthTest: false }));
+  bridgeMark.renderOrder = 20; bridgeMark.visible = false; group.add(bridgeMark);
+  // autre passage de la route au point i : point a moins d'une demi-largeur cumulee, loin le long du trace. -> indice ou -1
+  function crossingAt(i) {
+    const P = S.points, p = P[i], arc = arcDists(i), minArc = 2 * Math.max(p[3], 20 * IN) + 40 * IN;
+    let best = -1, bd = Infinity;
+    P.forEach((q, k) => {
+      if (arc[k] < minArc) return;
+      const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      if (d < (p[3] + q[3]) / 2 && d < bd) { bd = d; best = k; }
+    });
+    return best;
+  }
+  // la route au point i passe au-dessus de celle au point j : {dz, w (poids par point), target, error}
+  function bridgePlan(i, j) {
+    const P = S.points, n = P.length, H = +$('crbrh').value * IN;
+    const dir = k => { const a = P[Math.max(0, k - 1)], b = P[Math.min(n - 1, k + 1)], l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+                       return [(b[0] - a[0]) / l, (b[1] - a[1]) / l]; };
+    const [ax, ay] = dir(i), [bx, by] = dir(j), sin = Math.abs(ax * by - ay * bx);
+    // tablier plat au-dessus de toute la largeur de l'autre route (croisement en biais : plus long), + 8 m de marge
+    const flat = P[j][3] / 2 / Math.max(0.35, sin) + 8 * IN;
+    const di = arcDists(i), dj = arcDists(j);
+    // rampes : jamais jusqu'au passage du dessous (il garde sa hauteur)
+    const room = di[j] - 2 * flat - 10 * IN;
+    if (room < 20 * IN) return { error: 'Les deux passages sont trop proches le long de la route pour y mettre des rampes', w: di.map(() => 0), dz: 0 };
+    const ramp = Math.min(+$('crbrl').value * IN, room);
+    // dessus de l'autre route sous le tablier (bords releves compris)
+    let top = -Infinity;
+    P.forEach((q, k) => { if (dj[k] < flat + P[j][3]) { const e = edgesOf(q); top = Math.max(top, q[2] + Math.max(Math.abs(e[2]), Math.abs(e[3]))); } });
+    const want = top + H + 1.2 * IN;                     // + epaisseur du tablier
+    const target = Math.min(S.groundZ + H_MAX, want);
+    const w = di.map(d => d <= flat ? 1 : d < flat + ramp ? 0.5 * (1 + Math.cos(Math.PI * (d - flat) / ramp)) : 0);
+    return { dz: target - P[i][2], w, target, ramp, short: ramp < +$('crbrl').value * IN, capped: target < want };
+  }
+  function selectBridge(sel) {
+    S.bridgeSel = sel;
+    if (!sel) {
+      bridgeLine.visible = bridgeMark.visible = false; $('crbrgo').disabled = $('crbrswap').disabled = true;
+      $('crbrinfo').textContent = 'Clique sur un croisement de la route.'; return;
+    }
+    showBridge();
+  }
+  function showBridge() {
+    const sel = S.bridgeSel; if (!sel) return;
+    const E = effPoints(), plan = bridgePlan(sel.i, sel.j), up = Math.max(0, plan.dz), pts = [];
+    E.forEach((q, k) => { if (plan.w[k] > 0) pts.push(q[0], q[1], q[2] + 40 + up * plan.w[k]); });
+    bridgeLine.geometry.dispose(); bridgeLine.geometry = new THREE.BufferGeometry();
+    bridgeLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); bridgeLine.visible = pts.length > 3;
+    bridgeMark.position.set(E[sel.i][0], E[sel.i][1], E[sel.i][2] + 40 + up); bridgeMark.visible = true;
+    $('crbrinfo').innerHTML = plan.error ? `<span style="color:var(--err)">${plan.error}</span>`
+      : (up > 0 ? `La route monte de <b>${(up / IN).toFixed(1)} m</b> (ligne bleue), rampes de ${Math.round(plan.ramp / IN)} m`
+                : 'Cette route passe déjà assez haut : seul le talus sous le pont est retiré.')
+        + (plan.short ? ' · rampes raccourcies (l\'autre passage est proche)' : '')
+        // pente la plus forte d'une rampe en cosinus : dz * pi / (2 * rampe)
+        + (!plan.error && up * Math.PI / (2 * plan.ramp) > 0.25
+           ? ` · <span style="color:var(--err)">rampes très raides (${Math.round(Math.atan(up * Math.PI / (2 * plan.ramp)) * 180 / Math.PI)}°) : allonge-les</span>` : '')
+        + (plan.capped ? ' · <span style="color:var(--err)">hauteur limitée (300 m au-dessus du départ)</span>' : '');
+    $('crbrgo').disabled = !!plan.error; $('crbrswap').disabled = false;
+  }
+  function bridgePointerDown(e) {
+    const b = canvas.getBoundingClientRect();
+    ndc.set(((e.clientX - b.left) / b.width) * 2 - 1, -((e.clientY - b.top) / b.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    const hit = ray.intersectObject(road, false)[0];
+    if (!hit) return;                                         // a cote de la route : la vue tourne
+    // point le plus proche (hauteur comprise : sur un pont deja la, celui du dessus)
+    const E = effPoints(); let best = 0, bd = Infinity;
+    E.forEach((q, k) => { const d = Math.hypot(q[0] - hit.point.x, q[1] - hit.point.y, 2 * (q[2] + 6 - hit.point.z)); if (d < bd) { bd = d; best = k; } });
+    const j = crossingAt(best);
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (j < 0) { selectBridge(null); status('Pas d\'autre route à cet endroit : clique là où deux routes se croisent', 'err'); return; }
+    selectBridge({ i: best, j });
+  }
+  function makeBridge() {
+    const sel = S.bridgeSel; if (!sel) return;
+    const plan = bridgePlan(sel.i, sel.j); if (plan.error) { status(plan.error, 'err'); return; }
+    const up = Math.max(0, plan.dz);
+    S.points.forEach((p, k) => {
+      if (!plan.w[k]) return;
+      p[2] += up * plan.w[k];
+      if (plan.w[k] > 0.5) setNoTalus(p, true);              // tablier et haut des rampes : le sol reste dessous
+    });
+    S.terrainDirty = true; placeFromPoints(); refreshTerrainMesh(); rebuild(); renderProps(); saveDraft();
+    status(up > 0 ? `Pont : la route monte de ${(up / IN).toFixed(1)} m au-dessus de l'autre (Ctrl+Z pour annuler)` : 'Pont : talus retiré sous le passage du dessus', 'ok');
+    showBridge();
+  }
+  // essais automatiques seulement (adresse avec ?crtest) : fonctions de la Creation accessibles depuis la console
+  if (/[?&]crtest\b/.test(location.search)) window.__crtest = { S, setMode, crossingAt, bridgePlan, selectBridge, makeBridge, tryProp, seatOf, roadUnder, undo, effPoints, applyBrush, pick, setTool, roofMask, roofMesh,
+                                                                  refreshTerrainMesh, camera, orbit, saveDraft, ptc, propProxy, selectProp, propZ,
+                                                                  waterBasin, renderWater, waterPointerDown, placeFromPoints, slopeOfEnd, selectEdge, edgeZone, edgeSmooth, setEdgeZone };
+  $('crmbridge').onclick = () => setMode('bridge');
+  $('crbrh').oninput = e => { $('crbrhv').textContent = e.target.value; showBridge(); };
+  $('crbrl').oninput = e => { $('crbrlv').textContent = e.target.value; showBridge(); };
+  $('crbrgo').onclick = makeBridge;
+  $('crbrswap').onclick = () => { const s = S.bridgeSel; if (s) selectBridge({ i: s.j, j: s.i }); };
+
   $('crmroute').onclick = () => setMode('route');
   $('crmterrain').onclick = () => setMode('terrain');
   $('crmpaint').onclick = () => setMode('paint');
@@ -2164,9 +3021,48 @@ export function initCreator(ctx) {
   $('credger').oninput = e => { $('credgerv').textContent = e.target.value; placeEdge(); };
   $('credgew').onchange = $('credgeh').onchange = edgeTyped;
   $('credgereset').onclick = () => edgeReset(false);
+  $('credgesmooth').onclick = edgeSmooth;
+  $('credgerminus').onclick = () => setEdgeZone(-5);
+  $('credgerplus').onclick = () => setEdgeZone(5);
+  addEventListener('keydown', e => {                          // - / + au clavier : zone reduite / agrandie
+    if (!S.active || S.mode !== 'edges' || !S.edgeSel || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === '+' || e.code === 'NumpadAdd') setEdgeZone(5);
+    else if (e.key === '-' || e.code === 'NumpadSubtract') setEdgeZone(-5);
+    else return;
+    e.preventDefault(); e.stopImmediatePropagation();
+  }, true);
   $('credgeall').onclick = async () => { if (await ask('Remettre tous les bords à plat, avec la même largeur des deux côtés ?')) edgeReset(true); };
-  $('crpsow').onclick = () => { S.propErase = false; $('crpsow').classList.add('primary'); $('crperase').classList.remove('primary'); };
-  $('crperase').onclick = () => { S.propErase = true; $('crperase').classList.add('primary'); $('crpsow').classList.remove('primary'); };
+  $('crpsow').onclick = () => setPropTool('sow');
+  $('crperase').onclick = () => setPropTool('erase');
+  $('crpedit').onclick = () => setPropTool('edit');
+  $('crwlevel').oninput = e => {
+    const w = S.waters[S.waterSel]; if (!w) return;
+    w.dz = Math.round(+e.target.value * IN); $('crwlv').textContent = (-+e.target.value).toFixed(1).replace('.', ',');
+    scheduleWater();
+  };
+  $('crwlevel').onchange = saveDraft;
+  $('crwplevel').oninput = e => {
+    const w = S.waters[S.waterSel]; if (!w?.paint) return;
+    w.level = w.base + Math.round(+e.target.value * IN); $('crwplv').textContent = (+e.target.value).toFixed(1).replace('.', ',');
+    scheduleWater();
+  };
+  $('crwplevel').onchange = saveDraft;
+  $('crwh').oninput = e => { $('crwhv').textContent = (+e.target.value).toFixed(1).replace('.', ','); };
+  $('crwtype').innerHTML = Object.entries(WATER_TYPES).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join('');
+  $('crwtype').onchange = e => {
+    S.waterType = e.target.value;
+    const w = S.waters[S.waterSel]; if (w) { w.type = e.target.value; renderWater(); saveDraft(); }
+  };
+  panel.querySelectorAll('[data-wm]').forEach(b => b.onclick = () => setWaterMode(b.dataset.wm));
+  $('crwclear').onclick = async () => {
+    if (!S.waters.length || !(await ask('Retirer toute l\'eau des trous ?'))) return;
+    S.waters = []; S.waterSel = -1; renderWater(); syncWaterLevel(); saveDraft();
+  };
+  panel.querySelectorAll('[data-ptm]').forEach(b => b.onclick = () => setPropGizmo(b.dataset.ptm));
+  $('crpeyaw').onchange = $('crperx').onchange = $('crpery').onchange = $('crpes').onchange = $('crpedz').onchange = propTyped;
+  $('crpeground').onclick = () => { const p = S.propSelP; if (!p) return; delete p.dz; propChanged(p); syncPropSel(); saveDraft(); };
+  $('crpedup').onclick = propDuplicate;
+  $('crpedel').onclick = propDelete;
   $('crpauto').onclick = sowAlongRoad;
   $('crpfar').oninput = e => { $('crpfarv').textContent = e.target.value; };
   $('crpfar').onchange = saveDraft;
@@ -2241,7 +3137,9 @@ export function initCreator(ctx) {
       refreshTerrainMesh();
     }
     resetPaver();
-    if (all) refreshTerrainMesh();
+    // sol recalcule dans tous les cas (2026-11-12) : talus, remblais et creusements suivaient l'ancienne route (route en
+    // montee / descente) ; sans ce calcul ils restaient affiches apres « Juste la route » / sans relief peint
+    refreshTerrainMesh();
     rebuild(); renderProps(); saveDraft();
   };
   // part de la carte a plus de FAR_TRIM_M de la route (echantillonnee) et objets semes concernes
@@ -2285,7 +3183,7 @@ export function initCreator(ctx) {
       const dest = target.isNew ? await createTarget(target) : getTrack();
       status('Génération de la piste…');
       const r = await api('/api/create_build', { track: dest, points: S.points, closed: S.closed, ground_z: S.groundZ,
-                                                  kit: $('crkit').value, barriers: $('crbar').value, props: S.props,
+                                                  kit: $('crkit').value, barriers: $('crbar').value, props: S.props, waters: S.waters,
                                                   terrain: { ...packFull(S.terrain), ...(trim ? { trim_m: FAR_TRIM_M } : {}) }, wipe });
       await onGenerate({ ...r, wipe, track: dest });
     } catch (e) { status('Erreur : ' + e.message, 'err'); }
@@ -2309,6 +3207,8 @@ export function initCreator(ctx) {
     $('crkit').innerHTML = (info.order || Object.keys(info.kits)).map(k => [k, info.kits[k]]).map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
     let draft = null;
     try { draft = JSON.parse(localStorage.getItem(draftKey()) || 'null'); } catch (e) { /* sans importance */ }
+    // copie du brouillon sur le serveur (« Enregistrer ») : prise si ce navigateur n'en a pas, ou une plus ancienne
+    if (info.draft?.points && (!draft || (info.draft.at || 0) > (draft.at || 0))) draft = info.draft;
     // brouillon sans route mais avec son kart (place ou route supprimee) : il l'emporte sur la derniere piste generee
     const src = draft?.points?.length > 1 || draft?.start?.pos ? draft : info.saved;
     if (src?.points?.length > 1) S.start = { pos: [src.points[0][0], src.points[0][1]],
@@ -2348,6 +3248,9 @@ export function initCreator(ctx) {
     $('crpfar').value = String(src?.far || 60); $('crpfarv').textContent = $('crpfar').value;
     applyKit();
     S.props = (Array.isArray(src?.props) ? src.props : []).map(p => p.k ? p : { ...p, k: k0 });
+    S.waters = Array.isArray(src?.waters) ? src.waters.filter(w => (Number.isFinite(w?.x) && Number.isFinite(w?.y)) || (w?.paint && Array.isArray(w.v) && Number.isFinite(w.level))) : [];
+    for (const w of S.waters) if (!w.paint && [0.3, 1].some(d => Math.abs((w.dz ?? WATER_DZ) + d * IN) < 0.01)) w.dz = WATER_DZ;   // anciens defauts 30 cm / 1 m -> 5 m
+    S.waterSel = -1;
     if (src?.points?.length > 1) {
       S.points = src.points; S.closed = !!src.closed; setWidth(src.width || src.points[src.points.length - 1][3] || W_DEF);
       placeFromPoints();
@@ -2379,6 +3282,7 @@ export function initCreator(ctx) {
     if (draftTimer) writeDraft();
     ctx.setRenderScale?.(1);                                 // l'editeur garde sa pleine resolution
     if (S.savedNear) { camera.near = S.savedNear; camera.updateProjectionMatrix(); }
+    selectProp(null);                                        // poignees de l'outil Modifier detachees (sinon actives dans l'editeur)
     S.active = false; S.keys.clear(); S.brushing = false; panel.hidden = true; group.visible = false; orbit.enabled = true;    restoreButtons();
     for (const [c, h] of S.hostVis || []) c.hidden = h;
     S.hostVis = null;
@@ -2393,5 +3297,14 @@ export function initCreator(ctx) {
     scene.children.forEach(c => { if (c === group || c.isLight) return; saved.set(c, c.visible); c.visible = false; });
     S.savedVis = [...saved];
   }
-  return { open, close, tick, rehide, undo, redo, saveNow: writeDraft, get active() { return S.active; } };
+  // « Enregistrer » dans la Creation : brouillon du navigateur + copie sur le serveur (autre navigateur, autre PC)
+  async function saveNow() {
+    writeDraft();
+    try {
+      const d = localStorage.getItem(draftKey());
+      if (d) await api('/api/creator_draft', { track: getTrack(), draft: JSON.parse(d) });
+      return true;
+    } catch (e) { return false; }
+  }
+  return { open, close, tick, rehide, undo, redo, saveNow, get active() { return S.active; } };
 }

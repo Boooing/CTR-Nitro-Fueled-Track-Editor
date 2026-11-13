@@ -135,12 +135,13 @@ def replace_files(src, dst, replacements):
     (type 0xF, comme les fichiers deja stockes ainsi), aligne sur un secteur ; son entree de TOC est
     reecrite (offset, taille, bloc). Les hashes, l'ordre et la table des noms ne changent pas.
     """
-    shutil.copyfile(src, dst)
+    shutil.copyfile(real(src), dst)
     _append_replace(dst, replacements)
 
 
 def _append_replace(path, replacements):
     """Ajoute les fichiers en fin d'archive et reecrit leurs entrees. Retourne {index: entree d'origine}."""
+    path = real(path)
     invalidate_cache(path)
     arc = IgaArchive(path)
     by_name = {e.logical_name.lower(): e for e in arc.entries}
@@ -173,6 +174,76 @@ def _append_replace(path, replacements):
 UPDATE_ARCHIVES = ('update2.pak', 'update.pak')   # versions les plus recentes en premier
 LAYER_ARCHIVE = 'update3.pak'                     # fichiers ajoutes et menu installes par l'editeur (custom_category)
 
+# --- jeu en deux dossiers, comme shadPS4 le lit (2026-11-12) : <ID> (jeu de base) + <ID>-UPDATE ou <ID>-patch (mise a
+# jour). Pour chaque fichier, shadPS4 prend celui de la mise a jour s'il existe, sinon celui du jeu de base (verifie :
+# lance sur le dossier de base, il annonce la version 01.21 de la mise a jour). Ici update.pak, update2.pak, chunks.igx,
+# des fantomes... sont dans la mise a jour : les modifier dans le dossier de base ne servirait a rien. L'editeur garde
+# des chemins « logiques » (dossier du jeu de base) ; toute operation sur le disque passe par real(). Les fichiers
+# nouveaux (pistes creees, update3) vont dans le dossier de base, ou shadPS4 les trouve aussi.
+UPDATE_SUFFIXES = ('-UPDATE', '-patch')           # ordre de shadPS4
+_overlay = None                                   # (racine du jeu de base, racine de la mise a jour) ou None
+
+
+def detect_layout(archives):
+    """Dossier « archives » choisi -> (archives du jeu de base, racine de la mise a jour ou None). Le dossier choisi
+    peut etre celui du jeu de base, celui de la mise a jour (<ID>-patch\\archives) ou un jeu deja complet (un seul
+    dossier, mise a jour appliquee) : dans ce dernier cas, aucun dossier voisin <ID>-UPDATE / <ID>-patch."""
+    a = os.path.normpath(archives)
+    root = os.path.dirname(a)
+    name = os.path.basename(root)
+    for suf in UPDATE_SUFFIXES:                   # dossier de la mise a jour choisi : jeu de base a cote
+        if name.lower().endswith(suf.lower()) and len(name) > len(suf):
+            base = os.path.join(os.path.dirname(root), name[:-len(suf)])
+            if os.path.isdir(os.path.join(base, 'archives')):
+                return os.path.join(base, 'archives'), root
+    for suf in UPDATE_SUFFIXES:
+        if os.path.isdir(root + suf):
+            return a, root + suf
+    return a, None
+
+
+def set_layout(archives):
+    """Active la lecture « comme shadPS4 » pour ce jeu. -> {'archives': dossier logique (jeu de base), 'update': racine
+    de la mise a jour ou None}."""
+    global _overlay
+    base, up = detect_layout(archives)
+    _overlay = (os.path.normcase(os.path.abspath(os.path.dirname(base))), os.path.abspath(up)) if up else None
+    invalidate_cache()
+    _orig_cache.clear()
+    return {'archives': base, 'update': up}
+
+
+def real(path):
+    """Fichier lu par le jeu pour ce chemin logique : celui de la mise a jour s'il existe, sinon le chemin lui-meme."""
+    if not _overlay or not path:
+        return path
+    full = os.path.abspath(path)
+    base, up = _overlay
+    low = os.path.normcase(full)
+    if low != base and not low.startswith(base + os.sep):
+        return path
+    q = os.path.join(up, full[len(base) + 1:]) if low != base else up
+    return q if os.path.exists(q) else path
+
+
+def exists(path):
+    return os.path.exists(real(path))
+
+
+def listdir(d):
+    """Noms du dossier tels que le jeu les voit (jeu de base + mise a jour)."""
+    names = set(os.listdir(d)) if os.path.isdir(d) else set()
+    if _overlay:
+        full = os.path.abspath(d)
+        base, up = _overlay
+        low = os.path.normcase(full)
+        if low == base or low.startswith(base + os.sep):
+            q = os.path.join(up, full[len(base) + 1:]) if low != base else up
+            if os.path.isdir(q):
+                have = {n.lower() for n in names}
+                names |= {n for n in os.listdir(q) if n.lower() not in have}
+    return sorted(names)
+
 
 _cache = {}                     # chemin -> (empreinte, IgaArchive, {nom minuscule: entree}, verrou)
 _cache_lock = threading.Lock()
@@ -180,6 +251,7 @@ _cache_lock = threading.Lock()
 
 def cached_archive(path):
     """Archive ouverte et indexee, reutilisee tant que le fichier ne change pas (taille / date)."""
+    path = real(path)
     st = os.stat(path)
     stamp = (st.st_size, st.st_mtime_ns)
     with _cache_lock:
@@ -196,7 +268,7 @@ def cached_archive(path):
 
 def invalidate_cache(path=None):
     with _cache_lock:
-        for p in ([path] if path else list(_cache)):
+        for p in ([real(path)] if path else list(_cache)):
             hit = _cache.pop(p, None)
             if hit:
                 hit[1].f.close()
@@ -208,8 +280,8 @@ def archives_with(archives_dir, logical_name, track_pak=None):
     out = []
     for n in names:
         p = os.path.join(archives_dir, n)
-        if os.path.exists(p) and logical_name.lower() in cached_archive(p)[1]:
-            out.append(p)
+        if exists(p) and logical_name.lower() in cached_archive(p)[1]:
+            out.append(p)                          # chemin logique (real() a l'ecriture)
     return out
 
 
@@ -248,6 +320,7 @@ _orig_cache = {}
 
 def original_archive(path):
     """(archive, index, verrou) de l'archive TELLE QU'AVANT le mod installe (sauvegarde v2), sinon None."""
+    path = real(path)
     info = _backup_info(path)
     if not info or info.get('version') != 2:
         return None
@@ -273,7 +346,7 @@ def read_latest(archives_dir, logical_name, track_pak=None, original=True):
     names = ([] if original else [LAYER_ARCHIVE]) + list(UPDATE_ARCHIVES) + ([track_pak] if track_pak else [])
     for n in names:
         p = os.path.join(archives_dir, n)
-        if not os.path.exists(p):
+        if not exists(p):
             continue
         view = original_archive(p) if original else None
         arc, index, lock = view if view else cached_archive(p)
@@ -294,11 +367,11 @@ def read_latest(archives_dir, logical_name, track_pak=None, original=True):
 
 
 def backup_path(archive):
-    return archive + '.ctrmod.json'
+    return real(archive) + '.ctrmod.json'          # a cote du fichier que le jeu lit
 
 
 def toc_backup_path(archive):
-    return archive + '.ctrmod.toc'
+    return real(archive) + '.ctrmod.toc'
 
 
 def _backup_info(archive):
@@ -323,6 +396,7 @@ def install(archive, files):
     donnees sont ajoutees en fin d'archive, non compressees ; la TOC est reconstruite (triee par hash
     FNV-1a du nom logique en minuscules, diviseur et marge de recherche recalcules) et la table des noms
     reecrite en fin de fichier."""
+    archive = real(archive)
     bk = backup_path(archive)
     if os.path.exists(bk):
         raise RuntimeError(f'un mod est deja installe sur {archive} : lancer uninstall d\'abord')
@@ -361,6 +435,7 @@ def _read_at(f, pos, n):
 
 
 def _rebuild_with_files(archive, files, limit=None, moved=()):
+    archive = real(archive)
     arc = IgaArchive(archive)
     sector = arc.sector
     first_data = limit or min(e.offset for e in arc.entries)
@@ -447,6 +522,7 @@ def _rebuild_with_files(archive, files, limit=None, moved=()):
 
 
 def uninstall(archive):
+    archive = real(archive)
     invalidate_cache(archive)
     _orig_cache.pop(archive, None)
     bk = backup_path(archive)
