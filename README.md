@@ -12,20 +12,19 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 
 ## What's new in v0.6
 
-Items marked *(not tried in game yet)* work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
 
 ### Create tab
-- **Water**: Relief › *💧 Fill with water*, click at the bottom of a dug hole and it fills up to its lowest edge. Adjustable level (0 to 20 m below the edge) and 5 water types (clear, lagoon, swamp, dark, mud). Shallow water (under 1.5 m): you drive on the bottom; deeper: you fall and respawn on the road. *(not tried in game yet)*
-- **Automatic scenery adds ponds** now and then: 1 to 3 water spots in hollows of the terrain, never on the road; they are regenerated or removed with the automatic scenery. *(not tried in game yet)*
-- **Edit scenery placed in Create**: Scenery › By hand › *✋ Modify*: click an object to move it, **rotate it on all 3 axes**, resize it, raise or lower it, duplicate or delete it. *(rotation on 3 axes not tried in game yet)*
-- **Bridge tool** (*🌉 Bridge*): click where two roads cross, the clicked road rises above the other. *(not tried in game yet)*
+- **Water**: Relief › *💧 Fill with water*, click at the bottom of a dug hole and it fills up to its lowest edge. Adjustable level (0 to 20 m below the edge) and 5 water types (clear, lagoon, swamp, dark, mud). Shallow water (under 1.5 m): you drive on the bottom; deeper: you fall and respawn on the road. 
+- **Automatic scenery adds ponds** now and then: 1 to 3 water spots in hollows of the terrain, never on the road; they are regenerated or removed with the automatic scenery. 
+- **Edit scenery placed in Create**: Scenery › By hand › *✋ Modify*: click an object to move it, **rotate it on all 3 axes**, resize it, raise or lower it, duplicate or delete it.
+- **Bridge tool** (*🌉 Bridge*): click where two roads cross, the clicked road rises above the other. 
 - **Edges tool**: *〰 Smooth between the ends* evens out width and raise between the two ends of the selected zone; − / + buttons (and keys) to shrink or enlarge the zone, white markers at its ends.
 - **Paver**: after reversing, the road picks up the slope and banking of the road behind it again (no more bump).
 - *Delete the whole road* also removes the embankments the old road had made in the ground.
 - Water is drawn opaque in the 3D view (painted grass under it no longer turns it green).
 
 ### Edit tab
-- **Animated objects** (Add › *🎞 Animated object…*): animals, characters, banners, balloons, sails… from other tracks, with an **animated preview**. They are copied into your track when it's installed. Click them in the 3D view to move them, **rotate them on 3 axes** and resize them. Tried in game. *(3-axis rotation not tried in game yet)*
+- **Animated objects** (Add › *🎞 Animated object…*): animals, characters, banners, balloons, sails… from other tracks, with an **animated preview**. They are copied into your track when it's installed. Click them in the 3D view to move them, **rotate them on 3 axes** and resize them. Tried in game. 
 - The 3D previews of the object libraries can be **rotated and zoomed with the mouse** (double-click: back to the start view).
 - "Place at the centre of the view" now aims at what is really at the centre of the screen.
 - Map packs: created tracks are listed with their number and menu name (no more rows of "Custom Map").
@@ -46,7 +45,7 @@ Items marked *(not tried in game yet)* work in the editor and pass their offline
 
 ## What was new in v0.5
 
-Items marked *(not tried in game yet)* work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
+Items marked work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
 
 ### Automatic updates
 - The editor checks GitHub at launch and offers the new version; it replaces itself and restarts. Your saves, settings and FFmpeg stay in place. **v0.4 has no updater: install v0.5 by hand once.**
@@ -55,21 +54,21 @@ Items marked *(not tried in game yet)* work in the editor and pass their offline
 - New look: line icons, a vertical tool bar on the 3D view, mouse hints in the status bar, tabs in work order (Create, Edit, Track / category).
 - **Scene objects** panel (replaces Search): every object of the map by category (scenery by model, invisible walls, lights, crates, boosters, fall zones), with 3D thumbnails, select, show / hide and details.
 - The right-hand inspector is laid out in blocks (Position, Tool, Actions...) for scenery, crates, boosters, splines, grid, finish line, lights.
-- **Colorize an object** (Edit › select › *Colorize…*, or right-click): tint that keeps the texture's details, or flat paint, with intensity and live preview; parts of the object and "all identical objects" can be chosen. *(not tried in game yet)*
+- **Colorize an object** (Edit › select › *Colorize…*, or right-click): tint that keeps the texture's details, or flat paint, with intensity and live preview; parts of the object and "all identical objects" can be chosen. 
 - **Faster editing on big maps**: adding objects, colouring, changing a ground type... no longer rebuilds the whole collision each time (about 2 minutes on a big map). It is rebuilt once, on **Save** (orange dot on the button), and always before installing or checking.
 
 ### Create tab
 - New panel in blocks, Scenery in two tabs (*Automatic* / *By hand*).
-- **Smarter automatic scenery**: styles (balanced, nature, clear, wild, built), amount per family, objects borrowed from other themes when the ground has no matching object, corners kept clear. *(not tried in game yet)*
+- **Smarter automatic scenery**: styles (balanced, nature, clear, wild, built), amount per family, objects borrowed from other themes when the ground has no matching object, corners kept clear. 
 - Bigger height range (road from -200 m to +300 m), road banking up to 30°, slopes with or without embankment per section, embankment width, smooth blending between ground paints, tilted objects that sit on the slope, "Place the kart" to choose the start. *(partly tried in game)*
 - Parts of the map far from the road can be trimmed at generation (lighter map).
 - "Generate the track" now offers a **new track** by default, so nobody overwrites Crash Cove by mistake.
 
 ### Race
 - **Rotatable crates**, automatic crate rows centred on the race line.
-- **Reverse the race direction** (or one spline). *(not tried in game yet)*
-- Better route detection on stacked roads (spirals, 3 levels) and jumps up to 80 m; AI lanes that keep their width where road pieces overlap. *(not tried in game yet)*
-- Falls and respawns work on tracks whose respawn points are in the RaceSystem (Star Circuit, Slide Coliseum, Turbo Track...). *(not tried in game yet)*
+- **Reverse the race direction** (or one spline). 
+- Better route detection on stacked roads (spirals, 3 levels) and jumps up to 80 m; AI lanes that keep their width where road pieces overlap. 
+- Falls and respawns work on tracks whose respawn points are in the RaceSystem (Star Circuit, Slide Coliseum, Turbo Track...). 
 - More game tracks can be edited (Thunder Struck, Out of Time, Electron Avenue and the tracks whose race line is in the _Design).
 
 ### Game and install
