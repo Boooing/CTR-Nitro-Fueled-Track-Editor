@@ -1,0 +1,128 @@
+name: Build CTR Track Editor AppImage
+
+# Construit l'editeur pour Linux (AppImage x86_64).
+# - a chaque envoi / pull request : fichier disponible dans l'onglet Actions (14 jours) pour tester ;
+# - a la publication d'une release : l'AppImage est AJOUTEE a la release. La mise a jour automatique de l'editeur sous
+#   Linux (ctr_tools/editor/updater.py) telecharge ce fichier : attendre la fin de ce workflow avant de changer le
+#   fichier `version` du depot.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build-appimage:
+    name: Build Linux AppImage (x86_64)
+    runs-on: ubuntu-22.04          # glibc la plus ancienne visee : l'AppImage marche sur les distributions plus recentes
+    timeout-minutes: 60
+    permissions:
+      contents: write              # ajout du fichier a la release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            file \
+            libfuse2 \
+            libglib2.0-0 \
+            libgl1 \
+            libegl1 \
+            libfontconfig1 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xinerama0 \
+            libnss3 \
+            libxfixes3 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxrandr2 \
+            libxtst6 \
+            libxkbfile1 \
+            libasound2 \
+            liblcms2-2 \
+            libwebpdemux2 \
+            libwebpmux3 \
+            libopus0 \
+            libsnappy1v5 \
+            libminizip1
+
+      - name: Create build virtual environment
+        run: |
+          python -m venv .build_venv
+
+      - name: Install Python build dependencies
+        run: |
+          .build_venv/bin/python -m pip install --upgrade pip
+          .build_venv/bin/python -m pip install \
+            pyinstaller \
+            pywebview \
+            qtpy \
+            PyQt6 \
+            PyQt6-WebEngine \
+            numpy \
+            pillow
+
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"    # appimagetool sans FUSE
+        run: |
+          .build_venv/bin/python ctr_tools/editor/build_appimage.py
+
+      - name: Verify AppImage
+        run: |
+          APPIMAGE="CTR/appimage/CTR_Track_Editor-x86_64.AppImage"
+          if [ ! -s "$APPIMAGE" ]; then
+            echo "ERROR: AppImage was not generated!"
+            exit 1
+          fi
+          chmod +x "$APPIMAGE"
+          echo "AppImage successfully generated:"
+          ls -lh "$APPIMAGE"
+          file "$APPIMAGE"
+          # fichiers de l'editeur bien embarques (onglet Creation, traductions, page)
+          "$APPIMAGE" --appimage-extract >/dev/null
+          for f in index.html i18n.js creator.js; do
+            if ! find squashfs-root -name "$f" | grep -q .; then
+              echo "ERROR: $f missing from the AppImage"
+              exit 1
+            fi
+          done
+          rm -rf squashfs-root
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CTR-Track-Editor-Linux-x86_64
+          path: CTR/appimage/CTR_Track_Editor-x86_64.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach AppImage to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            CTR/appimage/CTR_Track_Editor-x86_64.AppImage --clobber --repo "${{ github.repository }}"
