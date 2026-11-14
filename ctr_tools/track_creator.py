@@ -27,12 +27,18 @@ Z_SMOOTH = 6.0                   # m : ecart-type du lissage de la hauteur de ro
 GROUND_MARGIN = 150.0            # m autour du trace
 GROUND_CELL = 10.0               # m : maille du sol quand rien n'est sculpte
 GROUND_TILE = 200.0              # m : un objet de sol par carreau
-KICK_LEN, KICK_H = 22.0, 3.0     # m : tremplin avant un saut (longueur, hauteur gagnee) ; avant le 2026-11-05 : 14 / 1,6
+# m : tremplin avant un saut (longueur, hauteur gagnee) ; 2026-11-14 : 30 / 5, COURBE (u^2 : depart doux, ~33 % au bord ;
+# retour utilisateur « rampe plus grande, haute et courbee ») ; avant : 22 / 3 en ligne droite, 14 / 1,6 avant le 2026-11-05
+KICK_LEN, KICK_H = 30.0, 5.0
 HOLE_MARGIN = 3.0                # m : trou du terrain sous un saut, au-dela du bord de route
-WALL_H, WALL_T, WALL_GAP = 2.2, 0.6, 0.3   # m : barrieres (hauteur, epaisseur, ecart au bord de route)
+# m : barrieres (hauteur, epaisseur, ecart au bord de route). 2026-11-13 : ecart 0,3 -> 0 et pied WALL_SINK sous le bord
+# (l'utilisateur voyait une fente entre la route et la barriere, la ou la route passe au-dessus du sol)
+WALL_H, WALL_T, WALL_GAP, WALL_SINK = 2.2, 0.6, 0.0, 1.2
 CURVE_R = 90.0                   # m : virage (rayon plus petit) -> barriere a l'exterieur en mode « virages »
 CURVE_EXTEND = 10                # echantillons : barriere prolongee avant / apres le virage
-START_CELL, START_ROWS, START_LIFT = 1.5, 2, 0.03   # damier du depart : case (m), rangees, hauteur au-dessus de la route
+# damier du depart : case (m ; 1,5 avant le 2026-11-14, « un peu petit »), rangees, hauteur au-dessus de la route.
+# creator.js START_CELL_M idem
+START_CELL, START_ROWS, START_LIFT = 3.0, 2, 0.03
 
 # kits : textures de la piste de base (fichiers du jeu), longueur couverte par une repetition (m), matieres du
 # terrain dans l'ordre des indices de peinture (nom OBJ, image, texture du jeu, surface de collision, libelle, couleur
@@ -813,7 +819,7 @@ def centerline(points_in, closed):
     C = _catmull(P, closed, STEP)
     C[:, 4] = (C[:, 4] > 0.5).astype(np.float64)
     C[:, 2] = _smooth(C[:, 2], Z_SMOOTH, closed)            # hauteur : pas de crete ni de creux brusque
-    # tremplin : la route se releve de KICK_H sur les KICK_LEN m avant chaque saut
+    # tremplin : la route se releve de KICK_H sur les KICK_LEN m avant chaque saut, en courbe (u^2, u = 1 au bord)
     gap = C[:, 4] > 0.5
     starts = np.nonzero(gap & ~np.roll(gap, 1))[0] if closed else np.nonzero(gap & ~np.concatenate([[False], gap[:-1]]))[0]
     n = len(C)
@@ -822,7 +828,7 @@ def centerline(points_in, closed):
             i = (s0 - k) % n if closed else s0 - k
             if i < 0 or gap[i]:
                 break
-            C[i, 2] += KICK_H * (1 - (k - 1) / (KICK_LEN / STEP))
+            C[i, 2] += KICK_H * max(0.0, 1 - (k - 1) / (KICK_LEN / STEP)) ** 2
     # bords edites : le centre se decale vers le cote elargi, le devers vient de la difference de relevement
     _, L = _frames(C, closed)
     wl, wr, hl, hr = C[:, 5], C[:, 6], C[:, 7], C[:, 8]
@@ -903,6 +909,11 @@ class _Obj:
     def quad(self, a, b, c, d):        # a b c d dans le sens trigonometrique vu de dessus (normale vers le haut)
         self.f.append(f'f {a}/{a} {b}/{b} {c}/{c}')
         self.f.append(f'f {a}/{a} {c}/{c} {d}/{d}')
+
+    def poly(self, ids):               # polygone convexe (sens trigonometrique vu de dessus) : triangles en eventail
+        for k in range(1, len(ids) - 1):
+            a, b, c = ids[0], ids[k], ids[k + 1]
+            self.f.append(f'f {a}/{a} {b}/{b} {c}/{c}')
 
     def text(self, mtllib):
         out = io.StringIO()
@@ -1205,6 +1216,78 @@ def _far_cells(xs, ys, C, reach):
     return far
 
 
+KEEP_MARGIN = 4.0    # m de sol garde autour de l'emprise d'un objet quand la carte loin de la route est retiree
+WATER_BANK = 2       # cases de berge gardees autour d'une eau
+
+
+def _road_dist(xs, ys, C):
+    """Distance (m) de chaque SOMMET du terrain (ny+1, nx+1) a la route (un point sur deux de la ligne centrale)."""
+    P = C[::2, :2]
+    out = np.empty((len(ys), len(xs)))
+    for j, y in enumerate(ys):
+        d2 = (xs[:, None] - P[:, 0][None, :]) ** 2 + (y - P[:, 1][None, :]) ** 2
+        out[j] = np.sqrt(d2.min(1))
+    return out
+
+
+def _trim_field(xs, ys, H, C, trim, keep, waters, terrain):
+    """Decoupe de la carte loin de la route (2026-11-14, retours utilisateur) : valeur par SOMMET, <= 0 = sol garde.
+    - route : distance a la route - trim ;
+    - objets semes keep = [(x, y, rayon)] (m) et eau (creux remplis, eau peinte ; + berge) : emprise + KEEP_MARGIN, et
+      une bande en goutte qui les RELIE a la carte principale (d_route + distance a l'objet <= d_route de l'objet +
+      marge : pas d'ilot isole) ;
+    valeur continue : le bord est trace par interpolation (_ground_cell, marching squares), sans marches d'escalier."""
+    dR = _road_dist(xs, ys, C)
+    F = dR - trim
+    X, Y = np.meshgrid(xs, ys)
+    spots = [(float(x), float(y), float(r) + KEEP_MARGIN) for x, y, r in keep or []]
+    if waters:
+        road_z = _road_top(xs, ys, C) if any(not w.get('paint') for w in waters) else None
+        cell = float(xs[1] - xs[0]) if len(xs) > 1 else 1.0
+        for w in waters:
+            try:
+                if w.get('paint'):
+                    mask = paint_mask(terrain, xs, ys, w.get('v')) & (H < float(w['level']) / INCH) if terrain else None
+                else:
+                    r = water_basin(xs, ys, H, float(w['x']) / INCH, float(w['y']) / INCH,
+                                    float(w.get('dz', WATER_DZ * INCH)) / INCH, road_z)
+                    mask = r[1] if r else None
+            except (KeyError, TypeError, ValueError):
+                mask = None
+            if mask is None or not mask.any():
+                continue
+            m = mask.copy()
+            for _ in range(WATER_BANK + 1):                       # berge (sommets)
+                g = m.copy()
+                g[1:, :] |= m[:-1, :]; g[:-1, :] |= m[1:, :]; g[:, 1:] |= m[:, :-1]; g[:, :-1] |= m[:, 1:]
+                m = g
+            F = np.where(m, np.minimum(F, -cell), F)
+            bj, ba = np.nonzero(mask)
+            spots.append((float(X[bj, ba].mean()), float(Y[bj, ba].mean()), math.sqrt(len(bj) / math.pi) * cell))
+    if spots:
+        P = C[::2, :2]
+    for x, y, w in spots:
+        do = float(np.sqrt(((P[:, 0] - x) ** 2 + (P[:, 1] - y) ** 2).min()))
+        d = np.hypot(X - x, Y - y)
+        F = np.minimum(F, d - w)                                   # emprise
+        if do - w > trim:                                          # loin : bande jusqu'a la carte principale
+            F = np.minimum(F, dR + d - do - w)
+    return F
+
+
+def _ground_cell(f4):
+    """Partie gardee d'une case (coins dans l'ordre trigonometrique, valeur <= 0 = garde) : [(coin, None) ou
+    (coin, coin suivant, t)] -> sommets du polygone (coins et points d'interpolation sur les aretes coupees)."""
+    out = []
+    for k in range(4):
+        a, b = f4[k], f4[(k + 1) % 4]
+        if a <= 0:
+            out.append((k, None, 0.0))
+        if (a <= 0) != (b <= 0):
+            out.append((k, (k + 1) % 4, a / (a - b)))
+    return out
+
+
 def _hole_cells(xs, ys, C):
     """Cases du terrain retirees sous les sauts (bord de route + HOLE_MARGIN) : un kart qui rate le saut tombe
     jusqu'au plancher de chute et reapparait."""
@@ -1264,14 +1347,271 @@ def _barriers(ob, C, L, left, right, rows, gap, closed, mode):
             a1 = np.array([edge[j, 0] + o_j[0], edge[j, 1] + o_j[1], edge[j, 2]])
             b0 = np.array([edge[i, 0] + t_i[0], edge[i, 1] + t_i[1], edge[i, 2]])
             b1 = np.array([edge[j, 0] + t_j[0], edge[j, 1] + t_j[1], edge[j, 2]])
-            up = np.array([0, 0, WALL_H])
+            up, dn = np.array([0, 0, WALL_H]), np.array([0, 0, WALL_SINK])
             v = lambda p, u, w_: ob.vert(p, (u, w_))
-            # face cote route, dessus, face exterieure
-            faces = [(a0, a1, a1 + up, a0 + up), (a0 + up, a1 + up, b1 + up, b0 + up), (b1, b0, b0 + up, b1 + up)]
+            # face cote route, dessus, face exterieure ; pied enfonce sous le bord (pas de fente sous la barriere)
+            faces = [(a0 - dn, a1 - dn, a1 + up, a0 + up), (a0 + up, a1 + up, b1 + up, b0 + up), (b1 - dn, b0 - dn, b0 + up, b1 + up)]
             for q in faces:                                      # deux sens : visible de partout (pas de face cachee)
                 for qq in (q, q[::-1]):
                     ob.quad(v(qq[0], 0, 0), v(qq[1], 1, 0), v(qq[2], 1, 0.2), v(qq[3], 0, 0.2))
     return count
+
+
+# marquage au sol (2026-11-13) : peint juste au-dessus de la route, sans collision (comme le damier du depart) ;
+# creator.js (marksGeometry) dessine la meme chose dans l'apercu
+MARK_LIFT = 0.04                 # m au-dessus de la route
+MARK_EDGE_IN, MARK_EDGE_W = 0.6, 0.4          # lignes de bord : a 0,6 m du bord, 0,4 m de large
+MARK_CENTER_W, MARK_DASH, MARK_PERIOD = 0.3, 3.0, 9.0   # ligne centrale : tirets de 3 m tous les 9 m
+MARK_CURB_W, MARK_CURB_REP = 1.5, 3.0         # vibreurs : 1,5 m de large, rouge + blanc sur 3 m
+MARK_ARROW_AT = (45.0, 25.0)                  # fleches : a 45 et 25 m avant un virage serre
+MARK_KEYS = ('edges', 'center', 'curbs', 'arrows')
+# fleche coudee vers le cote du virage, (u le long de la route, w vers le virage), metres : tige, coude, pointe
+ARROW_SHAPE = [[(-7.0, -0.7), (0.7, -0.7), (0.7, 0.7), (-7.0, 0.7)],
+               [(-0.7, 0.7), (0.7, 0.7), (0.7, 4.0), (-0.7, 4.0)],
+               [(-2.4, 4.0), (2.4, 4.0), (0.0, 7.5)]]
+
+
+def _tight_turns(T, closed):
+    """(rayon par echantillon, signe du virage : > 0 a gauche) — meme mesure que les barrieres."""
+    turn = np.arctan2(np.cross(np.roll(T, 1, 0), np.roll(T, -1, 0)), (np.roll(T, 1, 0) * np.roll(T, -1, 0)).sum(1))
+    if not closed:
+        turn[0] = turn[-1] = 0.0
+    return 2 * STEP / np.maximum(np.abs(turn), 1e-6), np.sign(turn)
+
+
+def _markings(ob, C, T, left, right, rows, gap, closed, s, marks, zfun=None):
+    """Marquage au sol sur la route : lignes de bord, ligne centrale en tirets, vibreurs a l'interieur des virages serres,
+    fleches avant ces virages. Points pris ENTRE les bords reels de la route (devers, bords edites) : la peinture suit la
+    surface. zfun(x, y, z approche) -> hauteur du sol (metres) : map existante (onglet Edition), chaque point pose sur
+    la collision. -> {matiere: nombre de quads}."""
+    marks = {k: bool((marks or {}).get(k)) for k in MARK_KEYS}
+    if not any(marks.values()):
+        return {}
+    n, lift = len(C), np.array([0.0, 0.0, MARK_LIFT])
+    width = np.linalg.norm(left[:, :2] - right[:, :2], axis=1)
+
+    def P(i, q):                                   # q : 0 = bord droit, 1 = bord gauche
+        p = right[i] + (left[i] - right[i]) * q
+        if zfun is not None:
+            p = np.array([p[0], p[1], zfun(p[0], p[1], p[2])])
+        return p + lift
+
+    cur = [None]
+
+    def use(mtl):                                  # objet ouvert au 1er triangle (pas d'objet vide dans l'OBJ)
+        if cur[0] != mtl:
+            ob.obj('Creator' + mtl, mtl)
+            cur[0] = mtl
+
+    def strip(mtl, ok, q0, q1, v0=None):
+        """bande entre les fractions q0(i) < q1(i) sur les troncons k -> k+1 ou ok(k) est vrai."""
+        cnt = 0
+        for k in range(len(rows) - 1):
+            i, j = rows[k], rows[k + 1]
+            if gap[i] or gap[j] or not ok(k):
+                continue
+            use(mtl)
+            va, vb = (s[k] / v0, s[k + 1] / v0) if v0 else (0.0, 1.0)
+            a, b = ob.vert(P(i, q0(i)), (0.0, va)), ob.vert(P(j, q0(j)), (0.0, vb))
+            c, d = ob.vert(P(j, q1(j)), (1.0, vb)), ob.vert(P(i, q1(i)), (1.0, va))
+            ob.quad(a, b, c, d)
+            cnt += 1
+        return cnt
+
+    out = defaultdict(int)
+    fq = lambda d: (lambda i: min(0.5, d / max(width[i], 1e-3)))
+    if marks['edges']:
+        for side in (0, 1):                        # 0 : bord droit, 1 : bord gauche
+            a, b = fq(MARK_EDGE_IN), fq(MARK_EDGE_IN + MARK_EDGE_W)
+            q0, q1 = (a, b) if side == 0 else ((lambda i: 1 - b(i)), (lambda i: 1 - a(i)))
+            out['MarkWhite'] += strip('MarkWhite', lambda k: True, q0, q1)
+    if marks['center']:
+        h = fq(MARK_CENTER_W / 2)
+        out['MarkWhite'] += strip('MarkWhite', lambda k: (s[k] % MARK_PERIOD) < MARK_DASH,
+                                  lambda i: 0.5 - h(i), lambda i: 0.5 + h(i))
+    radius, sign = _tight_turns(T, closed)
+    tight = radius < CURVE_R
+    if False and marks.get('arrows'):          # fleches avant les virages : RETIREES le 2026-11-13 (code garde)
+        # debut de chaque virage serre (sens de la course) : fleches a MARK_ARROW_AT metres avant, vers le cote du virage
+        starts = [i for i in range(n) if tight[i] and not tight[i - 1 if i or closed else 0] and (i or closed)]
+        for i0 in starts:
+            side = sign[i0] or 1.0
+            for dist in MARK_ARROW_AT:
+                k = i0 - int(round(dist / STEP))
+                if k < 0 and not closed:
+                    continue
+                k %= n
+                if gap[k] or tight[k]:
+                    continue
+                for poly in ARROW_SHAPE:
+                    vs = []
+                    for u, w in poly:
+                        fi = k + u / STEP                      # entre deux echantillons : forme non deformee
+                        i0 = math.floor(fi)
+                        t = fi - i0
+                        ia, ib = ((i0 % n, (i0 + 1) % n) if closed else (min(n - 1, max(0, i0)), min(n - 1, max(0, i0 + 1))))
+                        q = 0.5 + side * w / max(width[ia], 1e-3)
+                        q = min(1.0, max(0.0, q))
+                        vs.append(ob.vert(P(ia, q) * (1 - t) + P(ib, q) * t, (0.5, 0.5)))
+                    if side < 0:                       # miroir : garder les faces vers le haut
+                        vs = vs[::-1]
+                    use('MarkWhite')
+                    if len(vs) == 4:
+                        ob.quad(*vs)
+                    else:
+                        ob.f.append('f ' + ' '.join(f'{x}/{x}' for x in vs))
+                    out['MarkWhite'] += 1
+    if marks['curbs']:
+        inside = {1: np.zeros(n, bool), -1: np.zeros(n, bool)}      # 1 : virage a gauche -> bord gauche
+        for side in (1, -1):
+            idx = np.nonzero(tight & (sign == side))[0]
+            for e in range(-CURVE_EXTEND // 2, CURVE_EXTEND // 2 + 1):
+                j = (idx + e) % n if closed else np.clip(idx + e, 0, n - 1)
+                inside[side][j] = True
+        a = fq(MARK_CURB_W)
+        out['MarkCurb'] += strip('MarkCurb', lambda k: inside[-1][rows[k]] and inside[-1][rows[k + 1]],
+                                 lambda i: 0.0, a, MARK_CURB_REP)
+        out['MarkCurb'] += strip('MarkCurb', lambda k: inside[1][rows[k]] and inside[1][rows[k + 1]],
+                                 lambda i: 1 - a(i), lambda i: 1.0, MARK_CURB_REP)
+    return {m: c for m, c in out.items() if c}
+
+
+# panneaux de virage (2026-11-13) : modeles du jeu (bibliotheque) poses a l'exterieur des virages serres, face aux karts.
+# Tous sont des panneaux plats dans le plan x-z du modele. arrow : la fleche pointe vers +x (1) ou -x (-1) du modele ;
+# 0 : fleche dessinee dans la texture, un modele par cote (gauche, droite). zmin : bas du modele (m, echelle 1).
+SIGN_STYLES = {
+    'wood': {'label': 'Flèches en bois (Crash Cove)', 'pak': 't111_crash_cove.pak', 'arrow': -1, 'scale': 1.6, 'zmin': -0.11,
+             'models': ('models/Levels/Octane/T111_Crash_Cove/T111_WoodArrow.igz',) * 2},
+    'metal': {'label': 'Flèches en métal (Meteor Gorge)', 'pak': 't221_meteor_gorge.pak', 'arrow': 1, 'scale': 1.5, 'zmin': -0.01,
+              'models': ('models/Levels/Octane/T221_Meteor_Gorge/T221_Meteor_Gorge_Arrow.igz',) * 2},
+    'chevron': {'label': 'Chevrons (Assembly Lane)', 'pak': 't241_assembly_lane.pak', 'arrow': -1, 'scale': 0.45, 'zmin': -6.75,
+                'models': ('models/Levels/Octane/T241_Assembly_Lane/T241_Assembly_Lane_Arrow.igz',) * 2},
+    'road': {'label': 'Panneaux de virage (Crash 3)', 'pak': 't141_blizzard_bluff.pak', 'arrow': 0, 'scale': 0.35, 'zmin': -1.41,
+             'models': ('models/Levels/Crash3/L308_HogRide/HardCurveSign.igz',
+                        'models/Levels/Crash3/L308_HogRide/HardCurveRightSign.igz')},
+}
+SIGN_OFFSET = 2.5                # m au-dela du bord exterieur
+SIGN_EVERY = 35.0                # m entre deux panneaux d'un meme virage (20 avant le 2026-11-13 : trop)
+# panneaux a texture : face lisible du cote +y du modele (1) ou -y (-1). Releve sur Blizzard Bluff (2026-11-13) : ses
+# CurveSign / HardCurveSign ont l'axe x le long du trace et -y tourne vers la route -> face lisible = -y
+SIGN_FRONT = -1
+
+
+SIGN_R = 60.0                    # m : rayon mini atteint par le virage (2026-11-13 : « beaucoup trop » de panneaux)
+SIGN_MIN_TURN = math.radians(35)  # angle total minimal du virage (Crash Cove : 4 virages de 41 a 54 deg)
+SIGN_MAX = 3                     # panneaux au plus par virage
+SIGN_GAP = 30.0                  # m : jamais deux panneaux plus pres que ca (virages enchaines)
+
+
+def _sign_turns(T, closed):
+    """Virages a panneaux : [(debut, fin, cote)] (indices) — morceaux de rayon < CURVE_R du meme cote (separes de moins
+    de 10 m : reunis, un virage mesure en plusieurs bouts posait des panneaux a chaque bout), gardes si leur angle total
+    >= SIGN_MIN_TURN et leur rayon mini < SIGN_R. Rayon < 5 m : raccord du trace (boucle refermee), pas un virage."""
+    radius, sign = _tight_turns(T, closed)
+    tight = (radius < CURVE_R) & (radius > 5.0)
+    n, runs, i = len(T), [], 0
+    while i < n:
+        if not tight[i] or not sign[i]:
+            i += 1
+            continue
+        a, side = i, sign[i]
+        while i < n and tight[i] and sign[i] == side:
+            i += 1
+        if runs and runs[-1][2] == side and a - runs[-1][1] <= int(10 / STEP):
+            runs[-1][1] = i - 1
+        else:
+            runs.append([a, i - 1, side])
+    out = []
+    for a, b, side in runs:
+        ang = float(np.sum(2 * STEP / np.maximum(radius[a:b + 1], 1e-6))) / 2          # somme des angles (pas de 2 m)
+        if ang >= SIGN_MIN_TURN and float(radius[a:b + 1].min()) < SIGN_R:
+            out.append((a, b, side))
+    return out
+
+
+def sign_spots(C, T, L, left, right, closed, gap, every=SIGN_EVERY):
+    """Emplacements des panneaux (metres) : sur le bord EXTERIEUR des virages vraiment serres (_sign_turns), 1 a
+    SIGN_MAX par virage selon sa longueur, centres sur le virage, jamais a moins de SIGN_GAP m l'un de l'autre.
+    -> [(x, y, z du bord, cote du virage (+1 : a gauche), tx, ty)]."""
+    out, placed = [], []                                             # placed : centre de route des panneaux poses
+    for a, b, side in _sign_turns(T, closed):
+        length = (b - a + 1) * STEP
+        space = max(every, SIGN_GAP)
+        cnt = max(1, min(SIGN_MAX, int(length // space) + 1))
+        mid = (a + b) / 2
+        ks = [int(round(mid + (j - (cnt - 1) / 2) * space / STEP)) for j in range(cnt)]
+        for k in ks:
+            k = min(b, max(a, k))
+            if gap[k] or any(math.hypot(C[k, 0] - x, C[k, 1] - y) < SIGN_GAP for x, y in placed):
+                continue
+            placed.append((C[k, 0], C[k, 1]))
+            edge = right[k] if side > 0 else left[k]                 # virage a gauche : exterieur = bord droit
+            out_dir = -L[k] if side > 0 else L[k]
+            out.append((float(edge[0] + out_dir[0] * SIGN_OFFSET), float(edge[1] + out_dir[1] * SIGN_OFFSET),
+                        float(edge[2]), float(side), float(T[k, 0]), float(T[k, 1])))
+    return out
+
+
+def sign_items(spots, style, ground_z=None, scale=1.0):
+    """Panneaux -> items de place_library_many (pouces). ground_z(x, y, z approche) en metres (None : hauteur du bord)."""
+    st = SIGN_STYLES.get(style)
+    if not st:
+        return []
+    s = st['scale'] * max(0.2, min(4.0, float(scale or 1.0)))
+    out = []
+    for x, y, z, side, tx, ty in spots:
+        lx, ly = -ty, tx                                             # gauche de la route
+        if st['arrow']:
+            model = st['models'][0]
+            ax, ay = (side * lx * st['arrow'], side * ly * st['arrow'])   # x du modele : fleche vers le cote du virage
+        else:
+            model = st['models'][0 if side > 0 else 1]
+            # face lisible (y du modele * SIGN_FRONT) tournee vers les karts qui arrivent (-T) : y = -F T, x = y tourne de -90 deg
+            ax, ay = -SIGN_FRONT * ty, SIGN_FRONT * tx
+        g = ground_z(x, y, z) if ground_z else None
+        base = (g if g is not None else z) - 0.2
+        out.append({'model': model, 'pak': st['pak'], 'pos': [x * INCH, y * INCH, (base - st['zmin'] * s) * INCH],
+                    'yaw': math.atan2(ay, ax), 'scale': s})
+    return out
+
+
+MARKS_OBJ, MARKS_MTL = 'Marquage.obj', 'Marquage.mtl'      # lot d'import « Marquage — date » (onglet Edition)
+
+
+def marks_obj(center, left, right, gap, closed, marks, zfun=None):
+    """Marquage d'une route MESUREE (onglet Edition, map existante) : centre, bords gauche / droit [n, 3] en metres
+    tous les ~STEP m, gap [n] (pas de sol). -> (texte OBJ, texte MTL, {matiere: quads})."""
+    C = np.asarray(center, np.float64)
+    T = np.roll(C[:, :2], -1, 0) - np.roll(C[:, :2], 1, 0)
+    if not closed:
+        T[0], T[-1] = C[1, :2] - C[0, :2], C[-1, :2] - C[-2, :2]
+    T /= np.maximum(np.linalg.norm(T, axis=1)[:, None], 1e-9)
+    ds = np.linalg.norm(np.diff(C[:, :2], axis=0), axis=1)
+    s = np.concatenate([[0], np.cumsum(ds)])
+    if closed:
+        s = np.append(s, s[-1] + np.linalg.norm(C[0, :2] - C[-1, :2]))
+    rows = list(range(len(C))) + ([0] if closed else [])
+    ob = _Obj()
+    used = _markings(ob, C, T, np.asarray(left, np.float64), np.asarray(right, np.float64), rows,
+                     np.asarray(gap, bool), closed, s, marks, zfun)
+    mtl = ''.join(f'newmtl {m}\nKd 1 1 1\nmap_Kd {m.lower()}.png\n\n' for m in sorted(used))
+    return ob.text(MARKS_MTL), mtl, used
+
+
+def mark_textures():
+    """Images du marquage (aucun fichier du jeu) : blanc casse, vibreur rouge / blanc (2 bandes par repetition)."""
+    from PIL import Image
+    out = {}
+    buf = io.BytesIO()
+    Image.new('RGB', (16, 16), (236, 236, 228)).save(buf, 'PNG')
+    out['markwhite.png'] = buf.getvalue()
+    img = np.zeros((64, 16, 3), np.uint8)
+    img[:32] = (200, 30, 30)
+    img[32:] = (236, 236, 228)
+    buf = io.BytesIO()
+    Image.fromarray(img).save(buf, 'PNG')
+    out['markcurb.png'] = buf.getvalue()
+    return out
 
 
 WATER_DEEP = 1.5        # m : plus d'eau que ca -> zone de chute (reapparition) ; moins : on roule au fond
@@ -1475,9 +1815,12 @@ def _water(ob, xs, ys, H, waters, hole, terrain=None, C=None):
     return count, zones, report, kinds
 
 
-def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curves', waters=None):
+def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curves', waters=None, marks=None, keep=None):
     """-> (texte OBJ, texte MTL, infos {length, guide, exact (pouces), start, yaw, ground_tiles, min_z (pouces), ...}).
-    barriers : 'none' | 'curves' (exterieur des virages serres) | 'all' (les deux bords partout, sauf sauts)."""
+    barriers : 'none' | 'curves' (exterieur des virages serres) | 'all' (les deux bords partout, sauf sauts).
+    marks : {edges, center, curbs, arrows} (marquage au sol, _markings). keep : [(x, y, rayon)] (m), emprise des objets
+    semes, gardee par la decoupe de la carte loin de la route et reliee a la carte principale (_trim_field, comme
+    l'eau)."""
     K = KITS[kit]
     C = centerline(points_in, closed)
     if len(C) < 4:
@@ -1561,8 +1904,11 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
     # plancher de chute)
     hole = np.zeros((len(ys) - 1, len(xs) - 1), bool)
     trim = float((terrain or {}).get('trim_m') or 0)
+    TF = None                                            # valeur de decoupe par sommet (<= 0 : garde)
     if trim > 0:                                         # carte loin de la route retiree (demande a la generation)
-        hole = _far_cells(xs, ys, C, trim)
+        TF = _trim_field(xs, ys, H, C, trim, keep, waters, terrain)
+        out4 = (TF[:-1, :-1] > 0) & (TF[:-1, 1:] > 0) & (TF[1:, 1:] > 0) & (TF[1:, :-1] > 0)
+        hole = out4                                      # case retiree : ses 4 coins dehors (bord : coupe en biais)
     MATS = paint_materials(kit)
     M = np.clip(M, 0, len(MATS) - 1)
     MIX0 = len(MATS)
@@ -1593,8 +1939,25 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
                     if (a, b) not in vid:
                         vid[(a, b)] = ob.vert((xs[a], ys[b], H[b, a]), (xs[a] / rep, ys[b] / rep))
                     return vid[(a, b)]
+
+                def ve(p, q, t):                         # point du bord sur l'arete p-q (partage entre cases voisines)
+                    key = (p, q) if p < q else (q, p)
+                    if key not in vid:
+                        (a0, b0), (a1, b1) = p, q
+                        x = xs[a0] + (xs[a1] - xs[a0]) * t
+                        y = ys[b0] + (ys[b1] - ys[b0]) * t
+                        vid[key] = ob.vert((x, y, H[b0, a0] + (H[b1, a1] - H[b0, a0]) * t), (x / rep, y / rep))
+                    return vid[key]
                 for a, b in cells:
-                    ob.quad(v(a, b), v(a + 1, b), v(a + 1, b + 1), v(a, b + 1))
+                    corners = ((a, b), (a + 1, b), (a + 1, b + 1), (a, b + 1))
+                    if TF is None or all(TF[q[1], q[0]] <= 0 for q in corners):
+                        ob.quad(v(a, b), v(a + 1, b), v(a + 1, b + 1), v(a, b + 1))
+                        continue
+                    # bord de la decoupe : partie gardee de la case (marching squares), bord interpole et lisse
+                    pts = _ground_cell([TF[q[1], q[0]] for q in corners])
+                    ids = [v(*corners[k]) if k2 is None else ve(corners[k], corners[k2], t) for k, k2, t in pts]
+                    if len(ids) >= 3:
+                        ob.poly(ids)
 
     # eau des creux (outil du Relief « Remplir d'eau », 2026-11-12) : surface plane au niveau, sans collision
     n_water, water_falls, water_rep, water_kinds = _water(ob, xs, ys, H, waters, hole, terrain, C)
@@ -1694,12 +2057,14 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
                 n_roof += 1
 
     n_walls = _barriers(ob, C, L, left, right, rows, gap, closed, barriers)
+    mark_used = _markings(ob, C, T, left, right, rows, gap, closed, s, marks)
     # fondus : images composees apres coup (mix_textures), leurs deux peintures doivent etre decodees
     mix_used = [x for i, x in enumerate(mixes) if MIX0 + i in used]
     base_used = {m for m in used if m < MIX0} | {m for x in mix_used for m in x[:2]}
     mtl ='newmtl Road\nKd 0.8 0.7 0.5\nmap_Kd road.png\n\n' + \
         ('newmtl StartLine\nKd 1 1 1\nmap_Kd checker.png\n\n' if not gap[0] else '') + ('newmtl Bridge\nKd 0.5 0.5 0.5\nmap_Kd rock.png\n\n' if n_bridges or skirts else '') + \
         ('newmtl Wall\nKd 0.5 0.5 0.5\nmap_Kd rock.png\n\n' if n_walls else '') + \
+        ''.join(f'newmtl {m}\nKd 1 1 1\nmap_Kd {m.lower()}.png\n\n' for m in sorted(mark_used)) + \
         ''.join(f'newmtl {water_material(k)}\nKd 0.2 0.5 0.75\nmap_Kd {water_png(k)}\n\n' for k in sorted(water_kinds)) + ''.join(
         f'newmtl {name}\nKd 0.8 0.7 0.5\nmap_Kd {png}\n\n' for m, (name, png, *_) in enumerate(MATS) if m in used) + ''.join(
         f'newmtl {_mix_name(*x)}\nKd 0.8 0.7 0.5\nmap_Kd {_mix_name(*x)}.png\n\n' for x in mix_used)
@@ -1713,10 +2078,11 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
             'mixes': [(_mix_name(*x), MATS[x[0]][1], MATS[x[1]][1], x[2]) for x in mix_used],
             # surface de collision d'un fondu : celle de la peinture dominante
             'mix_surfaces': {_mix_name(*x): MATS[x[1] if x[2] > 2 else x[0]][3] for x in mix_used},
-            'bridges': int(n_bridges), 'tunnel_cells': int(n_roof), 'jumps': int(np.count_nonzero(gap & ~np.roll(gap, 1))), 'walls_m': round(n_walls * STEP),
+            'marks': mark_used, 'bridges': int(n_bridges), 'tunnel_cells': int(n_roof), 'jumps': int(np.count_nonzero(gap & ~np.roll(gap, 1))), 'walls_m': round(n_walls * STEP),
             'min_z': float(min(H.min(), road_z.min())) * INCH,
             'waters': int(n_water), 'water_falls': water_falls, 'water_report': water_rep, 'water_kinds': sorted(water_kinds),
-            '_ground': (xs, ys, H, hole, C, roof)}                     # sol genere (metres) : hauteur des objets semes
+            '_ground': (xs, ys, H, hole, C, roof),                     # sol genere (metres) : hauteur des objets semes
+            '_sign_spots': sign_spots(C, T, L, left, right, closed, gap)}   # panneaux de virage (create_build)
     return ob.text(MTL_NAME), mtl, info
 
 
@@ -1989,6 +2355,7 @@ def paint_materials(kit='sable'):
 def surfaces(kit='sable'):
     """{materiau OBJ: surface de collision du jeu (None : sans collision, tablier des ponts)}."""
     return {'Road': KITS[kit]['road_surface'], 'Bridge': None, 'StartLine': None, 'Wall': WALL_SURFACE,
+            'MarkWhite': None, 'MarkCurb': None,                   # marquage : peint, on roule sur la route dessous
             **{m[0]: m[3] for m in paint_materials(kit)}}
 
 
@@ -2011,4 +2378,5 @@ def kit_textures(read, kit='sable', size=1024, used=None):
     buf = io.BytesIO()
     Image.fromarray(img).save(buf, 'PNG')
     out['checker.png'] = buf.getvalue()
+    out.update(mark_textures())
     return out

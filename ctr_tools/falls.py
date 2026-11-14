@@ -104,6 +104,9 @@ def before(points, s, count=3):
 EDGE_STEP = 6 * M                  # ecart de hauteur maximal de la route entre deux mesures a 2 m (bord le plus raide de la Creation)
 ROAD_CLEAR = 4 * M                 # une zone de chute reste au moins a ca sous la route
 ROAD_GRID = 2 * M                  # pas de recherche de la route dans l'emprise d'une zone
+KART_CLEAR = 3 * M                 # fond d'une zone : au moins ca au-dessus du sol / d'une route sous son emprise
+FLOOR_GRID = 4 * M                 # pas de recherche du sol sous une zone
+GROUND_LAND = 40 * M               # sol a moins de ca sous une zone : le kart y atterrit, pas de zone de chute
 
 
 def _road_near(road, x, y, z, reach):
@@ -174,20 +177,57 @@ def find_fall_zones(path, ground, road=None, step=5 * M, reach=40 * M, drop=6 * 
                     break
                 if road is not None and road.heights(x, y):
                     continue                           # route (plus haut ou plus bas) : pas un trou
+                # sol : toute surface pas plus de `drop` sous le bord, MEME tres au-dessus (paroi d'un canyon : la route
+                # passe sous le sol ; avant, une paroi a plus de ~15 m au-dessus de la route comptait comme du vide ->
+                # zones enterrees dans les parois des canyons, 2026-11-14)
+                hs = ground.heights(x, y) if hasattr(ground, 'heights') else []
+                if hs:
+                    if max(hs) < zedge - drop:                  # compare au bord (virage incline : sol bas mais pas un vide)
+                        holes.append((j, side, x, y, zedge))
+                    continue
                 h = ground.top(x, y, zedge + 300)
                 z = h[0] if isinstance(h, (tuple, list)) else h
-                if z is None or z < zedge - drop:              # compare au bord (virage incline : sol bas mais pas un vide)
+                if z is None or z < zedge - drop:
                     holes.append((j, side, x, y, zedge))
     zones = []
 
     def add(run, side):
         A = np.array([[r[2], r[3]] for r in run])
-        ztop = min(r[4] for r in run) - 4 * M
+        zroad = min(r[4] for r in run)
+        ztop = zroad - 4 * M
         lo, hi = A.min(0) - 3 * M, A.max(0) + 3 * M
+        # sol (ou autre route) sous la route d'ou l'on tombe, a moins de GROUND_LAND : le kart y atterrit et repart ->
+        # pas de zone (avant : verifie seulement sous le dessus de la zone, une fois abaissee sous une route proche ->
+        # zones enterrees sous les routes en hauteur, 2026-11-14)
+        for x in np.arange(lo[0], hi[0] + FLOOR_GRID, FLOOR_GRID):
+            for y in np.arange(lo[1], hi[1] + FLOOR_GRID, FLOOR_GRID):
+                x1, y1 = min(x, hi[0]), min(y, hi[1])
+                below = [h for h in ground.heights(x1, y1) if zroad - GROUND_LAND < h < zroad - 1 * M]
+                if below:
+                    return
         ztop = road_clear_top(lo, hi, ztop, 20 * M, road)
         if killz is not None and ztop - 4 * M < killz:
             return                                     # plus de place au-dessus du plancher : le plancher suffit
         depth = 20 * M if killz is None else min(20 * M, max(4 * M, ztop - killz))
+        # fond de la zone au moins KART_CLEAR au-dessus du sol et de toute route sous son emprise (2026-11-14, retour
+        # utilisateur : sous un pont ou une route en l'air, la boite de 20 m descendait jusqu'au sol et a la route du
+        # dessous -> zone a hauteur de kart, sur la piste) ; plus de place : pas de zone (le sol rattrape le kart)
+        floor = None
+        for x in np.arange(lo[0], hi[0] + FLOOR_GRID, FLOOR_GRID):
+            for y in np.arange(lo[1], hi[1] + FLOOR_GRID, FLOOR_GRID):
+                x1, y1 = min(x, hi[0]), min(y, hi[1])
+                # toutes les surfaces sous le dessus de la zone (la route d'ou l'on tombe est au-dessus : ignoree)
+                tops = [h for h in ground.heights(x1, y1) if h < ztop] + \
+                       ([r for r in road.heights(x1, y1) if r < ztop] if road is not None else [])
+                if tops:
+                    floor = max(floor, max(tops)) if floor is not None else max(tops)
+        if floor is not None:
+            # du sol (ou une route) a moins de GROUND_LAND sous la route : le kart qui tombe y atterrit et repart (pont,
+            # route en l'air, remblai au-dessus de l'herbe) -> pas de zone (2026-11-14, retour utilisateur : zones
+            # encore posees sous les ponts, a cote de la route du dessous)
+            if ztop - floor < GROUND_LAND or ztop - (floor + KART_CLEAR) < KART_CLEAR:
+                return
+            depth = min(depth, ztop - (floor + KART_CLEAR))
         box = {'center': [float((lo[0] + hi[0]) / 2), float((lo[1] + hi[1]) / 2), float(ztop - depth / 2)],
                'dims': [float(hi[0] - lo[0]), float(hi[1] - lo[1]), float(depth)],
                's': float(S[idx[run[0][0]]]), 'side': side, 'samples': len(run)}

@@ -247,6 +247,9 @@ def registration_for_state(archives, st):
     if titles:
         for lang in LNG_LANGS:
             out[proto_lng(lang)] = write_titles(pak_tool.read_latest(archives, proto_lng(lang))[0], titles)
+    if st.get('laps'):                                     # choix des tours (1 et 2 en plus, race_laps.py)
+        import race_laps
+        out[race_laps.RACESETTING] = race_laps.set_laps(pak_tool.read_latest(archives, race_laps.RACESETTING)[0], st['laps'])
     if tracks:
         out[track_clone.CHUNKINFOS] = track_clone.register_chunkinfos(archives, [t['id'] for t in tracks])
         gui, _ = pak_tool.read_latest(archives, GUI_DATA)
@@ -365,8 +368,10 @@ def _layer_index(archives):
 
 def _menu_names():
     import menu_assets
+    import race_laps
     import track_clone
-    return {n.lower() for n in (PROTO, track_clone.CHUNKINFOS, GUI_DATA, menu_assets.MENU_MATERIALS, *menu_assets.MENU_PKGS)} | \
+    return {n.lower() for n in (PROTO, track_clone.CHUNKINFOS, GUI_DATA, menu_assets.MENU_MATERIALS, *menu_assets.MENU_PKGS,
+                                race_laps.RACESETTING)} | \
         {proto_lng(g).lower() for g in LNG_LANGS}
 
 
@@ -473,7 +478,8 @@ def _rewrite(arc, files):
 
 
 def _write_state(archives, st):
-    if not st.get('tracks') and not st.get('levels') and (not st.get('layout') or _is_original(archives, st['layout'])):
+    if not st.get('tracks') and not st.get('levels') and not st.get('laps') and \
+            (not st.get('layout') or _is_original(archives, st['layout'])):
         if os.path.exists(state_path(archives)):
             os.remove(state_path(archives))                 # menu du jeu, rien de cree : plus d'etat
         return
@@ -485,8 +491,9 @@ def _ours(archives, st=None):
     import track_clone
     st = st if st is not None else (read_state(archives) or {})
     import menu_assets
-    out = {PROTO, track_clone.CHUNKINFOS, GUI_DATA, menu_assets.MENU_MATERIALS, *menu_assets.MENU_PKGS} | \
-        {proto_lng(g) for g in LNG_LANGS}
+    import race_laps
+    out = {PROTO, track_clone.CHUNKINFOS, GUI_DATA, menu_assets.MENU_MATERIALS, *menu_assets.MENU_PKGS,
+           race_laps.RACESETTING} | {proto_lng(g) for g in LNG_LANGS}
     for t in st.get('tracks', []):
         out |= {track_clone.zoneinfo_logical(t['id'])} | {track_clone.lng_logical(t['id'], g) for g in track_clone.LANGS}
         out |= {menu_assets.own_image_file(t['id'], k) for k in menu_assets.OWN_IMAGES} | \
@@ -539,6 +546,21 @@ def set_layout(archives, layout):
     _write_state(archives, st)
     _apply(archives, old)
     return current_layout(archives)
+
+
+def set_short_laps(archives, on):
+    """Menu « Reglages de course » : 1 et 2 tours proposes en plus de 3 / 5 / 7 (toutes les pistes). Installe aussitot."""
+    import race_laps
+    st = read_state(archives) or {}
+    if bool(st.get('laps')) == bool(on):
+        return
+    old = _ours(archives, st)
+    if on:
+        st['laps'] = race_laps.SHORT_LAPS
+    else:
+        st.pop('laps', None)
+    _write_state(archives, st)
+    _apply(archives, old)
 
 
 def add_track(archives, track_id, source, display, paks, group_key=None):

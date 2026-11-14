@@ -299,6 +299,7 @@
   #crload .s { font-size:12px; color:var(--muted,#9aa); margin-bottom:12px; min-height:16px; }
   #crload .bar { height:8px; border-radius:4px; background:rgba(255,255,255,.12); overflow:hidden; }
   #crload .fill { height:100%; width:0; border-radius:4px; background:var(--accent,#4c9aff); transition:width .35s ease; }
+  #crload .tm { font-size:12px; color:var(--muted,#9aa); margin-top:6px; text-align:right; font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -407,7 +408,7 @@
  </div>
 </div>
 <div id="crload"><div class="box"><div class="t">Ouverture de la Création…</div><div class="s" id="crloadmsg"></div>
- <div class="bar"><div class="fill" id="crloadfill"></div></div></div></div>
+ <div class="bar"><div class="fill" id="crloadfill"></div></div><div class="tm" id="crloadtime" data-noi18n>0,0 s</div></div></div>
 <div id="statusbar"><span>ℹ</span><span id="status">Chargement…</span>
  <span id="hints"><span><kbd>Clic</kbd>sélectionner</span><span><kbd>Clic droit</kbd>menu · tourner la vue</span><span><kbd>Molette</kbd>zoom</span></span>
  <button id="histbtn" title="Tous les messages depuis l'ouverture de l'éditeur"><svg class="ic"><use href="#i-clock"/></svg>Historique</button>
@@ -495,7 +496,8 @@
     <button id="dscale" title="Agrandit ou rétrécit toute la map autour de la ligne d'arrivée : décor, collision, parcours, splines IA, grille, caisses, boosters, réapparitions…">⤢ Changer l'échelle de toute la map…</button>
     <button id="dlight" title="Collision simplifiée, textures en 512, nettoyage des modèles inutilisés">Alléger la map…</button>
     <button id="dalpha" title="Découpe alpha (feuillages, grillages) des textures importées">Transparence des textures…</button>
-    <button id="dambiance" title="Jour, soir ou nuit : soleil, brouillard, couleurs de l'image">🌅 Ambiance (jour, soir, nuit)…</button></div></div></details>
+    <button id="dambiance" title="Jour, soir ou nuit : soleil, brouillard, couleurs de l'image">🌅 Ambiance (jour, soir, nuit)…</button>
+    <button id="dmarks" title="Lignes de bord, ligne centrale, vibreurs et flèches peints le long du parcours enregistré">🖌 Marquage au sol…</button></div></div></details>
   <details class="sec adv" data-win="files"><summary>🔧 Avancé : fichiers de décor, Blender</summary>
    <div class="body"><div class="stack" style="margin-bottom:8px"><button id="dexport">Exporter pour Blender…</button></div>
     <h3>Fichiers de décor</h3><div id="dfiles"></div></div></details>
@@ -4231,6 +4233,33 @@ $('dwallauto').onclick = () => {
     wallOperation('/api/walls_auto', body, 'Murs invisibles le long de la route');
   };
 };
+// marquage au sol d'une map existante (2026-11-13) : peint le long du parcours enregistre, lot d'import remplace a chaque fois
+$('dmarks').onclick = () => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('ctr_marks_opts') || '{}'); } catch (e) { /* sans importance */ }
+  const opt = { edges: true, center: false, curbs: true, ...saved };
+  const ck = (k, label, title) => `<label style="display:flex;gap:6px;align-items:center;margin:3px 0" title="${title}"><input type="checkbox" data-mk="${k}"${opt[k] ? ' checked' : ''}> ${label}</label>`;
+  const ov = overlayCard(`<div style="margin-bottom:8px"><b>🖌 Marquage au sol</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Peint le long de la ligne de course enregistrée (crée d'abord le parcours). La largeur de la route est mesurée de chaque côté sur la collision ; chaque trait est posé sur le sol, sans collision (on roule dessus sans le sentir). Le marquage précédent est remplacé.</div>
+    ${ck('edges', 'Lignes de bord', 'Une ligne blanche à 0,6 m de chaque bord')}
+    ${ck('center', 'Ligne centrale en tirets', 'Tirets de 3 m tous les 9 m')}
+    ${ck('curbs', 'Vibreurs dans les virages', "Bandes rouges et blanches à l'intérieur des virages serrés")}
+    <label style="display:block;margin-top:8px" title="0 = mesurée sur la collision. Une largeur fixe, centrée sur la ligne de course, quand la route et ses bas-côtés ont le même sol (sable de Crash Cove…) et que la mesure déborde">Largeur de la route (m, 0 = mesurée)
+      <input id="mkw" type="number" min="0" max="80" step="1" value="${+saved.width || 0}" style="width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin-top:2px"></label>
+    <div class="btns" style="justify-content:space-between;margin-top:10px"><button id="mkdel" class="danger">Tout retirer</button>
+      <span><button id="mkno">Annuler</button> <button id="mkyes" class="primary">Peindre</button></span></div>`, 480);
+  const q = s => ov.querySelector(s);
+  q('#mkno').onclick = () => ov.remove();
+  q('#mkdel').onclick = () => { ov.remove(); wallOperation('/api/marks_auto', { marks: {}, signs: {} }, 'Retrait du marquage'); };
+  q('#mkyes').onclick = () => {
+    const marks = Object.fromEntries([...ov.querySelectorAll('[data-mk]')].map(c => [c.dataset.mk, c.checked]));
+    const width = Math.max(0, +q('#mkw').value || 0);
+    try { localStorage.setItem('ctr_marks_opts', JSON.stringify({ ...marks, width })); } catch (e) { /* sans importance */ }
+    ov.remove();
+    // panneaux de virage retires du menu (2026-11-13) : signs vide -> ceux deja poses sont enleves au passage
+    wallOperation('/api/marks_auto', { marks, width, signs: {} }, 'Marquage au sol');
+  };
+};
 function focusSelection() {
   if (!dMulti.length) return;
   const c = new THREE.Vector3(); dMulti.forEach(m => c.add(m.position)); c.divideScalar(dMulti.length);
@@ -6390,6 +6419,11 @@ function renderMenuPage() {
       <span class="note">${d ? 'Installe d\'abord les changements du menu.' :
         `Copie de Crash Cove vidée (ni sol ni décor), installée dans le jeu, prête pour l'import de ta map. ≈ 1 à 2 min, ≈ 360 Mo.`}</span>
     </div>
+    <div class="mpnew"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="mplaps" ${menuData.short_laps ? 'checked' : ''} ${d ? 'disabled' : ''}>
+      <b>🏁 Courses de 1 ou 2 tours</b></label>
+      <span class="note">${d ? 'Installe d\'abord les changements du menu.' :
+        'Réglages de course : 1, 2, 3, 5 ou 7 tours au lieu de 3, 5 ou 7. Pour toutes les pistes (le jeu n\'a pas de réglage par piste). Installé aussitôt (ferme shadPS4 avant).'}</span>
+    </div>
     <div class="mpgrid">${groups.map((g, gi) => `<div class="mpcat ${g.levels.length ? '' : 'empty'}">
       <div class="chead">
         <button data-a="cup" data-g="${gi}" ${gi ? '' : 'disabled'} title="Monter la catégorie">↑</button>
@@ -6443,6 +6477,17 @@ function renderMenuPage() {
   };
   $('mpsave').onclick = () => saveMenuLayout(menuDraft);
   $('mpcreate').onclick = createMenuTrack;
+  $('mplaps').onchange = async e => {
+    const on = e.target.checked;
+    if (on && !(await ask('Ajouter les courses de 1 et 2 tours ?\n\n⚠ Le réglage vaut pour TOUTES les pistes du jeu (il n\'existe pas de réglage par piste).\n⚠ À éviter en ligne : les autres joueurs n\'ont pas ce choix.'))) {
+      e.target.checked = false; return;
+    }
+    status(on ? 'Ajout des courses de 1 et 2 tours…' : 'Retour aux choix 3, 5, 7 tours…');
+    try {
+      setMenuData(await api('/api/menu_laps', { on }));
+      status(on ? 'Réglages de course : 1, 2, 3, 5 ou 7 tours (update3.pak).' : 'Réglages de course : 3, 5 ou 7 tours (comme le jeu).', 'ok');
+    } catch (err) { e.target.checked = !on; status('Erreur : ' + err.message, 'err'); }
+  };
 }
 async function saveMenuLayout(groups) {
   status('Installation du menu dans le jeu…');
@@ -6576,6 +6621,18 @@ function crLoad(pct, msg) {
   crLoadTimer = setInterval(() => { cur += (cap - cur) * 0.08; fill.style.width = cur.toFixed(1) + '%'; }, 200);
 }
 const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));  // laisse la barre s'afficher
+// chronometre de la fenetre de chargement (ouverture de la Creation, piste aleatoire) : temps depuis son affichage. Pendant
+// un long calcul sans pause (decor), il ne bouge pas et rattrape a la fin
+{
+  let t0 = null;
+  setInterval(() => {
+    const box = $('crload'), on = box.classList.contains('on');
+    if (!on) { if (t0 !== null) $('crloadtime').textContent = '0,0 s'; t0 = null; return; }
+    t0 ??= performance.now();
+    const s = (performance.now() - t0) / 1000;
+    $('crloadtime').textContent = s < 60 ? `${s.toFixed(1).replace('.', ',')} s` : `${Math.floor(s / 60)} min ${String(Math.floor(s % 60)).padStart(2, '0')} s`;
+  }, 100);
+}
 async function openCreator() {
   if (creator.active) return;
   if (menuOpen && !(await closeMenuPage())) return;
@@ -6846,6 +6903,7 @@ const MENUS = [
     { label: '🗺 Générer la mini-carte', only: 'race', run: clickId('mkminimap') },
     { label: '🏷 Nom et images de la piste…', only: 'race', create: true, run: clickId('mkmenu') },
     { label: '🌅 Ambiance (jour, soir, nuit)…', only: 'decor', run: clickId('dambiance') },
+    { label: '🖌 Marquage au sol…', only: 'decor', run: clickId('dmarks') },
     { label: '🎵 Musique de la piste…', create: true, run: openMusic },
     { label: '⏱ Temps des reliques et des fantômes…', create: true, run: openTimes },
     { label: '🎥 Visite virtuelle', run: clickId('tour') },
@@ -6918,7 +6976,7 @@ function ask(message) {
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
     ov.innerHTML = `<div class="card" style="max-width:440px;background:var(--panel);border:1px solid var(--line)">
-      <div style="margin-bottom:10px">${esc(message)}</div>
+      <div style="margin-bottom:10px;white-space:pre-line">${esc(message)}</div>
       <div class="btns" style="justify-content:flex-end"><button id="askno">Annuler</button><button id="askyes" class="primary">Confirmer</button></div></div>`;
     const done = v => { ov.remove(); resolve(v); };
     document.body.appendChild(ov);
@@ -6959,7 +7017,7 @@ function progressStop() { clearInterval(progTimer); progTimer = null; $('prog').
 // vitesse remise a 100 % jamais enregistree). Elles sont d'abord enregistrees (collision differee). Ces requetes ne
 // citent pas d'objet par son id (les ids changent quand on enregistre des copies / suppressions).
 const DECOR_WRITERS = new Set(['/api/object_glow', '/api/import_model', '/api/place_library', '/api/import_folder',
-  '/api/set_alpha_textures', '/api/apply_light', '/api/newmap', '/api/walls_auto', '/api/wall_add',
+  '/api/set_alpha_textures', '/api/apply_light', '/api/newmap', '/api/walls_auto', '/api/wall_add', '/api/marks_auto',
   '/api/set_custom_material', '/api/import_texture', '/api/double_sided', '/api/object_alpha', '/api/fix']);
 async function api(path, body) {
   if (body && DECOR_WRITERS.has(path.split('?')[0]) && decor && decorDirty()) {
@@ -7482,7 +7540,9 @@ async function openOctrExport() {
   if (dirty) { status('Enregistre d\'abord : l\'export part des fichiers enregistrés', 'err'); return; }
   let list;
   status('Lecture des pistes…');
+  let shortLaps = false;
   try { list = (await api('/api/octr_tracks')).tracks; } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
+  try { shortLaps = !!(await api('/api/menu_layout')).short_laps; } catch (e) { /* case decochee */ }
   if (!list.length) { status('Aucune piste modifiée à exporter', 'err'); return; }
   status('Choisis les pistes à exporter');
   list.sort((a, b) => (b.track === track) - (a.track === track));         // la piste ouverte en premier, cochee
@@ -7507,6 +7567,8 @@ async function openOctrExport() {
     <div style="display:flex;gap:8px"><label style="flex:2;font-size:12px;color:var(--muted)">Auteur<input id="oxauthor" style="${field}"></label>
       <label style="flex:1;font-size:12px;color:var(--muted)">Version<input id="oxver" style="${field}" value="1.0.0"></label></div>
     <label style="font-size:12px;color:var(--muted)">Description (facultative)<textarea id="oxdesc" rows="2" style="${field};resize:vertical"></textarea></label>
+    <label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="oxlaps" ${shortLaps ? 'checked' : ''}> 🏁 Courses de 1 ou 2 tours (menu Réglages de course, toutes les pistes)</label>
+    <div id="oxoffline" style="font-size:12px;color:var(--muted);margin:2px 0 6px">🔒 Avec les courses de 1 ou 2 tours, le mod est hors ligne seulement : le lanceur le refuse tant que le jeu en ligne est actif (<code>online=0</code> dans <code>bbport.ini</code>).</div>
     <div id="oxinfo" style="font-size:12px;color:var(--muted);margin:4px 0 8px">Le .zip va dans le dossier <code>exports/octr</code> du projet (quelques centaines de Mo par piste, une à deux minutes par piste).</div>
     <div class="btns" style="justify-content:flex-end"><button id="oxno">Fermer</button><button id="oxyes" class="primary">Exporter</button></div>`, 640);
   const q = s => ov.querySelector(s);
@@ -7526,11 +7588,13 @@ async function openOctrExport() {
     if (!/^\d+\.\d+\.\d+$/.test(ver)) { q('#oxinfo').textContent = 'Version au format 1.0.0'; return; }
     if (tracks.some(t => t.mode === 'new' && !t.name)) { q('#oxinfo').textContent = 'Donne un nom à chaque piste cochée'; return; }
     if (tracks.some(t => t.mode === 'new') && !q('#oxcat').value.trim()) { q('#oxinfo').textContent = 'Donne un nom à la catégorie'; return; }
+    if (q('#oxlaps').checked && !shortLaps && !(await ask('Ajouter les courses de 1 et 2 tours à ce mod ?\n\n⚠ Le réglage vaut pour TOUTES les pistes du jeu (il n\'existe pas de réglage par piste).\n⚠ À éviter en ligne : les autres joueurs n\'ont pas ce choix.'))) return;
     try { localStorage.setItem('ctrOctrAuthor', q('#oxauthor').value.trim()); } catch {}
     q('#oxyes').disabled = true; q('#oxinfo').textContent = `Export de ${tracks.length} piste(s)… (archives complètes, une à deux minutes par piste)`;
     try {
       const x = await api('/api/octr_export', { tracks, category: q('#oxcat').value.trim(), mod_name: q('#oxmod').value.trim(),
-                                               author: q('#oxauthor').value.trim(), version: ver, description: q('#oxdesc').value.trim() });
+                                               author: q('#oxauthor').value.trim(), version: ver, description: q('#oxdesc').value.trim(),
+                                               laps: q('#oxlaps').checked });
       q('#oxinfo').innerHTML = `<span style="color:var(--ok)">Mod créé : <code>${esc(x.path)}</code></span>
         <a href="/api/pack_download?name=${encodeURIComponent(x.name)}" download>⬇ Télécharger</a><br>${x.report.map(esc).join('<br>')}`;
       status('Mod OCTR exporté : ' + x.path, 'ok');
@@ -7701,6 +7765,12 @@ $('dambiance').onclick = async () => {
       Sans ciel, le jeu laisse de grosses traînées à l'écran : choisis le ciel d'une autre piste.</div>
     <div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Le ciel d'une autre piste reprend aussi son éclairage (soleil, brouillard, reflets) ;
       l'ambiance choisie ci-dessous s'applique par-dessus.</div>
+    <div style="display:flex;gap:8px;align-items:center;margin:0 0 2px"><b>Météo</b>
+      <select id="awx" style="flex:1;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
+        <option value="">Aucune</option>${(r.weathers || []).map(w => `<option value="${esc(w.key)}">${esc(w.label)}</option>`).join('')}</select>
+      <select id="awxd" title="Nombre d'effets posés le long du parcours" style="background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
+        <option value="low">Légère</option><option value="normal">Normale</option><option value="high">Forte</option></select></div>
+    <div style="font-size:11px;color:var(--muted);margin:0 0 8px">Effets des pistes du jeu (pluie de Tiger Temple, neige de Blizzard Bluff, feuilles de Coco Park, lucioles de Mystery Caves…), posés le long du parcours enregistré à l'installation. À voir en jeu.</div>
     <div class="btns" style="display:flex;gap:6px;margin-bottom:10px"><button data-p="day">☀ Jour (origine)</button><button data-p="evening">🌇 Soir</button><button data-p="night">🌙 Nuit</button></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">
       ${col('sun_color', 'Couleur du soleil')}${col('tint', 'Teinte de l\'image')}
@@ -7726,6 +7796,9 @@ $('dambiance').onclick = async () => {
   ov.querySelector('#atoon').onchange = e => { cur.toon = e.target.checked ? 1 : 0; preset = 'custom'; fill(); };
   const skySel = ov.querySelector('#asky'), skyWarn = () => { ov.querySelector('#askywarn').hidden = !(!r.original_sky && r.stripped && !skySel.value); };
   skySel.value = r.sky || ''; skySel.onchange = skyWarn; skyWarn();
+  const wxSel = ov.querySelector('#awx'), wxDen = ov.querySelector('#awxd');
+  wxSel.value = r.weather?.preset || ''; wxDen.value = r.weather?.density || 'normal';
+  wxDen.disabled = !wxSel.value; wxSel.onchange = () => { wxDen.disabled = !wxSel.value; };
   ov.querySelector('#ano3').onclick = () => { ov.remove(); loadAmbiancePreview(); };
   ov.querySelector('#ayes3').onclick = async () => {
     // seules les valeurs differentes de l'origine sont enregistrees (rien = eclairage d'origine)
@@ -7733,9 +7806,12 @@ $('dambiance').onclick = async () => {
     // autre ciel = autre eclairage de reference (celui de la piste du ciel) : seuls les reglages du preset le modifient
     const values = skySel.value !== (r.sky || '') ? { ...(r.presets[preset] || {}) }
       : Object.fromEntries(Object.entries(cur).filter(([k, v]) => k in r.original && !same(v, r.original[k])));
+    const wx = wxSel.value, wxd = wxDen.value;
+    const wxChanged = wx !== (r.weather?.preset || '') || (wx && wxd !== (r.weather?.density || 'normal'));
     ov.remove();
     try {
       const res = await api('/api/set_ambiance', { track, preset, values, sky: skySel.value });
+      if (wxChanged) res.report.push(...(await api('/api/set_weather', { track, preset: wx, density: wxd })).report);
       status('Ambiance — ' + res.report.join(' · ') + ' — réinstalle pour la voir en jeu', 'ok');
     } catch (e) { status('Erreur : ' + e.message, 'err'); }
     loadAmbiancePreview();
@@ -8032,10 +8108,17 @@ $('reset').onclick = async () => {
     status(`${track} : retour à l'original fait`, 'ok');
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
 };
+// changement de map : TOUT est relu pour la nouvelle (2026-11-13). Creation ouverte : fermee puis rouverte sur la
+// nouvelle map (elle gardait le brouillon de l'ancienne, et l'onglet Edition restait vide ensuite)
 $('track').onchange = async e => {
   if (dirty && !(await ask('Abandonner les modifications ?'))) { e.target.value = track; return; }
+  const wasCreating = creator?.active;
+  if (wasCreating) closeCreator();
+  matCatalog = null;
+  for (const c of [texMatCache, glowMatCache, geoCache]) for (const k in c) delete c[k];
   await loadTrack(e.target.value); loadAmbiancePreview();
   await loadDecor();
+  if (wasCreating) await openCreator();
 };
 addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 // « Actualiser la vue » : piste et decor relus depuis le serveur (caches de modeles et de textures vides), camera gardee

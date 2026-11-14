@@ -51,6 +51,7 @@ import numpy as np  # noqa: E402
 import obj_export  # noqa: E402
 import library  # noqa: E402
 import animated  # noqa: E402
+import weather  # noqa: E402
 import havok_anim  # noqa: E402
 import pkg_manifest  # noqa: E402
 import powerup  # noqa: E402
@@ -2516,7 +2517,9 @@ def ambiance_info(track):
     return {'original': _ambiance_read(sky_source(sky) if sky else z), 'values': cur.get('values') or {},
             'preset': cur.get('preset', 'day'),
             'presets': AMBIANCE_PRESETS, 'skies': [{k: s[k] for k in ('key', 'label')} for s in sky_catalog()],
-            'sky': cur.get('sky') or '', 'original_sky': _sky_name(z), 'stripped': stripped}
+            'sky': cur.get('sky') or '', 'original_sky': _sky_name(z), 'stripped': stripped,
+            'weather': weather_settings(track),
+            'weathers': [{'key': k, 'label': v['label']} for k, v in weather.PRESETS.items()]}
 
 
 def set_ambiance(req):
@@ -2962,6 +2965,7 @@ def _tracked_files(track):
             (f'{track}_menu.json', menu_settings_path(track)),
             (f'{track}_lights.json', lights_path(track)),
             (f'{track}_ambiance.json', ambiance_path(track)),
+            (f'{track}_weather.json', weather_path(track)),
             (f'{track}_camera.json', camera_path(track)),
             (f'{track}_music.json', music_settings_path(track)),
             (f'{track}_times.json', times_path(track))]
@@ -3655,6 +3659,130 @@ def walls_auto(req):
     with progress.span(0.6, 1.0):
         report.append(defer_collision(track))
     return {'report': report, 'ids': ids, 'file': art}
+
+
+def remove_added(track, pred):
+    """Supprime du decor enregistre les objets ajoutes des groupes (added_groups) dont la cle verifie pred. -> nombre."""
+    remove = defaultdict(set)
+    for g in added_groups(track):
+        if pred(g['key']):
+            for art, oid in g['objects']:
+                remove[art].add(oid)
+    n = 0
+    for art, ids in remove.items():
+        df = DecorFile(base_file(track, art)[0])
+        df.delete_many(ids)
+        write_art(track, art, df)
+        n += len(ids)
+    return n
+
+
+def marks_auto(req):
+    """Marquage au sol d'une map existante (onglet Edition, 2026-11-13) : req = {track, marks: {edges, center, curbs,
+    arrows}}. Route = ligne de course enregistree ; largeur mesuree de chaque cote sur la collision (route memorisee
+    s'il y en a une, sinon surfaces de la route), chaque point peint pose sur le sol ; importe comme un lot
+    « Marquage — date » sans collision (le precedent est remplace ; tout decoche = marquage retire)."""
+    track = req['track']
+    marks = {k: bool((req.get('marks') or {}).get(k)) for k in track_creator.MARK_KEYS}
+    signs = req.get('signs') or {}
+    style = signs.get('style') if signs.get('style') in track_creator.SIGN_STYLES else None
+    prefix = 'imp:' + os.path.splitext(track_creator.MARKS_OBJ)[0] + ' —'
+    report = []
+    progress.step('ancien marquage', 0.0)
+    n_old = remove_added(track, lambda k: k.startswith(prefix))
+    if n_old:
+        report.append(f'ancien marquage retiré ({n_old} objet(s))')
+    had_signs = any(isinstance(lk, dict) and lk.get('tag') == 'signs' for lk in load_links(track).get(main_art(track), {}).values())
+    if not any(marks.values()) and not style:
+        if had_signs:
+            place_library_many(track, [], 'signs')
+            report.append('panneaux de virage retirés')
+        return {'report': report or ['aucun marquage à peindre'], 'ids': [], 'file': main_art(track)}
+    loop, _ = race_path_points(track)
+    if len(loop) < 4:
+        raise ValueError('pas de parcours : crée d\'abord le parcours (mode Course)')
+    with progress.span(0.02, 0.25):
+        sync_collision(track)
+    progress.step('largeur de la route', 0.25)
+    ground, roadq = ground_for(track), road_ground(track)
+    q = roadq or ground
+    loop = [list(p) for p in loop]
+    closed = float(np.hypot(loop[0][0] - loop[-1][0], loop[0][1] - loop[-1][1])) < 30 * 39.37
+    P = np.array(ai_gen.catmull_rom(loop, track_creator.STEP * 39.37), np.float64)
+    if closed and np.hypot(*(P[0, :2] - P[-1, :2])) < track_creator.STEP * 39.37:
+        P = P[:-1]
+    n = len(P)
+    road = {38} if roadq else set(ai_gen.road_surfaces(ground, P[::5]))
+    T = np.roll(P[:, :2], -1, 0) - np.roll(P[:, :2], 1, 0)
+    T /= np.maximum(np.linalg.norm(T, axis=1)[:, None], 1e-9)
+    L = np.stack([-T[:, 1], T[:, 0]], 1)
+    zc, gap = P[:, 2].copy(), np.zeros(n, bool)
+    for i in range(n):
+        g = q.at(P[i, 0], P[i, 1], P[i, 2]) or ground.at(P[i, 0], P[i, 1], P[i, 2])
+        if g is None:
+            gap[i] = True
+        else:
+            zc[i] = g[0]
+    # largeur tous les 3 echantillons (6 m), interpolee puis lissee ; bornee 2,5 - 40 m de chaque cote
+    idx = list(range(0, n, 3))
+    wl, wr = [], []
+    for i in progress.items(idx, 'largeur {i} / {n}'):
+        wl.append(ai_gen.road_width(q, P[i], L[i], zc[i], road))
+        wr.append(ai_gen.road_width(q, P[i], -L[i], zc[i], road))
+    full = np.arange(n)
+
+    def steady(w):
+        # mesure bruitee (pas de 1 m, objets au bord) : mediane glissante sur ~90 m (15 mesures) puis moyenne sur ~60 m
+        a = np.asarray(w, np.float64)
+        pad = np.pad(a, 7, mode='wrap' if closed else 'edge')
+        med = np.median(np.lib.stride_tricks.sliding_window_view(pad, 15), axis=1)
+        return np.clip(ai_gen._smooth(np.interp(full, idx, med), 31), 2.5 * 39.37, 40 * 39.37)
+    WL, WR = steady(wl), steady(wr)
+    fixed = float(req.get('width') or 0)                 # largeur imposee (m) : route et bas-cotes du meme sol (sable)
+    if fixed > 0:
+        WL = WR = np.full(n, max(3.0, min(80.0, fixed)) / 2 * 39.37)
+    gap |= (np.interp(full, idx, wl) + np.interp(full, idx, wr)) < 39.37          # rien de mesurable : pas de peinture
+    # raccords du trace (splines de position qui se chevauchent a la ligne d'arrivee...) : saut ou demi-tour entre deux
+    # echantillons -> pas de peinture la (sinon une bande en travers de la route)
+    nxt = np.roll(np.arange(n), -1)
+    jump = (np.hypot(*(P[nxt, :2] - P[:, :2]).T) > 3 * track_creator.STEP * 39.37) | ((T * T[nxt]).sum(1) < 0.7)
+    gap |= jump | np.roll(jump, 1)
+    C = np.column_stack([P[:, :2], zc]) / 39.37
+    left = np.column_stack([P[:, :2] + L * np.asarray(WL)[:, None], zc]) / 39.37
+    right = np.column_stack([P[:, :2] - L * np.asarray(WR)[:, None], zc]) / 39.37
+
+    def zfun(x, y, z):
+        g = ground.at(x * 39.37, y * 39.37, z * 39.37, window=150.0)
+        return g[0] / 39.37 if g else z
+    # panneaux de virage : objets de la bibliotheque (lien 'signs'), les precedents remplaces
+    if style or had_signs:
+        progress.step('panneaux de virage', 0.55)
+        spots = track_creator.sign_spots(C, T, L, left, right, closed, gap) if style else []
+        items = track_creator.sign_items(spots, style, zfun, signs.get('scale', 1.0)) if style else []
+        place_library_many(track, items, 'signs')
+        report.append(f'{len(items)} panneau(x) de virage ({track_creator.SIGN_STYLES[style]["label"]})' if style
+                      else 'panneaux de virage retirés')
+    if not any(marks.values()):
+        return {'report': report, 'ids': [], 'file': main_art(track)}
+    progress.step('peinture', 0.6)
+    obj, mtl, used = track_creator.marks_obj(C, left, right, gap, closed, marks, zfun)
+    if not used:
+        return {'report': report + ['aucun marquage posé (pas de virage serré pour les vibreurs ou les flèches ?)'],
+                'ids': [], 'file': main_art(track)}
+    folder = os.path.join(OUT_DIR, 'marks', track)
+    os.makedirs(folder, exist_ok=True)
+    for name, data in track_creator.mark_textures().items():
+        open(os.path.join(folder, name), 'wb').write(data)
+    open(os.path.join(folder, track_creator.MARKS_OBJ), 'w', encoding='utf-8').write(obj)
+    open(os.path.join(folder, track_creator.MARKS_MTL), 'w', encoding='utf-8').write(mtl)
+    with progress.span(0.65, 1.0):
+        res = import_folder({'track': track, 'folder': folder, 'files': [track_creator.MARKS_OBJ], 'scale': 39.37,
+                             'up': 'z', 'placement': 'absolute', 'texture_size': '512', 'force': True,
+                             'materials': {m: {'collision': False, 'surface': 'none'} for m in used}})
+    names = {'MarkWhite': 'lignes / flèches', 'MarkCurb': 'vibreurs'}
+    report.append('marquage au sol : ' + ', '.join(names.get(m, m) for m in sorted(used))
+                  + f' ; largeur de route médiane {float(np.median(WL + WR)) / 39.37:.0f} m')
+    return {'report': report + (res.get('report') or []), 'ids': [], 'file': main_art(track)}
 
 
 JOIN_DEFAULT = 120                                      # m : bouts de murs de zone relies (poteaux de barriere 40-110 m)
@@ -7382,6 +7510,62 @@ def animated_install(track, per_archive):
     return entries, copies
 
 
+# -- meteo (weather.py, 2026-11-13) : effets d'autres pistes poses le long du parcours a l'installation -----------------
+def weather_path(track):
+    return os.path.join(OUT_DIR, f'{track}_weather.json')
+
+
+def weather_settings(track):
+    """{preset, density} ; {} = pas de meteo."""
+    try:
+        d = json.load(open(weather_path(track), encoding='utf-8'))
+        return d if d.get('preset') in weather.PRESETS else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_weather(req):
+    """POST /api/set_weather : {track, preset ('' = aucune), density (low / normal / high)}."""
+    track, preset = req['track'], req.get('preset') or ''
+    density = req.get('density') if req.get('density') in weather.DENSITY else 'normal'
+    if preset in weather.PRESETS:
+        os.makedirs(OUT_DIR, exist_ok=True)
+        json.dump({'preset': preset, 'density': density}, open(weather_path(track), 'w', encoding='utf-8'))
+        return {'report': [f"météo : {weather.PRESETS[preset]['label'].lower()}"]}
+    if os.path.exists(weather_path(track)):
+        os.remove(weather_path(track))
+    return {'report': ['pas de météo']}
+
+
+def weather_paths(track):
+    """Splines de position ENREGISTREES, lissees (points tous les ~7,6 m, pouces)."""
+    rs = RaceSystem(base_file(track, race_file(track))[0], file_ns=race_ns(track)).decode()
+    return [np.array(ai_gen.catmull_rom(p['control_points'], 300.0)) for p in rs['position_paths'] if len(p['control_points']) > 1]
+
+
+def weather_install(track, per_archive):
+    """Meteo copiee dans le 1er fichier _Art (comme les objets animes, apres eux). -> (entrees du manifeste,
+    {fichier: archive source} a copier dans l'archive de la piste)."""
+    s = weather_settings(track)
+    arts = art_files(track)
+    if not s or not arts:
+        return [], {}
+    target = arts[0]
+    data = next((f[target] for f in per_archive.values() if target in f), None) or base_file(track, target)[0]
+    z = IgzFile(data)
+    entries, copies, report, n = weather.inject(z, s['preset'], s.get('density', 'normal'), weather_paths(track),
+                                                lambda lg, pak: pak_tool.read_latest(ARCHIVES, lg, pak)[0],
+                                                ARCHIVES, track_pak(track))
+    for line in report:
+        print('météo :', line)
+    if not n:
+        return [], {}
+    data = z.to_bytes()
+    for arc in pak_tool.archives_with(ARCHIVES, target, track_pak(track)):
+        per_archive[arc][target] = data
+    return entries, copies
+
+
 def _archive_case(pak, logical):
     """Nom logique avec la casse de l'archive pak (le manifeste et EXTRAS sont en minuscules)."""
     arc, index, _ = pak_tool.cached_archive(os.path.join(ARCHIVES, pak))
@@ -7501,6 +7685,13 @@ def install_plan(track):
     an_entries, an_copies = animated_install(track, per_archive)
     entries += [e for e in an_entries if e not in entries]
     for logical, src_pak in an_copies.items():
+        per_archive[os.path.join(ARCHIVES, track_pak(track))][_archive_case(src_pak, logical)] = \
+            pak_tool.read_latest(ARCHIVES, logical, src_pak)[0]
+    # meteo (Ambiance) : effets d'autres pistes copies le long du parcours, dans le meme fichier _Art
+    progress.step('météo', 0.02)
+    wx_entries, wx_copies = weather_install(track, per_archive)
+    entries += [e for e in wx_entries if e not in entries]
+    for logical, src_pak in wx_copies.items():
         per_archive[os.path.join(ARCHIVES, track_pak(track))][_archive_case(src_pak, logical)] = \
             pak_tool.read_latest(ARCHIVES, logical, src_pak)[0]
     # survol d'introduction : cameras reecrites, dans les archives de survol de la piste
@@ -8053,6 +8244,24 @@ def creator_info(track):
                           for pk, p in (v.get('props') or {}).items()} for k, v in track_creator.KITS.items()}}
 
 
+def _prop_footprints(kit, props):
+    """Emprise des objets semes [(x, y, rayon)] (m) : la decoupe de la carte loin de la route les contourne."""
+    out = []
+    for p in props or []:
+        try:
+            k = p.get('k') or kit
+            d = (track_creator.KITS.get(k, {}).get('props') or {}).get(p.get('t'))
+            if not d:
+                continue
+            m = int(p.get('m', 0)) % len(d['models'])
+            dm = (kit_prop_dims(k).get(p['t']) or [{}] * len(d['models']))[m]
+            out.append((float(p['x']) / track_creator.INCH, float(p['y']) / track_creator.INCH,
+                        float(dm.get('r', 2.0)) * float(p.get('s', 1.0))))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 def create_build(req):
     """POST /api/create_build : piste generee depuis le trace du paveur. req = {track, points: [[x, y, z, largeur]]
     (pouces), closed, ground_z (pouces), kit, terrain: {x0, y0, cell, n, h, paint} | null}. Map videe (« Nouvelle map »
@@ -8072,7 +8281,9 @@ def create_build(req):
     barriers = req.get('barriers') or 'curves'
     waters = [w for w in (req.get('waters') or []) if isinstance(w, dict) and (('x' in w and 'y' in w)
                                                                           or (w.get('paint') and 'level' in w))]
-    obj, mtl, info = track_creator.build(pts, bool(req.get('closed')), ground_z, kit, terrain, barriers, waters)
+    marks = {k: bool((req.get('marks') or {}).get(k)) for k in track_creator.MARK_KEYS}
+    obj, mtl, info = track_creator.build(pts, bool(req.get('closed')), ground_z, kit, terrain, barriers, waters, marks,
+                                         _prop_footprints(kit, req.get('props')))
     folder = os.path.join(OUT_DIR, 'creator', track)
     os.makedirs(folder, exist_ok=True)
     for kind in info.get('water_kinds') or []:          # eau : image generee par type (pas de materiau d'eau importable)
@@ -8088,7 +8299,7 @@ def create_build(req):
     open(os.path.join(folder, track_creator.OBJ_NAME), 'w', encoding='utf-8').write(obj)
     open(os.path.join(folder, track_creator.MTL_NAME), 'w', encoding='utf-8').write(mtl)
     json.dump({'points': pts, 'closed': bool(req.get('closed')), 'ground_z': ground_z, 'kit': kit, 'terrain': terrain,
-               'barriers': barriers, 'props': req.get('props') or [], 'waters': waters,
+               'barriers': barriers, 'marks': marks, 'signs': req.get('signs') or {}, 'props': req.get('props') or [], 'waters': waters,
                'water_falls': info['water_falls']},              # zones de chute de l'eau profonde (auto_falls)
               open(creator_path(track), 'w'))
     # map vide : tout le decor et le sol d'origine retires, creation precedente supprimee ; wipe (« Repartir de
@@ -8108,7 +8319,18 @@ def create_build(req):
                              'up': 'z', 'placement': 'absolute', 'materials': surf, 'road_material': 'Road',
                              'texture_size': '1024', 'force': True})
     # decor seme (onglet Creation, mode Decor) : objets du jeu poses sur le sol genere, semis precedent remplace
-    items, dropped = track_creator.props_items(kit, req.get('props'), info.pop('_ground'), kit_prop_dims)
+    gnd = info.pop('_ground')
+    items, dropped = track_creator.props_items(kit, req.get('props'), gnd, kit_prop_dims)
+    # panneaux de virage (Route > Reglages) : objets de la bibliotheque, poses avec le semis
+    signs = {}                                   # option retiree du menu le 2026-11-13 (demande utilisateur) : plus de panneaux
+    spots = info.pop('_sign_spots', [])
+
+    def gz(x, y, z):
+        h = track_creator.ground_height(gnd, x * 39.37, y * 39.37)
+        return h / 39.37 if h is not None else None
+    sign_items = track_creator.sign_items(spots, signs.get('style'), gz, signs.get('scale', 1.0)) \
+        if signs.get('style') in track_creator.SIGN_STYLES else []
+    items += sign_items
     with progress.span(0.85, 1.0, 'décor semé'):
         sown = place_library_many(track, items, 'creator')
     road = [{'file': o['file'], 'id': o['id']} for o in route_objects(track)['objects']
@@ -8121,6 +8343,8 @@ def create_build(req):
                       + (f", {info['bridges']} pont(s)" if info['bridges'] else '')
                       + (f", {info['jumps']} saut(s)" if info['jumps'] else '')
                       + (f", barrières {info['walls_m']} m" if info['walls_m'] else '')
+                      + (", marquage au sol" if info.get('marks') else '')
+                      + (f", {len(sign_items)} panneau(x) de virage" if sign_items else '')
                       + (f", {info['waters']} eau(x)" + (f" dont {len(info['water_falls'])} zone(s) profonde(s)" if info['water_falls'] else '')
                          if info['waters'] else '')
                       + ''.join(f' · {x}' for x in info['water_report'])
@@ -8423,7 +8647,7 @@ def menu_layout_info():
                        'levels': [{'zone': lv, 'name': _zone_display(lv, lang, created),
                                    'track': created[lv.lower()]['id'] if lv.lower() in created else None}
                                   for lv in g['levels']]})
-    return {'groups': groups, 'tracks': st.get('tracks', []), 'source': NEW_TRACK_SOURCE}
+    return {'groups': groups, 'tracks': st.get('tracks', []), 'source': NEW_TRACK_SOURCE, 'short_laps': bool(st.get('laps'))}
 
 
 def _release_archives():
@@ -8440,6 +8664,15 @@ def menu_layout_save(req):
     progress.step('menu du jeu (update2.pak)', 0.1)
     _release_archives()
     custom_category.set_layout(ARCHIVES, req['groups'])
+    clear_caches()
+    return menu_layout_info()
+
+
+def menu_laps_save(req):
+    """POST /api/menu_laps {on} : 1 et 2 tours proposes dans « Reglages de course » (toutes les pistes, update3.pak)."""
+    progress.step('choix des tours (update3.pak)', 0.1)
+    _release_archives()
+    custom_category.set_short_laps(ARCHIVES, bool(req.get('on')))
     clear_caches()
     return menu_layout_info()
 
@@ -8774,12 +9007,12 @@ class Handler(BaseHTTPRequestHandler):
                        '/api/auto_falls': 'Chutes et réapparitions', '/api/menu_info': 'Lecture du nom et des images',
                        '/api/apply_menu': 'Nom et images de la piste', '/api/set_surface': 'Type de sol', '/api/mesh_save': 'Forme de l\'objet', '/api/recolor': 'Couleur de l\'objet',
                        '/api/object_alpha': 'Transparence de la texture', '/api/surfaces': 'Types de sol',
-                       '/api/ambiance_info': "Lecture de l'éclairage", '/api/set_ambiance': 'Ambiance',
+                       '/api/ambiance_info': "Lecture de l'éclairage", '/api/set_ambiance': 'Ambiance', '/api/set_weather': 'Météo', '/api/marks_auto': 'Marquage au sol',
                        '/api/place_library': "Ajout d'un objet de la bibliothèque", '/api/fix': 'Corrections',
                        '/api/walls_auto': 'Murs invisibles', '/api/wall_add': 'Mur invisible',
                        '/api/walls_zone': 'Murs invisibles autour de la sélection',
                        '/api/set_invisible': 'Mur invisible', '/api/menu_layout_save': 'Menu du jeu',
-                       '/api/menu_track_create': 'Nouvelle piste',
+                       '/api/menu_laps': 'Choix des tours', '/api/menu_track_create': 'Nouvelle piste',
                        '/api/menu_track_delete': 'Suppression de la piste',
                        '/api/retired_restore': 'Remise de la piste dans le jeu',
                        '/api/music_apply': 'Import de la musique'}
@@ -8843,6 +9076,8 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/map_weight': lambda: map_weight(req['track']),
                       '/api/ambiance_info': lambda: ambiance_info(req['track']),
                       '/api/set_ambiance': lambda: with_history(req['track'], 'ambiance', lambda: set_ambiance(req)),
+                      '/api/set_weather': lambda: with_history(req['track'], 'météo', lambda: set_weather(req)),
+                      '/api/marks_auto': lambda: with_history(req['track'], 'marquage au sol', lambda: marks_auto(req)),
                       '/api/surfaces': lambda: {'surfaces': [{'value': s, 'label': l, 'safe': ok, **surface_params().get(s, {}),
                                                               'defaults': surface_defaults(s)} for s, l, ok in SURFACES]},
                       '/api/set_surface': lambda: with_history(req['track'], 'type de sol', lambda: set_surface(req)),
@@ -8882,6 +9117,7 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/set_invisible': lambda: with_history(req['track'], 'mur invisible' if req.get('invisible') else 'mur visible',
                                                                  lambda: set_invisible(req)),
                       '/api/menu_layout_save': lambda: menu_layout_save(req),
+                      '/api/menu_laps': lambda: menu_laps_save(req),
                       '/api/menu_track_create': lambda: menu_track_create(req),
                       '/api/menu_track_delete': lambda: menu_track_delete(req)}
             if self.path == '/api/settings':                 # rapide, sans verrou ni barre de progression

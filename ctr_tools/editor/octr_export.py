@@ -355,6 +355,17 @@ def build(req):
     merged.update(common)
     _apply_names(merged, regs)
     _clone_images(merged, regs)
+    # courses de 1 et 2 tours (2026-11-14) : comme dans l'editeur (case de Piste / categorie), sauf choix de l'export
+    import custom_category
+    import race_laps
+    laps = req.get('laps')
+    if laps is None:
+        laps = bool((custom_category.read_state(archives) or {}).get('laps'))
+    if laps:
+        rs = race_laps.RACESETTING
+        merged[rs.lower()] = (rs, race_laps.set_laps(pak_tool.read_latest(archives, rs)[0], race_laps.SHORT_LAPS),
+                              _full_name(os.path.join(archives, 'update2.pak'), rs))
+        report.append('menu Réglages de course : 1, 2, 3, 5 ou 7 tours (toutes les pistes)')
     if regs:
         report.append(f'{len(regs)} piste(s) dans le groupe du menu « {category} » : '
                       + ', '.join(f"{t['display']} ({t['id']})" for t in regs))
@@ -372,6 +383,9 @@ def build(req):
     readme = (f'{display} {version} - pour Crash Team Racing Nitro-Fueled (USA 1.21), fait avec CTR Track Editor.\n\n'
               f'INSTALLATION\nLanceur OCTR > Mods > Add files, choisir ce .zip, activer « {display} », redemarrer le jeu.\n'
               + ''.join(lines)
+              + ('Courses de 1 et 2 tours ajoutees au menu Reglages de course (toutes les pistes).\n'
+                 '\nHORS LIGNE SEULEMENT (courses de 1 et 2 tours)\nLe lanceur refuse ce mod tant que le jeu en ligne est '
+                 'actif : online=0 dans bbport.ini.\n' if laps else '')
               + f'\nCONFLITS\nCe mod contient un {UPDATE3} complet : desactiver les autres mods qui en livrent un (pistes, menus).\n'
               f'\nARCHIVES\n' + ''.join(f'  archives/{p}\n' for p in pak_names))
     open(os.path.join(work, 'README.txt'), 'w', encoding='utf-8', newline='\n').write(readme)
@@ -392,9 +406,10 @@ def build(req):
     manifest = {'schemaVersion': 2, 'id': mod_id, 'name': display, 'version': version,
                 'author': (req.get('author') or '').strip() or 'CTR Track Editor', 'description': desc,
                 'requiresCapabilities': [], 'files': sorted(files, key=lambda f: f['file']), 'conflicts': [],
-                # 'offline-only' bloque le lancement tant que le mode en ligne est actif (online=1 par defaut dans le
-                # lanceur) ; le mod d'exemple Coconut Mall declare aussi 'allowed'
-                'compatibility': {'online': 'allowed'}, 'operations': []}
+                # 2026-11-14, demande utilisateur : jeu en ligne NON autorise seulement avec les courses de 1 et 2 tours
+                # (les autres joueurs n'ont pas ce choix) ; le lanceur refuse alors le mod tant que online=1 dans
+                # bbport.ini (message « Set online=0 »). Sans : 'allowed' (comme le mod d'exemple Coconut Mall)
+                'compatibility': {'online': 'offline-only' if laps else 'allowed'}, 'operations': []}
     open(os.path.join(work, 'mod.json'), 'w', encoding='utf-8', newline='\n').write(json.dumps(manifest, indent=2, ensure_ascii=False))
     S.progress.step('fichier .zip', 0.85)
     out_dir = os.path.join(S.PROJECT_DIR, 'exports', 'octr')

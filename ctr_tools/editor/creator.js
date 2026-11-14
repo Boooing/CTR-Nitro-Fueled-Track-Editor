@@ -15,7 +15,7 @@ const R_MIN = 30 * IN;               // rayon de virage minimal a plat (karts et
 const R_SLOPE = 1.2;                 // en pente : rayon minimal x (1 + R_SLOPE * pente / pente max) (montee + virage serre = kart bloque)
 const SLOPE_MAX = 0.28;              // pente maximale (28 %)
 const SLOPE_RATE = SLOPE_MAX / (40 * IN);   // variation de pente par pouce parcouru : 0 -> 28 % sur 40 m
-const KICK_H = 3 * IN, KICK_LEN = 22 * IN;  // tremplin avant un saut (track_creator : KICK_H, KICK_LEN)
+const KICK_H = 5 * IN, KICK_LEN = 30 * IN;  // tremplin avant un saut, courbe (track_creator : KICK_H, KICK_LEN ; 3 / 22 droit avant le 2026-11-14)
 const H_MAX = 300 * IN;              // hauteur maximale au-dessus du sol de depart
 const H_MIN = 200 * IN;              // profondeur maximale sous le sol de depart (le terrain se creuse autour de la route)
 const ROLL_MAX = 30 * Math.PI / 180; // inclinaison maximale de la route sur le cote
@@ -211,7 +211,8 @@ export function initCreator(ctx) {
   const startMark = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 10, 40, 1, true),
                                    new THREE.MeshBasicMaterial({ color: 0x33dd66, transparent: true, opacity: 0.25, side: THREE.DoubleSide }));
   startMark.rotation.x = Math.PI / 2;
-  // damier du depart (track_creator : 2 rangees de cases de 1,5 m en travers de la route) ; texture 2 x 2 cases
+  // damier du depart (track_creator START_CELL : 2 rangees de cases de 3 m en travers de la route) ; texture 2 x 2 cases
+  const START_CELL_M = 3;
   const checkerTex = (() => {
     const c = document.createElement('canvas'); c.width = c.height = 64;
     const g = c.getContext('2d');
@@ -246,7 +247,7 @@ export function initCreator(ctx) {
     #creatorPanel details.crhelp{margin:8px 0 6px;font-size:12px}
     #creatorPanel details.crhelp>summary{cursor:pointer;color:var(--muted)}
     #creatorPanel details.crhelp>.note{margin-top:4px}
-    #creatorPanel .crsub{display:grid;grid-template-columns:1fr 1fr;margin-top:8px}
+    #creatorPanel .crsub{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;margin-top:8px}
     #creatorPanel .crsub button{border-radius:0;padding:7px 4px}
     #creatorPanel .crsub button:first-child{border-radius:8px 0 0 8px}
     #creatorPanel .crsub button:last-child{border-radius:0 8px 8px 0}
@@ -254,7 +255,8 @@ export function initCreator(ctx) {
     #creatorPanel .crrow2 select{width:100%}
     #creatorPanel .crchips{display:flex;flex-wrap:wrap;gap:4px}
     #creatorPanel .crchips button{font-size:12px;padding:3px 7px}
-    #creatorPanel .crcard label{font-size:12px}`;
+    #creatorPanel .crcard label{font-size:12px}
+    #creatorPanel .crsep{height:2px;margin:12px -2px 4px;border-radius:1px;background:var(--muted);opacity:.55}`;
   document.head.appendChild(css);
   panel.innerHTML = `<div style="font-weight:600;font-size:14px;margin-bottom:6px">🛣 Création de piste</div>
     <details id="crsetup" class="crcard" style="margin-top:0" open><summary>⚙ Réglages de la piste</summary>
@@ -263,9 +265,11 @@ export function initCreator(ctx) {
       <span>Terrain</span><select id="crsize" style="width:100%" title="Taille du carré de base">${T_SIZES.map(s => `<option value="${s}">${sizeLabel(s)} km × ${sizeLabel(s)} km</option>`).join('')}</select>
       <span>Barrières</span><select id="crbar" style="width:100%"><option value="curves">Extérieur des virages serrés</option><option value="all">Les deux bords, partout</option><option value="none">Aucune</option></select>
       <span>Qualité</span><select id="crq" style="width:100%" title="Résolution de la vue et détail des objets pendant la création. Auto : la résolution baisse toute seule si la carte graphique peine, remonte si elle a de la marge. Maximale : objets d'origine. Basse : objets très simplifiés, pour les petits PC. Aucun effet sur la piste générée."><option value="auto">Auto</option><option value="0">Maximale</option><option value="2">Moyenne</option><option value="3">Basse</option></select>
-    </div></details>
+    </div>
+    <button id="crrandom" style="width:100%;margin-top:8px" title="Piste complète créée d'après un code (tracé, relief, décor…) : le même code redonne la même piste">🎲 Piste aléatoire (code)…</button></details>
     ${H('Outil')}
     <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px"><button id="crmroute" style="grid-column:span 2">🛣 Route</button><button id="crmedges" style="grid-column:span 2">↔ Bords</button><button id="crmbridge" style="grid-column:span 2" title="Faire passer une route au-dessus d'une autre là où elles se croisent">🌉 Pont</button><button id="crmterrain" style="grid-column:span 2">⛰ Relief</button><button id="crmpaint" style="grid-column:span 2">🎨 Peinture</button><button id="crmprops" style="grid-column:span 2">🌴 Décor</button></div>
+    <div class="crsep"></div>
     <div id="credges" hidden>
       <details class="crhelp"><summary>ℹ Comment faire</summary><div class="note">Clic sur un bord de la route : une poignée apparaît. Flèche rouge (vers l'extérieur) : élargir ou amincir ce côté. Flèche bleue (vers le haut) : relever ou abaisser le bord (virage relevé). Les points voisins suivent en douceur, le terrain dessous se raccorde. Clic droit : tourner la vue.</div></details>
       <div style="margin-bottom:6px">Zone sélectionnée : <b id="credgerv">30</b> m de part et d'autre
@@ -293,20 +297,52 @@ export function initCreator(ctx) {
       </div>
     </div>
     <div id="crroute">
-      <div class="note" style="margin:8px 0 0">Conduis le paveur : la route se pose derrière lui. Ferme la boucle en revenant dans le cercle vert.</div>
-      <div class="crcard"><h4>Tracé</h4>
+      <!-- 2026-11-13 : trois onglets (l'utilisateur trouvait la colonne Route trop chargee) -->
+      <div class="crsub" style="margin-top:8px"><button id="crrtdrive">🚗 Conduite</button><button id="crrtpieces">🧩 Pièces</button><button id="crrtset">⚙ Réglages</button></div>
+      <div id="crrpdrive">
+      <div class="note" style="margin:0 0 6px">Conduis le paveur : la route se pose derrière lui. Ferme la boucle en revenant dans le cercle vert.</div>
+      <div class="crcard">
       <label style="display:block;margin-bottom:6px">Largeur : <b id="crw"></b> m<input id="crwidth" type="range" min="${W_MIN / IN}" max="${W_MAX / IN}" value="${W_DEF / IN}" style="width:100%"></label>
-      <button id="crstartpick" style="width:100%" title="Clique ensuite sur le terrain : le kart s'y place et la route partira de là. Le départ de la course suit à la génération.">📍 Placer le kart (point de départ)</button>
-      </div>
-      <div class="crcard"><h4>Virages relevés</h4>
       <label style="display:block;margin-bottom:2px" title="Le kart et la route penchent progressivement vers cet angle en roulant (30° sur 40 m). L'angle reste jusqu'à ce que tu le changes. Touches T et G.">Inclinaison : <b id="crrollv">à plat</b>
-        <input id="crroll" type="range" min="-30" max="30" step="1" value="0" style="width:100%"></label>
-      <button id="crrollflat" style="width:100%">↔ Remettre à plat</button>
+        <div style="display:flex;gap:4px;align-items:center"><input id="crroll" type="range" min="-30" max="30" step="1" value="0" style="flex:1;min-width:0">
+        <button id="crrollflat" title="Remettre à plat">↔</button></div></label>
+      <label style="display:flex;gap:6px;align-items:center;margin:6px 0 0" title="Avec : le terrain monte jusqu'à la route. Sans : le sol reste à sa hauteur et la route passe au-dessus, comme un pont. Change en roulant : seule la route posée ensuite suit ce réglage. Touche B."><input type="checkbox" id="crtalus" checked> Talus sous la route (B)</label>
       </div>
+      <button id="crstartpick" style="width:100%;margin-top:6px" title="Clique ensuite sur le terrain : le kart s'y place et la route partira de là. Le départ de la course suit à la génération.">📍 Placer le kart (point de départ)</button>
+      </div>
+      <div id="crrppieces" hidden>
+      <div class="note" style="font-size:12px;margin:0 0 6px">Ajoutée au bout de la route, devant le kart (aperçu jaune). Ctrl+Z pour annuler.</div>
+      <div id="crpiecegrid" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px">
+        <button data-piece="banked">↪ Virage relevé</button><button data-piece="spiral">🌀 Spirale</button>
+        <button data-piece="slalom">〰 Chicane / slalom</button><button data-piece="jump">🛫 Saut</button>
+        <button data-piece="bumps">⛰ Bosses</button><button data-piece="ramp">⟋ Rampe</button>
+        <button data-piece="straight">➖ Ligne droite</button></div>
+      <div class="crcard">
+      <div id="crpdirrow" style="display:flex;gap:4px;margin-bottom:6px">
+        <button id="crpleft" style="flex:1">← Gauche</button><button id="crpright" style="flex:1">Droite →</button></div>
+      <div id="crpvertrow" style="display:flex;gap:4px;margin-bottom:6px">
+        <button id="crpup" style="flex:1">⬆ Monte</button><button id="crpdown" style="flex:1">⬇ Descend</button></div>
+      <label id="crpalab" style="display:block;margin-bottom:4px"><span id="crpaname"></span> : <b id="crpav"></b><input id="crpa" type="range" style="width:100%"></label>
+      <label id="crpblab" style="display:block;margin-bottom:4px"><span id="crpbname"></span> : <b id="crpbv"></b><input id="crpb" type="range" style="width:100%"></label>
+      <label id="crpclab" style="display:block;margin-bottom:4px"><span id="crpcname"></span> : <b id="crpcv"></b><input id="crpc" type="range" style="width:100%"></label>
+      <div id="crpinfo" class="note" style="font-size:12px;margin:2px 0 6px"></div>
+      <button id="crpgo" class="primary" style="width:100%">🧩 Poser la pièce</button>
+      </div>
+      </div>
+      <div id="crrpset" hidden>
+      <div class="crcard"><h4>🖌 Marquage au sol</h4>
+      <div class="note" style="font-size:12px;margin-bottom:4px">Peint sur la route à la génération (on roule dessus sans le sentir).</div>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-mark="edges"> Lignes de bord</label>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-mark="center"> Ligne centrale en tirets</label>
+      <label style="display:flex;gap:6px;align-items:center" title="Bandes rouges et blanches à l'intérieur des virages serrés"><input type="checkbox" data-mark="curbs"> Vibreurs dans les virages</label>
+      </div>
+      <!-- panneaux de virage : RETIRES du menu le 2026-11-13 a la demande de l'utilisateur (code garde, plus utilise) -->
+      <select id="crsign" hidden><option value=""></option></select>
       <div class="crcard"><h4>Talus</h4>
-      <label style="display:flex;gap:6px;align-items:center;margin-bottom:4px" title="Avec : le terrain monte jusqu'à la route. Sans : le sol reste à sa hauteur et la route passe au-dessus, comme un pont. Change en roulant : seule la route posée ensuite suit ce réglage. Touche B."><input type="checkbox" id="crtalus" checked> Talus sous la route (B)</label>
-      <button id="crtalusall" style="width:100%;margin-bottom:6px" title="Applique le réglage ci-dessus à toute la route déjà posée">Appliquer à toute la route</button>
+      <button id="crtalusall" style="width:100%;margin-bottom:6px" title="Applique le réglage « Talus sous la route » (onglet Conduite) à toute la route déjà posée">Appliquer le talus à toute la route</button>
       <label style="display:block" title="Largeur du talus de chaque côté, pour 10 m de dénivelé entre la route et le sol. Plus petit : talus plus raide, qui prend moins de place. S'applique à toute la piste.">Largeur du talus : <b id="crblendv"></b><input id="crblend" type="range" min="0.25" max="1.5" step="0.25" value="${BLEND_DEF}" style="width:100%"></label>
+      </div>
+      <button id="crreset" class="danger" style="width:100%;margin-top:4px">🗑 Supprimer toute la route</button>
       </div>
       <details class="crhelp"><summary>⌨ Commandes du paveur</summary>
       <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px;font-size:12px;color:var(--muted);margin-top:4px">
@@ -316,7 +352,6 @@ export function initCreator(ctx) {
         <span>+ · −</span><span>largeur</span><span>Entrée</span><span>fermer la boucle</span>
         <span>Maj</span><span>plus vite</span><span>C</span><span>caméra libre / poursuite</span>
         <span>Espace</span><span>saut (maintenir : trou dans la route)</span></div></details>
-      <button id="crreset" class="danger" style="width:100%;margin-top:4px">🗑 Supprimer toute la route</button>
     </div>
     <div id="crterrain" hidden>
       <details class="crhelp"><summary>ℹ Comment faire</summary>
@@ -444,6 +479,14 @@ export function initCreator(ctx) {
   const propModels = {}, markerMat = new THREE.MeshLambertMaterial({ color: 0x8a8580, transparent: true, opacity: 0.6 });
   const markerGeo = new THREE.CylinderGeometry(1, 1, 1, 10); markerGeo.rotateX(Math.PI / 2); markerGeo.translate(0, 0, 0.5);
   const dimOf = p => kindOf(p)?.dims?.[p.m % (kindOf(p)?.n || 1)] || { r: 3, zmin: 0, zmax: 5 };
+  const rad = o => dimOf(o).r * IN * o.s;                      // rayon d'emprise
+  // part des deux rayons a respecter entre deux objets (2026-11-14, retour utilisateur « objets qui se rentrent
+  // dedans » : 0,5 pour tous avant, deux gros objets s'enfoncaient a mi-corps) : objets solides (batiments, objets,
+  // rochers, gros decors) jamais l'un dans l'autre ; arbres : feuillages qui se touchent un peu ; buissons un peu
+  // plus ; herbes et fleurs : au pied des autres. Decor automatique et pinceau
+  const roleOf = o => kindOf(o)?.big ? 'big' : kindOf(o)?.role || 'prop';
+  const SOFT = { cover: 0.35, shrub: 0.6, tree: 0.75 };
+  const apart = (a, b) => Math.min(SOFT[roleOf(a)] ?? 1, SOFT[roleOf(b)] ?? 1);
   // modele d'un objet : promesse resolue quand la geometrie ET ses textures sont chargees (vignettes) ; .value des que
   // la geometrie est la (apercu de la scene)
   // lod : detail de l'apercu, d'apres le reglage Qualite (0 modele d'origine, 1 reduction douce, 2 forte) ; la piste generee
@@ -551,7 +594,9 @@ export function initCreator(ctx) {
   const propZ = p => propLow(p) + (p.dz || 0) - (p.t === 'rock' ? 0 : dimOf(p).zmin * IN * p.s);
   // route touchee (track_creator.prop_conflict) : au niveau de la route, seul le pied compte ; une route plus haute
   // (pont, rampe) ne doit croiser aucune partie de l'objet tant que le dessous de son tablier est sous son sommet
-  function propConflict(p) {
+  // noUnder (decor automatique, 2026-11-13 : sapins sous la spirale qui traversaient la route du dessus en jeu) : rien
+  // sous un pont, quelle que soit la hauteur libre
+  function propConflict(p, noUnder = false) {
     const k = kindOf(p), d = dimOf(p), base = propLow(p) + (p.dz || 0), top = base + (d.zmax - d.zmin) * IN * p.s;
     const clear = (k?.clear ?? 1) * IN, foot = footOf(p) + clear, full = 0.9 * d.r * IN * p.s + clear;
     const level = (k?.level ?? 1.5) * IN, deck = (k?.deck ?? 1.2) * IN;
@@ -564,7 +609,7 @@ export function initCreator(ctx) {
       const cell = G.cells.get(a * 100003 + b); if (!cell) continue;
       for (const q of cell) {
         const hd = Math.hypot(p.x - q[0], p.y - q[1]) - q[3] / 2;
-        if (q[2] < base + level ? !onRoad && hd < foot : q[2] - deck < top + IN && hd < full) return true;
+        if (q[2] < base + level ? !onRoad && hd < foot : (noUnder || q[2] - deck < top + IN) && hd < full) return true;
       }
     }
     return false;
@@ -657,11 +702,10 @@ export function initCreator(ctx) {
     if (!seatOf(p).onRoad && seatOf(p).deg > STEEP_MAX) return false;     // falaise : rien n'y tient
     if (propConflict(p) || !inTerrain(p)) return false;
     const sp = k.spacing * IN;
-    // pas de chevauchement : corps des deux objets (moitie de leur emprise) + espacement de leur famille
-    const body = o => 0.5 * dimOf(o).r * IN * o.s;
-    // (gros objet d'un cote : seulement leurs corps, sinon un rocher geant interdirait toute herbe a 30 m a la ronde)
+    // pas de chevauchement : emprises des deux objets (part selon leur genre, apart) + espacement de leur famille
+    // (gros objet d'un cote : seulement leurs emprises, sinon un rocher geant interdirait toute herbe a 30 m a la ronde)
     const gap = q => k.big !== kindOf(q)?.big ? 0 : Math.max(sp, (kindOf(q)?.spacing || 3) * IN) * 0.8;
-    if (S.props.some(q => Math.hypot(q.x - x, q.y - y) < Math.max(gap(q), body(p) + body(q)))) return false;
+    if (S.props.some(q => Math.hypot(q.x - x, q.y - y) < Math.max(gap(q), (rad(p) + rad(q)) * apart(p, q)))) return false;
     S.props.push(p);
     return true;
   }
@@ -702,7 +746,8 @@ export function initCreator(ctx) {
   // role : part du total, distance au bord de la route (m), pente maxi, clairiere (seuil du bruit : plus haut = plus groupe)
   const AI_LAYERS = [['house', 0.02, 25, 170, 0.3, -1], ['prop', 0.05, 10, 110, 0.5, -1], ['tree', 0.28, 8, 210, 0.6, -0.05],
                      ['rock', 0.14, 5, 230, 1.2, -1], ['shrub', 0.1, 4, 130, 0.7, -0.1], ['cover', 0.36, 2, 95, 0.9, -0.3]];
-  const AI_DENSITY = { 0: [900, 500, 0.6], 1: [450, 1000, 1], 2: [250, 1800, 1.4] };      // m2 par objet, maximum, gros objets
+  // m2 par objet, maximum, gros objets ; 3 : piste aleatoire (2026-11-13, « pas assez fourni ») : bien plus d'objets
+  const AI_DENSITY = { 0: [900, 500, 0.6], 1: [450, 1000, 1], 2: [250, 1800, 1.4], 3: [170, 3200, 1.6] };
   // reglages par categorie (Aucun, Peu, Normal, Beaucoup) : multiplie la part des roles de la categorie
   const AI_LEVEL = [0, 0.5, 1, 1.8];
   const AI_GROUP = { tree: 'veg', shrub: 'veg', cover: 'veg', rock: 'rock', prop: 'built', house: 'built', road: 'road' };
@@ -805,10 +850,13 @@ export function initCreator(ctx) {
         // emprunt : un seul theme a la fois (le premier qui a ce role), pour garder un ensemble coherent
         for (const kk of tiers[t]) { list = fams(kk, role); if (list.length) break; }
       }
+      // variete (piste aleatoire, 2026-11-13 : decor « trop repetitif ») : aussi les familles des themes proches, et plus
+      // de familles / modeles tires pour chaque role
+      if (o.variety && own) list = list.concat(shuffle([...new Set([...kin(mk), ...kin(kit)])]).flatMap(kk => fams(kk, role)));
       const out = [];
-      for (const [id, d] of shuffle(list).slice(0, own ? 3 : 2)) {
+      for (const [id, d] of shuffle(list).slice(0, own ? (o.variety ? 6 : 3) : 2)) {
         const [k, t] = id.split('|');
-        const ms = shuffle(usable(d, role)).slice(0, own ? 4 : 3);
+        const ms = shuffle(usable(d, role)).slice(0, own ? (o.variety ? 7 : 4) : 3);
         if (ms.length) out.push({ k, t, d, ms, far: k !== mk && k !== kit });
       }
       pals.set(key, out);
@@ -818,14 +866,13 @@ export function initCreator(ctx) {
     const GS = 64 * IN, grid = new Map(), bigs = [];
     const add = p => { if (kindOf(p)?.big) { bigs.push(p); return; } const key = Math.floor(p.x / GS) * 100003 + Math.floor(p.y / GS); (grid.get(key) || grid.set(key, []).get(key)).push(p); };
     S.props.forEach(add);
-    const body = o => 0.5 * dimOf(o).r * IN * o.s;
     function put(c, m, x, y) {
       const k = c.d, [a, b] = k.scale;
       const p = { k: c.k, t: c.t, m, x, y, yaw: +(rnd() * 2 * Math.PI).toFixed(3), s: +(a + rnd() * (b - a)).toFixed(2), ai: 1 };
-      if (!inTerrain(p) || seatOf(p).deg > STEEP_MAX || buriedTooMuch(p) || propConflict(p)) return false;
-      const sp = k.spacing * IN, bp = body(p);
+      if (!inTerrain(p) || seatOf(p).deg > STEEP_MAX || buriedTooMuch(p) || propConflict(p, true)) return false;
+      const sp = k.spacing * IN, bp = rad(p);
       const clash = q => { const gap = !!k.big !== !!kindOf(q)?.big ? 0 : Math.max(sp, (kindOf(q)?.spacing || 3) * IN) * 0.8;
-        return Math.hypot(q.x - x, q.y - y) < Math.max(gap, bp + body(q)); };
+        return Math.hypot(q.x - x, q.y - y) < Math.max(gap, (bp + rad(q)) * apart(p, q)); };
       if (bigs.some(clash)) return false;
       const reach = Math.ceil((60 * IN + bp) / GS), ga = Math.floor(x / GS), gb = Math.floor(y / GS);
       for (let u = ga - reach; u <= ga + reach; u++) for (let w = gb - reach; w <= gb + reach; w++) { const cell = grid.get(u * 100003 + w); if (cell?.some(clash)) return false; }
@@ -855,7 +902,8 @@ export function initCreator(ctx) {
     let asked = 0, served = 0;
     const share = {};
     for (const [role, sh] of AI_LAYERS) {
-      const w = sh * level(role), a = w ? avail(role) : 0;
+      // petits decors (herbes, fleurs, buissons) plus nombreux si demande (piste aleatoire : o.small)
+      const w = sh * level(role) * (o.small && (role === 'cover' || role === 'shrub') ? o.small : 1), a = w ? avail(role) : 0;
       asked += w; share[role] = a > 0.02 ? w : 0;
       if (w && a <= 0.02) missing.push(role); else served += w;
     }
@@ -922,7 +970,8 @@ export function initCreator(ctx) {
       const i = 2 + Math.floor(rnd() * (n - 4)), j = 2 + Math.floor(rnd() * (n - 4)), v = j * n + i;
       if (D[v] < 2 * IN || taken[v]) continue;
       const w = { x: Math.round(T.x0 + i * T.cell), y: Math.round(T.y0 + j * T.cell),
-                  dz: -Math.round((0.3 + rnd() * 1.2) * 10) / 10 * IN, type: types[Math.floor(rnd() * types.length)], ai: 1 };
+                  // niveau au moins 5 m sous le bord du creux (2026-11-14, demande utilisateur ; 0,3 a 1,5 m avant)
+                  dz: -Math.round((5 + rnd() * 1.5) * 10) / 10 * IN, type: types[Math.floor(rnd() * types.length)], ai: 1 };
       const b = waterBasin(w);
       if (!b || b.count < 25 || b.count > 6000 || b.level - b.bottom < 1 * IN) continue;
       let ok = true;
@@ -937,9 +986,10 @@ export function initCreator(ctx) {
     const T = S.terrain, n = T.n, v = Math.round((y - T.y0) / T.cell) * n + Math.round((x - T.x0) / T.cell);
     return S.waters.some(w => w.ai && waterBasin(w)?.region[v]);
   }
-  function aiDecor() {
+  function aiDecor(seedIn, extra) {
     if (S.points.length < 8) { status('Trace d\'abord une route : le décor se construit autour d\'elle', 'err'); return; }
-    const seed = (Date.now() ^ (Math.random() * 2 ** 31)) >>> 0;
+    // graine imposee : piste aleatoire a partir d'un code (meme code = meme decor) ; clic sur le bouton : au hasard
+    const seed = Number.isFinite(seedIn) ? seedIn >>> 0 : (Date.now() ^ (Math.random() * 2 ** 31)) >>> 0;
     let s = seed;                                                 // mulberry32
     const rnd = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
     S.props = S.props.filter(p => !p.ai);
@@ -949,9 +999,15 @@ export function initCreator(ctx) {
     if (amp > 0) aiRelief(amp, rnd, roadDistance());
     refreshTerrainMesh(); rebuild();
     const nw = aiWaters(rnd, roadDistance());                   // points d'eau dans les creux (parfois)
-    const o = aiOptions();
+    const o = { ...aiOptions(), ...(extra || {}) };                // extra : reglages imposes (piste aleatoire)
     const { count: c, missing, borrowed } = aiPlace(rnd, o);
-    if (nw) S.props = S.props.filter(p => !p.ai || !inAiWater(p.x, p.y));     // rien de pose dans l'eau
+    // rien de pose dans l'eau. Zones d'eau calculees UNE fois (2026-11-14 : inAiWater par objet refaisait le remplissage
+    // de chaque eau pour chacun des ~4000 objets -> plusieurs minutes, navigateur bloque sur 0LD-IW7ENN-1R)
+    if (nw) {
+      const T = S.terrain, n = T.n, wet = new Uint8Array(n * n);
+      for (const w of S.waters) if (w.ai) { const b = waterBasin(w); if (b) b.region.forEach((r, v) => { if (r) wet[v] = 1; }); }
+      S.props = S.props.filter(p => !p.ai || !wet[Math.round((p.y - T.y0) / T.cell) * n + Math.round((p.x - T.x0) / T.cell)]);
+    }
     renderWater(); syncWaterLevel();
     renderProps(); saveDraft(); aiSaveOptions();
     const n = Object.values(c).reduce((a, b) => a + b, 0), names = S.info?.kits || {};
@@ -1181,7 +1237,7 @@ export function initCreator(ctx) {
       for (let j = 1; j * STEP <= KICK_LEN; j++) {
         const i = s0 - j >= 0 ? s0 - j : S.closed ? s0 - j + n : -1;
         if (i < 0 || P[i][4]) break;
-        kick[i] = Math.max(kick[i], KICK_H * (1 - (j * STEP / (2 * IN) - 1) / (KICK_LEN / (2 * IN))));
+        kick[i] = Math.max(kick[i], KICK_H * Math.max(0, 1 - (j * STEP / (2 * IN) - 1) / (KICK_LEN / (2 * IN))) ** 2);   // courbe
       }
     }
     return S.eff = P.map((p, i) => {
@@ -2021,7 +2077,7 @@ export function initCreator(ctx) {
   let draftTimer = 0;
   const saveDraft = () => { draftTimer ||= setTimeout(writeDraft, 1000); histSchedule(); };
   addEventListener('pagehide', () => { if (draftTimer) writeDraft(); });
-  const writeDraft = () => { clearTimeout(draftTimer); draftTimer = 0; try { localStorage.setItem(draftKey(), JSON.stringify({ at: Date.now(), points: S.points, closed: S.closed, ground_z: S.groundZ, start: S.points.length <= 1 ? S.start : undefined, width: S.width, barriers: $('crbar').value, props: S.props, waters: S.waters, kit: $('crkit').value, sel: [...S.sel], far: +$('crpfar').value,
+  const writeDraft = () => { clearTimeout(draftTimer); draftTimer = 0; try { localStorage.setItem(draftKey(), JSON.stringify({ at: Date.now(), points: S.points, closed: S.closed, ground_z: S.groundZ, start: S.points.length <= 1 ? S.start : undefined, width: S.width, barriers: $('crbar').value, marks: S.marks, signs: S.signs, rnd: S.rndCode || undefined, props: S.props, waters: S.waters, kit: $('crkit').value, sel: [...S.sel], far: +$('crpfar').value,
                                                                                    terrain: packFull(S.terrain) })); } catch (e) { /* sans importance */ } };
   const closeR = () => Math.max(CLOSE_DIST, S.width * 0.8);
 
@@ -2032,7 +2088,7 @@ export function initCreator(ctx) {
   let hist = [], histAt = -1, histTimer = 0;
   function histSnap() {
     const T = S.terrain;
-    return { meta: JSON.stringify({ points: S.points, closed: S.closed, width: S.width, barriers: $('crbar').value,
+    return { meta: JSON.stringify({ points: S.points, closed: S.closed, width: S.width, barriers: $('crbar').value, marks: S.marks, signs: S.signs,
                                     kit: $('crkit').value, sel: [...S.sel], far: $('crpfar').value, props: S.props, waters: S.waters,
                                     t: T && [T.x0, T.y0, T.cell, T.n, T.size] }),
              h: T?.h.slice(), paint: T?.paint.slice(), dig: T?.dig?.slice(), aih: T?.aih?.slice() };
@@ -2065,6 +2121,7 @@ export function initCreator(ctx) {
     if (!S.propSelP) selectProp(null);
     S.waters = m.waters || []; if (S.waterSel >= S.waters.length) S.waterSel = -1;
     $('crbar').value = m.barriers; $('crpfar').value = m.far; $('crpfarv').textContent = m.far;
+    setMarks(m.marks); setSigns(m.signs);
     if (m.t) {
       S.terrain = { x0: m.t[0], y0: m.t[1], cell: m.t[2], n: m.t[3], size: m.t[4], h: s.h.slice(), paint: s.paint.slice(),
                     dig: s.dig ? s.dig.slice() : new Uint8Array(m.t[3] * m.t[3]), aih: s.aih?.slice() };
@@ -2110,7 +2167,7 @@ export function initCreator(ctx) {
   };
   $('crblend').oninput = e => setBlend(+e.target.value);
   $('crblend').onchange = () => { refreshTerrainMesh(); rebuild(); renderProps(); saveDraft(); };   // au relachement : tout le terrain
-  $('craigo').onclick = aiDecor;
+  $('craigo').onclick = () => aiDecor();
   $('crairm').onclick = aiRemove;
   for (const id of ['craiamp', 'craiclear', 'craireach']) $(id).oninput = aiShowValues;
   // un reglage retouche a la main : plus aucun style tout fait n'est allume
@@ -2132,9 +2189,13 @@ export function initCreator(ctx) {
   };
   // inclinaison d'un point du trace (bord gauche plus bas si positive), d'apres le relevement de ses bords
   const rollOf = p => { const [wl, wr, hl, hr] = edgesOf(p); return Math.asin(Math.max(-1, Math.min(1, (hr - hl) / (wl + wr || 1)))); };
+  // hauteur reelle du centre de la route (effPoints) : un bord releve d'un seul cote (pieces speciales : bord interieur a
+  // hauteur, exterieur releve) remonte le centre de la moitie. Sans elle, en reculant sur une spirale le kart passait sous
+  // la route (2026-11-13). Le paveur repart de la : ses points (bords symetriques) gardent le centre continu
+  const effZ = p => p[2] + ((p[7] ?? 0) + (p[8] ?? 0)) / 2;
   function placeFromPoints() {
     const p = S.points[S.points.length - 1];
-    S.pos = new THREE.Vector3(p[0], p[1], p[2]); S.roll = rollOf(p); setRollTarget(S.roll); setTalus(!p[9]);
+    S.pos = new THREE.Vector3(p[0], p[1], effZ(p)); S.roll = rollOf(p); setRollTarget(S.roll); setTalus(!p[9]);
     if (S.points.length > 1) { const q = S.points[S.points.length - 2]; S.yaw = Math.atan2(p[1] - q[1], p[0] - q[0]); }
     else S.yaw = S.start.yaw;
     S.slope = slopeOfEnd();
@@ -2147,7 +2208,7 @@ export function initCreator(ctx) {
     let run = 0;
     for (let i = Math.max(1, n - 3); i < n; i++) run += Math.hypot(S.points[i][0] - S.points[i - 1][0], S.points[i][1] - S.points[i - 1][1]);
     if (run < 1 || a[4] || b[4]) return 0;                   // saut (trou) au bout : pas de pente a reprendre
-    return Math.max(-SLOPE_MAX, Math.min(SLOPE_MAX, (b[2] - a[2]) / run));
+    return Math.max(-SLOPE_MAX, Math.min(SLOPE_MAX, (effZ(b) - effZ(a)) / run));
   }
   const length = () => S.points.reduce((a, p, i) => i ? a + Math.hypot(p[0] - S.points[i - 1][0], p[1] - S.points[i - 1][1]) : 0, 0);
   const nearStart = () => S.points.length > 2 && length() > CLOSE_MIN_LEN &&
@@ -2255,9 +2316,9 @@ export function initCreator(ctx) {
     // damier du depart, en travers de la route au 1er point (comme la generation)
     startLine.visible = n > 1 && !P[0][4];
     if (startLine.visible) {
-      const [l, rr] = [rv[0], rv[1]], [tx, ty] = tg[0], d = 1.5 * IN;
+      const [l, rr] = [rv[0], rv[1]], [tx, ty] = tg[0], d = START_CELL_M * IN;           // demi-bande : 2 rangees
       const q = (p, k) => [p[0] + tx * d * k, p[1] + ty * d * k, p[2] + 4];
-      const w = Math.hypot(l[0] - rr[0], l[1] - rr[1]) / (3 * IN);
+      const w = Math.hypot(l[0] - rr[0], l[1] - rr[1]) / (2 * START_CELL_M * IN);       // repetitions (2 cases)
       const A = q(rr, -1), B = q(rr, 1), Cq = q(l, 1), D = q(l, -1);
       startLine.geometry.dispose(); startLine.geometry = new THREE.BufferGeometry();
       startLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array([...A, ...B, ...Cq, ...A, ...Cq, ...D]), 3));
@@ -2265,7 +2326,144 @@ export function initCreator(ctx) {
     }
     const r = closeR(); startMark.scale.set(r, 30, r);           // cylindre couche : x, z = rayon, y = hauteur
     if (S.points.length) startMark.position.set(S.points[0][0], S.points[0][1], S.points[0][2] + 5);
+    marksGeometry(P, rv, tg);
     showRoadStat();
+  }
+
+  // ---- marquage au sol (2026-11-13) : apercu de track_creator._markings (memes regles, memes distances) ----
+  // 'arrows' (fleches peintes avant les virages) RETIRE le 2026-11-13 (« pas pertinent ») : plus proposees ni dessinees
+  const MARK_KEYS = ['edges', 'center', 'curbs'];
+  const MK = { lift: 5, edgeIn: 0.6 * IN, edgeW: 0.4 * IN, centerW: 0.3 * IN, dash: 3 * IN, period: 9 * IN,
+               curbW: 1.5 * IN, curbRep: 3 * IN, curveR: 90 * IN, arrowAt: [45 * IN, 25 * IN] };
+  const ARROW_SHAPE = [[[-7, -0.7], [0.7, -0.7], [0.7, 0.7], [-7, 0.7]], [[-0.7, 0.7], [0.7, 0.7], [0.7, 4], [-0.7, 4]],
+                       [[-2.4, 4], [2.4, 4], [0, 7.5]]];
+  const curbTex = (() => {
+    const c = document.createElement('canvas'); c.width = 4; c.height = 2;
+    const g = c.getContext('2d'); g.fillStyle = '#c81e1e'; g.fillRect(0, 0, 4, 1); g.fillStyle = '#ececE4'; g.fillRect(0, 1, 4, 1);
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = THREE.NearestFilter; t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  })();
+  const markOpts = { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 };
+  const markWhite = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: 0xececE4, ...markOpts }));
+  const markCurb = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ map: curbTex, ...markOpts }));
+  group.add(markWhite, markCurb);
+  S.marks = {};
+  function setMarks(m) {
+    S.marks = Object.fromEntries(MARK_KEYS.map(k => [k, !!(m && m[k])]));
+    for (const c of panel.querySelectorAll('[data-mark]')) c.checked = S.marks[c.dataset.mark];
+  }
+  for (const c of panel.querySelectorAll('[data-mark]')) c.onchange = () => {
+    S.marks = { ...S.marks, [c.dataset.mark]: c.checked }; rebuild(); saveDraft();
+  };
+  // panneaux de virage : apercu en panneaux orange (les vrais modeles du jeu sont poses a la generation)
+  const signMesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: 0xffe600, side: THREE.DoubleSide }));
+  group.add(signMesh);
+  S.signs = {};
+  function setSigns(v) {
+    S.signs = { style: '' };                  // option retiree (2026-11-13) : un brouillon qui en avait n'en pose plus
+    $('crsign').value = S.signs.style;
+  }
+  $('crsign').onchange = () => { setSigns({ style: $('crsign').value }); rebuild(); saveDraft(); };
+  function marksGeometry(P, rv, tg) {
+    const n = P.length, M = S.marks || {}, wpos = [], cpos = [], cuv = [], spos = [];
+    if ((!MARK_KEYS.some(k => M[k]) && !S.signs?.style) || n < 3) {
+      for (const m of [markWhite, markCurb, signMesh]) { m.geometry.dispose(); m.geometry = new THREE.BufferGeometry(); }
+      return;
+    }
+    const L = i => rv[2 * i], R = i => rv[2 * i + 1];
+    const W = i => Math.hypot(L(i)[0] - R(i)[0], L(i)[1] - R(i)[1]) || 1;
+    const Q = (i, q) => [R(i)[0] + (L(i)[0] - R(i)[0]) * q, R(i)[1] + (L(i)[1] - R(i)[1]) * q, R(i)[2] + (L(i)[2] - R(i)[2]) * q + MK.lift];
+    const s = [0]; for (let i = 1; i < n; i++) s.push(s[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+    const jump = i => P[i][4];
+    const fq = d => i => Math.min(0.5, d / W(i));
+    const strip = (out, uv, ok, q0, q1, rep) => {
+      for (let k = 0; k + 1 < n; k++) {
+        if (jump(k) || jump(k + 1) || !ok(k)) continue;
+        const a = Q(k, q0(k)), b = Q(k + 1, q0(k + 1)), c = Q(k + 1, q1(k + 1)), d = Q(k, q1(k));
+        out.push(...a, ...b, ...c, ...a, ...c, ...d);
+        if (uv) { const va = s[k] / rep, vb = s[k + 1] / rep; uv.push(0, va, 0, vb, 1, vb, 0, va, 1, vb, 1, va); }
+      }
+    };
+    if (M.edges) {
+      const a = fq(MK.edgeIn), b = fq(MK.edgeIn + MK.edgeW);
+      strip(wpos, null, () => true, a, b); strip(wpos, null, () => true, i => 1 - b(i), i => 1 - a(i));
+    }
+    if (M.center) { const h = fq(MK.centerW / 2); strip(wpos, null, k => s[k] % MK.period < MK.dash, i => 0.5 - h(i), i => 0.5 + h(i)); }
+    // virages serres (meme mesure que la generation : angle entre les tangentes de part et d'autre)
+    const radius = [], sign = [];
+    for (let i = 0; i < n; i++) {
+      const a = tg[Math.max(0, i - 1)], b = tg[Math.min(n - 1, i + 1)];
+      const turn = Math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1]);
+      const len = (i > 0 ? s[i] - s[i - 1] : 0) + (i + 1 < n ? s[i + 1] - s[i] : 0);
+      radius.push(len / Math.max(Math.abs(turn), 1e-6)); sign.push(Math.sign(turn));
+    }
+    const tight = radius.map(r => r < MK.curveR);
+    if (M.arrows) {
+      const seg = s[n - 1] / Math.max(1, n - 1);
+      for (let i0 = 1; i0 < n; i0++) {
+        if (!tight[i0] || tight[i0 - 1]) continue;
+        const side = sign[i0] || 1;
+        for (const dist of MK.arrowAt) {
+          const k = i0 - Math.round(dist / seg);
+          if (k < 0 || jump(k) || tight[k]) continue;
+          for (const poly of ARROW_SHAPE) {
+            let vs = poly.map(([u, w]) => {
+              const fi = Math.max(0, Math.min(n - 1.001, k + u * IN / seg)), ia = Math.floor(fi), t = fi - ia;
+              const q = Math.max(0, Math.min(1, 0.5 + side * w * IN / W(ia)));
+              const A = Q(ia, q), B = Q(Math.min(n - 1, ia + 1), q);
+              return A.map((v, j) => v * (1 - t) + B[j] * t);
+            });
+            if (side < 0) vs = vs.reverse();
+            wpos.push(...vs[0], ...vs[1], ...vs[2]);
+            if (vs.length === 4) wpos.push(...vs[0], ...vs[2], ...vs[3]);
+          }
+        }
+      }
+    }
+    if (M.curbs) {
+      const ext = 3, inside = { 1: new Array(n).fill(false), [-1]: new Array(n).fill(false) };
+      for (let i = 0; i < n; i++) if (tight[i] && sign[i]) for (let e = -ext; e <= ext; e++) { const j = i + e; if (j >= 0 && j < n) inside[sign[i]][j] = true; }
+      const a = fq(MK.curbW);
+      strip(cpos, cuv, k => inside[-1][k] && inside[-1][k + 1], () => 0, a, MK.curbRep);
+      strip(cpos, cuv, k => inside[1][k] && inside[1][k + 1], i => 1 - a(i), () => 1, MK.curbRep);
+    }
+    if (S.signs?.style) {   // meme regle que track_creator._sign_turns / sign_spots (2026-11-13 : bien moins de panneaux)
+      const off = 2.5 * IN, seg = s[n - 1] / Math.max(1, n - 1), space = 35 * IN, minGap = 30 * IN;
+      const ok = i => radius[i] < MK.curveR && radius[i] > 5 * IN && sign[i];
+      const runs = [];
+      for (let i = 0; i < n;) {
+        if (!ok(i)) { i++; continue; }
+        const a = i, side = sign[i];
+        while (i < n && ok(i) && sign[i] === side) i++;
+        const last = runs[runs.length - 1];
+        if (last && last[2] === side && s[a] - s[last[1]] <= 10 * IN) last[1] = i - 1; else runs.push([a, i - 1, side]);
+      }
+      const placed = [];
+      for (const [a, b, side] of runs) {
+        let ang = 0, rmin = Infinity;
+        for (let k = a; k <= b; k++) { ang += seg / radius[k]; rmin = Math.min(rmin, radius[k]); }
+        if (ang < 35 * Math.PI / 180 || rmin >= 60 * IN) continue;
+        const cnt = Math.max(1, Math.min(3, Math.floor((s[b] - s[a] + seg) / space) + 1)), mid = (a + b) / 2;
+        const ks = [];
+        for (let j = 0; j < cnt; j++) ks.push(Math.min(b, Math.max(a, Math.round(mid + (j - (cnt - 1) / 2) * space / seg))));
+        for (const k of ks) {
+          if (jump(k) || placed.some(([x, y]) => Math.hypot(P[k][0] - x, P[k][1] - y) < minGap)) continue;
+          placed.push([P[k][0], P[k][1]]);
+          const e = side > 0 ? R(k) : L(k), [tx, ty] = tg[k], ox = side > 0 ? ty : -ty, oy = side > 0 ? -tx : tx;
+          const x = e[0] + ox * off, y = e[1] + oy * off, z = e[2], hw = 3 * IN, h0 = 1.5 * IN, h1 = 5.5 * IN;
+          const ax = -ty * hw, ay = tx * hw;          // panneau en travers de la route, face aux karts
+          spos.push(x - ax, y - ay, z + h0, x + ax, y + ay, z + h0, x + ax, y + ay, z + h1,
+                    x - ax, y - ay, z + h0, x + ax, y + ay, z + h1, x - ax, y - ay, z + h1);
+        }
+      }
+    }
+    signMesh.geometry.dispose(); signMesh.geometry = new THREE.BufferGeometry();
+    signMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(spos, 3));
+    markWhite.geometry.dispose(); markWhite.geometry = new THREE.BufferGeometry();
+    markWhite.geometry.setAttribute('position', new THREE.Float32BufferAttribute(wpos, 3));
+    markCurb.geometry.dispose(); markCurb.geometry = new THREE.BufferGeometry();
+    markCurb.geometry.setAttribute('position', new THREE.Float32BufferAttribute(cpos, 3));
+    markCurb.geometry.setAttribute('uv', new THREE.Float32BufferAttribute(cuv, 2));
   }
   // ligne d'etat : au plus 4 fois par seconde et seulement si elle change. Reecrite a chaque point, elle faisait repeindre
   // la couche des barres (menu, colonne de droite) : elles clignotaient pendant que le paveur roule
@@ -2378,6 +2576,7 @@ export function initCreator(ctx) {
       if (S.propsDirty && t - S.lastProps > propGap) { renderProps(); S.propsDirty = false; S.lastProps = t; }
       return;
     }
+    if (t - (S.ghostAt || 0) > 120) { S.ghostAt = t; updateGhost(); }   // apercu de la piece speciale devant le kart
     if (S.pickStart) return;                                 // placement du kart en cours : il ne roule pas
     const k = S.keys;
     let fwd = (k.has('ArrowUp') || k.has('KeyW') || k.has('KeyZ')) ? 1 : 0;
@@ -2445,6 +2644,785 @@ export function initCreator(ctx) {
       const look = S.pos.clone().addScaledVector(back, 25 * IN);
       camera.up.set(0, 0, 1); camera.lookAt(look); orbit.target.copy(look);
     }
+  }
+
+  // ---- pieces speciales (2026-11-13) : un morceau de route calcule d'un coup au bout du trace, avec les memes regles
+  // que le paveur (rayon mini selon la pente, pente <= 28 %, inclinaison <= 30 deg, vitesses de variation). Points
+  // ordinaires du paveur : la generation, les sauts (tremplin) et les outils Bords / Pont s'y appliquent sans rien de plus
+  const PIECES = {          // [nom du reglage, min, max, pas, defaut, unite]
+    banked:   { a: ['Angle', 45, 180, 15, 90, '°'], b: ['Rayon', 35, 150, 5, 55, ' m'], c: ['Inclinaison', 5, 30, 1, 15, '°'], dir: 1 },
+    spiral:   { a: ['Tours', 1, 3, 0.5, 1, ''], b: ['Rayon', 40, 120, 5, 50, ' m'], c: ['Écart entre les boucles', 10, 40, 1, 16, ' m'], dir: 1, vert: 1 },
+    slalom:   { a: ['Virages', 2, 8, 1, 3, ''], b: ['Rayon', 35, 120, 5, 45, ' m'], dir: 1 },
+    jump:     { a: ['Longueur du trou', 8, 40, 2, 16, ' m'], b: ['Atterrissage plus bas de', 0, 12, 1, 2, ' m'] },
+    bumps:    { a: ['Bosses', 1, 8, 1, 3, ''], b: ['Hauteur', 1, 4, 0.5, 2, ' m'] },
+    ramp:     { a: ['Dénivelé', 5, 80, 5, 20, ' m'], b: ['Pente', 5, 28, 1, 15, ' %'], vert: 1 },
+    straight: { a: ['Longueur', 20, 300, 10, 60, ' m'] },
+  };
+  const BANK_EDGE_SLOPE = 0.15;         // virage releve : pente maxi du bord exterieur qui monte (entree / sortie douces)
+  const PIECE_KEY = 'ctr_creator_piece';
+  const piece = { kind: 'banked', dir: 1, up: 1, v: {} };
+  try { Object.assign(piece, JSON.parse(localStorage.getItem(PIECE_KEY)) || {}); } catch (e) { /* sans importance */ }
+  if (!PIECES[piece.kind]) piece.kind = 'banked';
+  const pieceVal = (k, which) => { const c = PIECES[k][which]; const v = piece.v[k]?.[which]; return c ? (v ?? c[4]) : 0; };
+  const rMinAt = s => R_MIN * (1 + R_SLOPE * Math.abs(s) / SLOPE_MAX);
+  // pas de 4 m : {k : courbure (1/po, positive a gauche), slope : pente visee | dz : montee imposee, roll : inclinaison visee, jump}
+  function pieceSteps() {
+    const k = piece.kind, A = pieceVal(k, 'a'), B = pieceVal(k, 'b'), Cv = pieceVal(k, 'c'), side = piece.dir, st = [], deg = Math.PI / 180;
+    const steps = len => Math.max(1, Math.round(len / STEP));
+    const straight = (len, e = {}) => { for (let i = steps(len); i > 0; i--) st.push({ k: 0, slope: 0, roll: 0, ...e }); };
+    const arc = (ang, R, sgn, e = {}) => { const n = Math.max(2, Math.round(ang * R / STEP)); for (let i = 0; i < n; i++) st.push({ k: sgn * ang / (n * STEP), slope: 0, roll: 0, ...e }); };
+    const rollIn = r => Math.ceil(Math.abs(r) / ROLL_RATE / STEP) * STEP;      // longueur pour atteindre cette inclinaison
+    if (k === 'banked') {
+      // 2026-11-13 (retour utilisateur : entree trop brusque, fosse du cote interieur) : le bord INTERIEUR reste a hauteur
+      // de route, seul l'exterieur monte (piecePoints) ; inclinaison en courbe douce (smoothstep) sur une longueur telle que
+      // le bord exterieur ne monte pas a plus de 15 %, prise en partie dans le debut du virage (30 % de l'arc au plus)
+      const R = B * IN, roll = side * Cv * deg, ang = A * deg, arcLen = ang * R;
+      const raise = S.width * Math.sin(Cv * deg), Lr = Math.max(30 * IN, raise / BANK_EDGE_SLOPE);
+      const lead = Math.max(0, Lr - 0.3 * arcLen);
+      straight(lead); arc(ang, R, side); straight(lead);
+      const total = st.length * STEP, r0 = S.roll || 0, sm = u => { u = Math.max(0, Math.min(1, u)); return u * u * (3 - 2 * u); };
+      st.forEach((e, i) => {
+        const s = (i + 1) * STEP;
+        e.rollAbs = s < total / 2 ? r0 + (roll - r0) * sm(s / Lr) : roll * sm((total - s) / Lr);
+      });
+    } else if (k === 'spiral') {
+      const s = piece.up * Math.min(SLOPE_MAX, Cv * IN / (2 * Math.PI * B * IN));
+      const R = Math.max(B * IN, rMinAt(s) * 1.02), roll = side * 12 * deg;
+      straight(Math.max(12 * IN, Math.abs(s) / SLOPE_RATE), { slope: s, roll }); arc(A * 2 * Math.PI, R, side, { slope: s, roll });
+      straight(Math.max(24 * IN, Math.abs(s) / SLOPE_RATE + 8 * IN));
+    } else if (k === 'slalom') {
+      const h = 30 * deg, R = B * IN;                         // demi-virages aux bouts : la route repart dans la meme direction
+      for (let i = 0; i < A; i++) {
+        const sgn = (i % 2 ? -1 : 1) * side, ang = i === 0 || i === A - 1 ? h : 2 * h;
+        arc(ang, R, sgn, { roll: sgn * 8 * deg });
+      }
+      straight(rollIn(8 * deg));
+    } else if (k === 'jump') {
+      const n = steps(A * IN);
+      straight(30 * IN);
+      for (let i = 0; i < n; i++) st.push({ k: 0, dz: -B * IN / n, roll: 0, jump: 1 });
+      straight(30 * IN);
+    } else if (k === 'bumps') {
+      const H = B * IN, L = Math.max(40 * IN, Math.PI * H / 0.24), m = steps(L);
+      const f = s => H * (1 - Math.cos(2 * Math.PI * s / m)) / 2;
+      for (let b = 0; b < A; b++) for (let i = 0; i < m; i++) st.push({ k: 0, dz: f(i + 1) - f(i), roll: 0 });
+      straight(8 * IN);
+    } else if (k === 'ramp') {                                // pente qui monte doucement, palier, puis se remet a plat
+      const H = piece.up * A * IN, p = piece.up * B / 100;
+      let s = 0, done = 0;
+      for (let g = 0; g < 4000; g++) {
+        const rest = H - done, brake = s * s / (2 * SLOPE_RATE) + Math.abs(s) * STEP;
+        const want = Math.abs(rest) > brake ? p : 0;
+        s += Math.max(-SLOPE_RATE * STEP, Math.min(SLOPE_RATE * STEP, want - s));
+        if (want === 0 && Math.abs(s) < 1e-4) break;
+        st.push({ k: 0, dz: s * STEP, roll: 0 }); done += s * STEP;
+      }
+      straight(8 * IN);
+    } else straight(A * IN);
+    return st;
+  }
+  // points de la piece depuis le bout de la route ; err : raison du refus (rien n'est pose)
+  function piecePoints() {
+    const T = S.terrain, last = S.points[S.points.length - 1], pts = [];
+    let x = last[0], y = last[1], yaw = S.yaw, slope = slopeOfEnd(), roll = S.roll || 0, err = '';
+    // depart : le bord interieur de la piece rejoint celui du bout de route, son centre (remonte de la moitie du bord
+    // releve) aussi, que ce bout vienne du paveur (bords symetriques) ou d'une piece
+    let z = effZ(last) - S.width * Math.sin(Math.abs(roll)) / 2;
+    const lo = S.groundZ - H_MIN, hi = S.groundZ + H_MAX;
+    const m = S.width / 2 + 2 * (T?.cell || T_CELL);
+    const steps = pieceSteps();
+    // inclinaison des pieces sans profil impose (spirale, chicane...) : 2026-11-13, retour utilisateur « entree trop
+    // raide, gros decalages entre les cotes » -> on raisonne sur la HAUTEUR du bord releve (largeur x sin inclinaison) :
+    // elle ne varie pas de plus de 15 % de pente (passe avant puis arriere : rampes symetriques, retour a plat au bout),
+    // puis lissage sur 7 pas (pas de cassure en haut ni en bas des rampes)
+    if (!steps.some(e => e.rollAbs !== undefined)) {
+      const n = steps.length, W = S.width, d = BANK_EDGE_SLOPE * STEP, u0 = W * Math.sin(roll);
+      const u = steps.map(e => W * Math.sin(e.roll || 0));
+      let prev = u0;
+      for (let i = 0; i < n; i++) { u[i] = Math.max(prev - d, Math.min(prev + d, u[i])); prev = u[i]; }
+      u[n - 1] = 0;                                         // a plat au bout (APRES la passe avant, qui le relevait)
+      for (let i = n - 2; i >= 0; i--) u[i] = Math.max(u[i + 1] - d, Math.min(u[i + 1] + d, u[i]));
+      steps.forEach((e, i) => {
+        let s = 0;
+        for (let j = i - 3; j <= i + 3; j++) s += j < 0 ? u0 : j >= n ? 0 : u[j];
+        e.rollAbs = Math.asin(Math.max(-1, Math.min(1, s / 7 / W)));
+      });
+    }
+    for (const e of steps) {
+      yaw += e.k * STEP / 2; x += Math.cos(yaw) * STEP; y += Math.sin(yaw) * STEP; yaw += e.k * STEP / 2;
+      if (e.dz !== undefined) { z += e.dz; slope = e.jump ? 0 : e.dz / STEP; }
+      else { slope += Math.max(-SLOPE_RATE * STEP, Math.min(SLOPE_RATE * STEP, e.slope - slope)); z += slope * STEP; }
+      if (e.rollAbs !== undefined) roll = e.rollAbs;
+      else roll += Math.max(-ROLL_RATE * STEP, Math.min(ROLL_RATE * STEP, e.roll - roll));
+      if (!err && Math.abs(e.k) > 1 / rMinAt(slope) + 1e-9) err = 'Virage trop serré pour cette pente : agrandis le rayon';
+      if (!err && (z < lo || z > hi)) err = z > hi ? `Trop haut : la route ne peut pas dépasser ${H_MAX / IN} m au-dessus du sol de départ` : `Trop bas : la route ne peut pas descendre à plus de ${H_MIN / IN} m sous le sol de départ`;
+      if (!err && T && (x < T.x0 + m || y < T.y0 + m || x > T.x0 + (T.n - 1) * T.cell - m || y > T.y0 + (T.n - 1) * T.cell - m)) err = 'La pièce sort du terrain : tourne le kart ou choisis-en une plus petite';
+      const p = [x, y, z, S.width, e.jump ? 1 : 0];
+      // inclinaison des pieces : bord interieur a hauteur de route, bord exterieur releve (pas de fosse a l'interieur)
+      if (Math.abs(roll) > 1e-3) {
+        const w2 = S.width / 2, up = Math.round(S.width * Math.sin(Math.abs(roll)));
+        p.push(w2, w2, roll > 0 ? 0 : up, roll > 0 ? up : 0);
+      }
+      if (S.noTalus) setNoTalus(p, true);
+      pts.push(p);
+    }
+    return { pts, err };
+  }
+  const ghostMat = new THREE.LineBasicMaterial({ color: 0xffd400, depthTest: false, transparent: true });
+  const ghost = new THREE.Line(new THREE.BufferGeometry(), ghostMat);
+  ghost.renderOrder = 21; ghost.visible = false; group.add(ghost);
+  let ghostKey = '';
+  function updateGhost(force) {
+    const show = S.active && S.mode === 'route' && S.routeTab === 'pieces' && !S.closed && !S.pickStart && S.points.length > 0;
+    ghost.visible = show; if (!show) { ghostKey = ''; return; }
+    const last = S.points[S.points.length - 1];
+    const key = [S.points.length, last[0], last[1], last[2], S.yaw.toFixed(3), S.width, JSON.stringify(piece)].join('|');
+    if (!force && key === ghostKey) return;
+    ghostKey = key;
+    const r = piecePoints(), v = [last[0], last[1], last[2] + 2 * IN];
+    for (const p of r.pts) v.push(p[0], p[1], p[2] + 2 * IN);
+    ghost.geometry.dispose(); ghost.geometry = new THREE.BufferGeometry();
+    ghost.geometry.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    ghostMat.color.set(r.err ? 0xff4040 : 0xffd400);
+    const len = r.pts.length * STEP / IN, dh = r.pts.length ? (r.pts[r.pts.length - 1][2] - last[2]) / IN : 0;
+    $('crpinfo').textContent = r.err || `≈ ${Math.round(len)} m de route${Math.abs(dh) >= 0.5 ? ` · ${dh > 0 ? '+' : ''}${Math.round(dh)} m de hauteur` : ''}`;
+    $('crpinfo').style.color = r.err ? 'var(--err, #e55)' : '';
+    $('crpgo').disabled = !!r.err;
+  }
+  function pieceUI() {
+    const c = PIECES[piece.kind];
+    for (const b of panel.querySelectorAll('[data-piece]')) b.classList.toggle('primary', b.dataset.piece === piece.kind);
+    for (const w of ['a', 'b', 'c']) {
+      const lab = $('crp' + w + 'lab'), inp = $('crp' + w), d = c[w];
+      lab.style.display = d ? 'block' : 'none'; if (!d) continue;
+      inp.min = d[1]; inp.max = d[2]; inp.step = d[3]; inp.value = pieceVal(piece.kind, w);
+      $('crp' + w + 'name').textContent = d[0];
+      $('crp' + w + 'v').textContent = `${(+inp.value).toLocaleString('fr')}${d[5]}`;
+    }
+    $('crpdirrow').style.display = c.dir ? 'flex' : 'none';
+    $('crpvertrow').style.display = c.vert ? 'flex' : 'none';
+    $('crpleft').classList.toggle('primary', piece.dir > 0); $('crpright').classList.toggle('primary', piece.dir < 0);
+    $('crpup').classList.toggle('primary', piece.up > 0); $('crpdown').classList.toggle('primary', piece.up < 0);
+    try { localStorage.setItem(PIECE_KEY, JSON.stringify(piece)); } catch (e) { /* sans importance */ }
+    updateGhost(true);
+  }
+  function placePiece() {
+    if (S.closed) { status('La boucle est fermée : recule (↓) pour rouvrir la route avant d\'ajouter une pièce', 'err'); return; }
+    const r = piecePoints();
+    if (r.err) { status(r.err, 'err'); return; }
+    if (histTimer) histCommit();                              // modification toute fraiche : etape a part
+    const n0 = S.points.length;
+    for (const p of r.pts) {
+      if (crossing(p)) { S.points.length = n0; status('La pièce croise la route à la même hauteur : monte ou descends avant (R / F), ou fais un pont', 'err'); return; }
+      S.points.push(p);
+    }
+    S.paveFull = true; S.terrainDirty = true; S.back = 0;
+    placeFromPoints(); rebuild(); saveDraft(); updateGhost(true);
+    status(`Pièce posée : ${Math.round(r.pts.length * STEP / IN)} m de route`, 'ok');
+  }
+  for (const b of panel.querySelectorAll('[data-piece]')) b.onclick = () => { piece.kind = b.dataset.piece; pieceUI(); };
+  // onglets de la colonne Route : Conduite / Pieces / Reglages (memorise) ; l'apercu jaune seulement sur l'onglet Pieces
+  const ROUTE_TAB_KEY = 'ctr_creator_routetab';
+  function setRouteTab(t) {
+    S.routeTab = ['drive', 'pieces', 'set'].includes(t) ? t : 'drive';
+    try { localStorage.setItem(ROUTE_TAB_KEY, S.routeTab); } catch (e) { /* sans importance */ }
+    for (const [k, b, p] of [['drive', 'crrtdrive', 'crrpdrive'], ['pieces', 'crrtpieces', 'crrppieces'], ['set', 'crrtset', 'crrpset']]) {
+      $(b).classList.toggle('primary', S.routeTab === k); $(p).hidden = S.routeTab !== k;
+    }
+    updateGhost(true);
+  }
+  $('crrtdrive').onclick = () => setRouteTab('drive');
+  $('crrtpieces').onclick = () => setRouteTab('pieces');
+  $('crrtset').onclick = () => setRouteTab('set');
+  for (const w of ['a', 'b', 'c']) $('crp' + w).oninput = e => { (piece.v[piece.kind] ??= {})[w] = +e.target.value; pieceUI(); };
+  $('crpleft').onclick = () => { piece.dir = 1; pieceUI(); };
+  $('crpright').onclick = () => { piece.dir = -1; pieceUI(); };
+  $('crpup').onclick = () => { piece.up = 1; pieceUI(); };
+  $('crpdown').onclick = () => { piece.up = -1; pieceUI(); };
+  $('crpgo').onclick = placePiece;
+  $('crrandom').onclick = () => openRandomDialog();
+  pieceUI();
+  setRouteTab((() => { try { return localStorage.getItem(ROUTE_TAB_KEY); } catch (e) { return null; } })());
+
+  // ---- piste aleatoire a partir d'un code (2026-11-13) ----------------------------------------------------------------
+  // code « <theme><longueur><difficulte>-<graine> » (ex. 3MN-K7Q2ZP) : theme = rang dans la liste des themes (les
+  // nouveaux sont ajoutes a la FIN, les codes restent valables), C / M / L = courte / moyenne / longue, F / N / D =
+  // facile / normale / difficile, graine en base 36. Meme code = meme piste (trace, relief, peinture, decor, eau).
+  // m : longueur visee (2026-11-13 : plus longues qu'au debut, 1,3 / 1,9 / 2,6 km ; X = tres longue)
+  const RND_LEN = { C: 1800, M: 2600, L: 3400, X: 4200 };
+  // RND_GAME_SHAPES:BEGIN (ecrit par editor/make_rnd_shapes.py : traces des pistes du jeu vus de dessus, 48 points,
+  // taille 1, c = croisements de la piste avec elle-meme ; ne pas modifier a la main)
+  const RND_GAME_SHAPES = [
+    { t: 'Crash Cove', c: 0, p: [0.170,-0.060,0.174,-0.005,0.183,0.049,0.193,0.103,0.200,0.157,0.199,0.212,0.194,0.267,0.190,0.322,0.189,0.377,0.219,0.405,0.195,0.442,0.151,0.474,0.102,0.498,0.047,0.500,-0.003,0.482,-0.029,0.436,-0.051,0.401,-0.094,0.368,-0.149,0.367,-0.198,0.345,-0.217,0.300,-0.222,0.245,-0.240,0.220,-0.229,0.166,-0.222,0.112,-0.221,0.057,-0.221,0.002,-0.222,-0.053,-0.223,-0.108,-0.218,-0.162,-0.200,-0.213,-0.175,-0.262,-0.150,-0.311,-0.130,-0.362,-0.105,-0.410,-0.065,-0.448,-0.017,-0.473,0.033,-0.495,0.088,-0.500,0.141,-0.495,0.191,-0.473,0.221,-0.428,0.239,-0.378,0.240,-0.323,0.235,-0.269,0.218,-0.217,0.199,-0.165,0.181,-0.113] },
+    { t: 'Roos Tubes', c: 1, p: [-0.034,-0.440,-0.023,-0.384,-0.021,-0.326,-0.022,-0.269,-0.022,-0.211,-0.012,-0.155,0.021,-0.108,0.059,-0.066,0.097,-0.023,0.125,0.027,0.141,0.083,0.138,0.140,0.112,0.190,0.082,0.239,0.054,0.290,0.035,0.344,0.033,0.401,0.061,0.450,0.104,0.486,0.159,0.500,0.214,0.485,0.257,0.448,0.281,0.397,0.280,0.340,0.256,0.288,0.221,0.242,0.180,0.201,0.139,0.161,0.098,0.120,0.059,0.079,0.018,0.038,-0.030,0.009,-0.084,0.013,-0.133,0.043,-0.188,0.053,-0.240,0.028,-0.267,-0.021,-0.277,-0.077,-0.280,-0.135,-0.281,-0.193,-0.280,-0.250,-0.279,-0.308,-0.275,-0.365,-0.258,-0.420,-0.228,-0.468,-0.184,-0.500,-0.128,-0.499,-0.075,-0.480] },
+    { t: 'Mystery Caves', c: 0, p: [-0.060,-0.500,-0.026,-0.450,0.008,-0.401,0.042,-0.351,0.077,-0.301,0.120,-0.259,0.173,-0.232,0.233,-0.223,0.293,-0.221,0.349,-0.203,0.372,-0.150,0.350,-0.095,0.306,-0.053,0.262,-0.013,0.205,0.006,0.145,0.010,0.086,0.023,0.036,0.056,-0.007,0.098,-0.022,0.155,-0.031,0.214,-0.066,0.261,-0.106,0.306,-0.141,0.355,-0.154,0.414,-0.175,0.468,-0.228,0.496,-0.285,0.500,-0.335,0.469,-0.362,0.416,-0.372,0.357,-0.364,0.298,-0.327,0.252,-0.282,0.212,-0.242,0.167,-0.230,0.109,-0.233,0.049,-0.271,0.005,-0.312,-0.039,-0.334,-0.094,-0.333,-0.153,-0.312,-0.209,-0.270,-0.252,-0.230,-0.296,-0.209,-0.351,-0.195,-0.410,-0.169,-0.463,-0.120,-0.496] },
+    { t: 'Sewer Speedway', c: 0, p: [-0.034,-0.498,-0.107,-0.497,-0.173,-0.467,-0.231,-0.424,-0.281,-0.370,-0.312,-0.307,-0.291,-0.246,-0.241,-0.193,-0.204,-0.132,-0.178,-0.064,-0.135,-0.005,-0.080,0.044,-0.033,0.097,-0.028,0.169,-0.055,0.236,-0.124,0.248,-0.197,0.257,-0.266,0.280,-0.291,0.342,-0.289,0.414,-0.241,0.464,-0.183,0.490,-0.110,0.493,-0.037,0.496,0.036,0.499,0.109,0.500,0.165,0.460,0.184,0.389,0.188,0.316,0.208,0.247,0.255,0.193,0.292,0.159,0.312,0.118,0.287,0.053,0.235,0.003,0.167,-0.013,0.099,-0.030,0.044,-0.078,0.009,-0.141,0.020,-0.207,0.079,-0.250,0.137,-0.294,0.192,-0.343,0.215,-0.407,0.176,-0.462,0.114,-0.494,0.041,-0.500,-0.032,-0.499] },
+    { t: 'Slide Coliseum', c: 0, p: [0.099,0.468,0.001,0.469,-0.097,0.470,-0.135,0.398,-0.066,0.328,-0.033,0.240,-0.101,0.176,-0.189,0.209,-0.265,0.270,-0.358,0.263,-0.388,0.178,-0.340,0.093,-0.280,0.017,-0.271,-0.077,-0.340,-0.145,-0.432,-0.171,-0.500,-0.230,-0.454,-0.303,-0.357,-0.313,-0.286,-0.373,-0.276,-0.470,-0.202,-0.454,-0.160,-0.376,-0.075,-0.329,0.014,-0.290,0.059,-0.208,0.009,-0.130,-0.084,-0.098,-0.108,-0.016,-0.031,0.017,0.035,-0.041,0.099,-0.116,0.184,-0.161,0.281,-0.162,0.372,-0.126,0.445,-0.061,0.500,0.018,0.500,0.116,0.446,0.179,0.351,0.166,0.332,0.074,0.270,0.013,0.174,0.024,0.110,0.097,0.098,0.191,0.162,0.264,0.190,0.353,0.184,0.450] },
+    { t: 'Turbo Track', c: 0, p: [0.153,-0.295,0.228,-0.230,0.302,-0.163,0.375,-0.095,0.441,-0.021,0.484,0.067,0.489,0.165,0.484,0.265,0.463,0.362,0.378,0.406,0.280,0.422,0.181,0.429,0.083,0.446,-0.012,0.476,-0.110,0.492,-0.209,0.500,-0.309,0.496,-0.403,0.470,-0.471,0.407,-0.488,0.310,-0.487,0.211,-0.489,0.111,-0.485,0.012,-0.418,-0.052,-0.322,-0.058,-0.248,0.005,-0.202,0.093,-0.188,0.192,-0.180,0.219,-0.152,0.301,-0.132,0.213,-0.118,0.179,-0.062,0.141,-0.046,0.235,-0.042,0.276,0.023,0.287,0.022,0.188,0.032,0.089,0.039,-0.010,0.026,-0.108,-0.024,-0.193,-0.091,-0.267,-0.155,-0.343,-0.185,-0.436,-0.128,-0.500,-0.036,-0.493,0.051,-0.448,0.123,-0.378] },
+    { t: 'Coco Park', c: 0, p: [0.234,-0.048,0.234,0.007,0.234,0.062,0.234,0.116,0.234,0.171,0.231,0.226,0.217,0.278,0.177,0.314,0.125,0.331,0.073,0.347,0.023,0.370,-0.020,0.403,-0.057,0.443,-0.098,0.479,-0.148,0.500,-0.200,0.484,-0.229,0.440,-0.233,0.386,-0.234,0.331,-0.231,0.296,-0.222,0.242,-0.202,0.191,-0.172,0.145,-0.139,0.102,-0.109,0.056,-0.097,0.004,-0.107,-0.050,-0.136,-0.096,-0.170,-0.139,-0.200,-0.185,-0.220,-0.236,-0.230,-0.289,-0.234,-0.344,-0.233,-0.399,-0.223,-0.452,-0.187,-0.492,-0.133,-0.500,-0.085,-0.479,-0.049,-0.438,-0.017,-0.394,0.020,-0.353,0.064,-0.320,0.113,-0.296,0.163,-0.276,0.205,-0.241,0.228,-0.193,0.233,-0.139,0.234,-0.084] },
+    { t: 'Tiger Temple', c: 0, p: [-0.158,0.126,-0.216,0.130,-0.269,0.153,-0.308,0.196,-0.344,0.241,-0.397,0.260,-0.455,0.255,-0.490,0.220,-0.497,0.165,-0.500,0.107,-0.500,0.048,-0.494,-0.010,-0.461,-0.053,-0.404,-0.061,-0.349,-0.047,-0.312,-0.002,-0.274,0.042,-0.229,0.079,-0.171,0.085,-0.113,0.085,-0.054,0.084,0.004,0.084,0.062,0.084,0.120,0.082,0.174,0.062,0.210,0.017,0.238,-0.034,0.257,-0.089,0.263,-0.147,0.281,-0.202,0.323,-0.240,0.377,-0.260,0.433,-0.247,0.476,-0.212,0.500,-0.161,0.498,-0.104,0.469,-0.054,0.434,-0.007,0.397,0.038,0.355,0.078,0.307,0.110,0.250,0.123,0.192,0.125,0.134,0.125,0.075,0.126,0.017,0.125,-0.041,0.125,-0.100,0.125] },
+    { t: 'Dingo Canyon', c: 0, p: [0.021,0.486,0.083,0.498,0.146,0.500,0.209,0.498,0.272,0.493,0.329,0.469,0.369,0.423,0.378,0.361,0.344,0.309,0.290,0.279,0.228,0.269,0.165,0.263,0.139,0.209,0.123,0.148,0.113,0.085,0.109,0.022,0.109,-0.041,0.112,-0.104,0.108,-0.166,0.078,-0.220,0.046,-0.274,0.028,-0.334,0.018,-0.396,0.006,-0.458,-0.035,-0.500,-0.098,-0.495,-0.158,-0.477,-0.220,-0.487,-0.279,-0.492,-0.311,-0.442,-0.329,-0.381,-0.351,-0.322,-0.373,-0.263,-0.378,-0.203,-0.359,-0.143,-0.329,-0.088,-0.293,-0.036,-0.274,-0.042,-0.281,0.021,-0.298,0.082,-0.305,0.144,-0.286,0.204,-0.253,0.257,-0.213,0.306,-0.174,0.355,-0.129,0.399,-0.079,0.438,-0.027,0.474] },
+    { t: 'Blizzard Bluff', c: 0, p: [0.280,0.207,0.273,0.279,0.265,0.351,0.257,0.424,0.207,0.470,0.146,0.500,0.085,0.461,0.046,0.402,0.016,0.336,-0.023,0.275,-0.086,0.244,-0.144,0.284,-0.199,0.332,-0.254,0.379,-0.310,0.393,-0.367,0.349,-0.408,0.289,-0.421,0.243,-0.405,0.174,-0.354,0.122,-0.310,0.065,-0.285,-0.003,-0.279,-0.075,-0.282,-0.147,-0.304,-0.217,-0.323,-0.287,-0.311,-0.352,-0.266,-0.409,-0.200,-0.413,-0.135,-0.382,-0.074,-0.342,-0.014,-0.301,0.057,-0.298,0.114,-0.341,0.166,-0.392,0.218,-0.443,0.270,-0.494,0.339,-0.500,0.397,-0.464,0.421,-0.404,0.407,-0.333,0.368,-0.272,0.327,-0.212,0.291,-0.149,0.289,-0.077,0.304,-0.006,0.312,0.065,0.293,0.135] },
+    { t: 'Dragon Mines', c: 1, p: [-0.057,-0.388,-0.057,-0.309,-0.055,-0.229,-0.061,-0.149,-0.070,-0.070,-0.078,0.009,-0.043,0.078,0.035,0.084,0.109,0.059,0.168,0.005,0.237,-0.028,0.314,-0.009,0.382,0.031,0.450,0.073,0.472,0.124,0.460,0.192,0.406,0.249,0.386,0.325,0.364,0.402,0.310,0.457,0.233,0.468,0.161,0.434,0.092,0.395,0.032,0.343,-0.035,0.302,-0.110,0.285,-0.175,0.331,-0.237,0.381,-0.286,0.441,-0.258,0.500,-0.193,0.467,-0.218,0.401,-0.284,0.355,-0.329,0.293,-0.343,0.215,-0.348,0.136,-0.349,0.056,-0.371,-0.020,-0.407,-0.091,-0.435,-0.139,-0.472,-0.209,-0.462,-0.286,-0.402,-0.335,-0.337,-0.381,-0.282,-0.438,-0.220,-0.486,-0.143,-0.500,-0.074,-0.464] },
+    { t: 'Cortex Castle', c: 1, p: [-0.239,-0.159,-0.239,-0.053,-0.288,0.012,-0.394,0.013,-0.442,0.079,-0.442,0.186,-0.443,0.292,-0.418,0.380,-0.318,0.397,-0.293,0.496,-0.200,0.500,-0.182,0.397,-0.076,0.391,-0.068,0.286,-0.068,0.179,0.010,0.147,0.116,0.140,0.135,0.042,0.136,-0.064,0.186,-0.125,0.273,-0.148,0.228,-0.233,0.204,-0.329,0.204,-0.435,0.262,-0.500,0.368,-0.500,0.410,-0.418,0.440,-0.323,0.436,-0.229,0.411,-0.134,0.443,-0.035,0.388,0.044,0.288,0.018,0.242,0.092,0.242,0.199,0.240,0.305,0.235,0.411,0.132,0.420,0.038,0.400,0.034,0.293,0.034,0.187,0.035,0.080,0.036,-0.026,0.035,-0.133,0.035,-0.239,-0.053,-0.261,-0.159,-0.261,-0.237,-0.228] },
+    { t: 'Inferno Island', c: 0, p: [0.109,-0.399,0.136,-0.343,0.163,-0.288,0.197,-0.238,0.233,-0.189,0.260,-0.134,0.287,-0.079,0.286,-0.021,0.259,0.033,0.226,0.084,0.202,0.140,0.193,0.158,0.182,0.195,0.179,0.256,0.176,0.317,0.176,0.378,0.166,0.437,0.125,0.481,0.068,0.500,0.007,0.496,-0.049,0.472,-0.099,0.438,-0.158,0.423,-0.216,0.403,-0.265,0.368,-0.287,0.313,-0.284,0.255,-0.258,0.200,-0.228,0.147,-0.194,0.096,-0.167,0.041,-0.148,-0.017,-0.148,-0.077,-0.155,-0.106,-0.179,-0.163,-0.203,-0.219,-0.227,-0.275,-0.244,-0.334,-0.239,-0.390,-0.207,-0.442,-0.149,-0.460,-0.090,-0.477,-0.031,-0.493,0.029,-0.500,0.076,-0.473,0.101,-0.417,0.125,-0.361,0.134,-0.342] },
+    { t: 'Jungle Boogie', c: 1, p: [-0.003,0.110,0.019,0.051,0.026,-0.011,0.029,-0.074,0.033,-0.137,0.042,-0.198,0.064,-0.257,0.091,-0.314,0.108,-0.374,0.107,-0.434,0.061,-0.477,0.001,-0.496,-0.057,-0.500,-0.113,-0.470,-0.154,-0.424,-0.188,-0.370,-0.219,-0.316,-0.252,-0.262,-0.276,-0.205,-0.284,-0.143,-0.247,-0.098,-0.201,-0.055,-0.163,-0.004,-0.120,0.041,-0.140,0.096,-0.170,0.152,-0.197,0.209,-0.210,0.270,-0.192,0.328,-0.142,0.348,-0.113,0.293,-0.057,0.281,0.006,0.277,0.069,0.277,0.131,0.275,0.194,0.281,0.249,0.308,0.282,0.359,0.284,0.421,0.250,0.473,0.194,0.500,0.134,0.483,0.104,0.458,0.075,0.403,0.049,0.345,0.022,0.288,-0.001,0.230,-0.017,0.169] },
+    { t: 'Tiny Temple', c: 0, p: [-0.107,0.330,-0.144,0.277,-0.189,0.231,-0.251,0.219,-0.305,0.220,-0.369,0.224,-0.422,0.199,-0.433,0.137,-0.405,0.081,-0.358,0.036,-0.305,0.001,-0.241,-0.005,-0.177,-0.004,-0.119,-0.030,-0.071,-0.072,-0.036,-0.124,-0.035,-0.189,-0.033,-0.253,-0.026,-0.317,0.002,-0.374,0.046,-0.420,0.096,-0.448,0.144,-0.490,0.207,-0.500,0.271,-0.490,0.334,-0.476,0.392,-0.449,0.433,-0.403,0.427,-0.341,0.415,-0.278,0.420,-0.214,0.431,-0.151,0.409,-0.092,0.362,-0.048,0.324,0.001,0.320,0.065,0.316,0.103,0.299,0.165,0.257,0.213,0.205,0.249,0.156,0.291,0.145,0.352,0.148,0.416,0.112,0.466,0.057,0.500,0.001,0.490,-0.039,0.439,-0.073,0.384] },
+    { t: 'Meteor Gorge', c: 0, p: [-0.061,-0.308,0.024,-0.313,0.102,-0.347,0.168,-0.400,0.199,-0.478,0.254,-0.500,0.336,-0.496,0.411,-0.463,0.447,-0.389,0.449,-0.303,0.448,-0.218,0.446,-0.133,0.446,-0.047,0.447,0.038,0.448,0.123,0.452,0.209,0.449,0.294,0.412,0.367,0.339,0.409,0.268,0.454,0.199,0.500,0.116,0.492,0.048,0.441,-0.024,0.415,-0.095,0.408,-0.178,0.390,-0.240,0.333,-0.252,0.251,-0.203,0.186,-0.123,0.157,-0.043,0.129,0.029,0.084,0.052,0.005,0.009,-0.066,-0.038,-0.093,-0.121,-0.092,-0.181,-0.034,-0.225,0.039,-0.295,0.083,-0.378,0.075,-0.443,0.022,-0.452,-0.061,-0.420,-0.140,-0.377,-0.214,-0.332,-0.286,-0.286,-0.357,-0.211,-0.388,-0.135,-0.351] },
+    { t: 'Barin Ruins', c: 1, p: [-0.028,0.343,0.036,0.367,0.099,0.391,0.147,0.362,0.182,0.304,0.243,0.279,0.307,0.257,0.363,0.219,0.415,0.181,0.478,0.199,0.500,0.260,0.476,0.320,0.419,0.357,0.352,0.357,0.301,0.312,0.278,0.249,0.263,0.183,0.233,0.124,0.177,0.086,0.119,0.050,0.061,0.014,0.038,-0.001,0.010,-0.016,-0.049,-0.050,-0.100,-0.094,-0.132,-0.152,-0.105,-0.211,-0.070,-0.269,-0.073,-0.335,-0.118,-0.385,-0.184,-0.391,-0.231,-0.353,-0.267,-0.295,-0.293,-0.232,-0.319,-0.173,-0.343,-0.110,-0.372,-0.048,-0.418,-0.000,-0.477,0.035,-0.500,0.097,-0.479,0.157,-0.420,0.189,-0.357,0.215,-0.295,0.244,-0.260,0.298,-0.225,0.352,-0.159,0.371,-0.094,0.355] },
+    { t: 'Deep Sea Driving', c: 1, p: [0.210,0.499,0.117,0.471,0.023,0.451,-0.072,0.444,-0.156,0.491,-0.247,0.490,-0.275,0.401,-0.273,0.305,-0.272,0.269,-0.238,0.181,-0.205,0.090,-0.162,0.009,-0.074,-0.031,0.006,-0.060,0.017,-0.150,-0.055,-0.207,-0.152,-0.208,-0.248,-0.202,-0.341,-0.223,-0.402,-0.295,-0.411,-0.391,-0.356,-0.466,-0.266,-0.496,-0.170,-0.500,-0.091,-0.446,-0.027,-0.375,0.042,-0.309,0.132,-0.322,0.182,-0.403,0.239,-0.442,0.327,-0.425,0.340,-0.333,0.308,-0.241,0.283,-0.148,0.255,-0.055,0.262,0.037,0.350,0.064,0.411,0.004,0.392,-0.084,0.306,-0.112,0.235,-0.051,0.237,0.045,0.297,0.115,0.386,0.150,0.409,0.238,0.387,0.332,0.357,0.424,0.303,0.500] },
+    { t: 'Out of Time', c: 1, p: [0.289,0.232,0.259,0.128,0.245,0.024,0.282,-0.078,0.274,-0.066,0.318,-0.165,0.319,-0.267,0.228,-0.291,0.145,-0.220,0.045,-0.186,-0.051,-0.226,-0.004,-0.301,0.098,-0.326,0.062,-0.409,-0.044,-0.422,-0.141,-0.374,-0.177,-0.272,-0.202,-0.167,-0.220,-0.061,-0.281,0.028,-0.347,0.114,-0.423,0.192,-0.500,0.267,-0.477,0.350,-0.392,0.310,-0.348,0.212,-0.284,0.125,-0.218,0.038,-0.144,-0.041,-0.045,-0.059,0.019,0.011,-0.027,0.102,-0.105,0.177,-0.163,0.269,-0.172,0.375,-0.091,0.422,0.002,0.381,0.015,0.276,0.051,0.176,0.149,0.157,0.245,0.118,0.274,0.016,0.362,-0.022,0.425,0.056,0.464,0.157,0.500,0.258,0.441,0.340,0.344,0.325] },
+    { t: 'Clockwork Wumpa', c: 1, p: [-0.245,0.215,-0.246,0.315,-0.247,0.414,-0.214,0.490,-0.115,0.493,-0.029,0.450,0.061,0.425,0.134,0.492,0.232,0.500,0.278,0.434,0.278,0.335,0.291,0.240,0.348,0.160,0.316,0.071,0.277,-0.016,0.219,-0.071,0.119,-0.068,0.020,-0.072,-0.005,-0.161,-0.072,-0.205,-0.148,-0.145,-0.247,-0.146,-0.346,-0.150,-0.377,-0.221,-0.325,-0.282,-0.255,-0.353,-0.160,-0.370,-0.081,-0.371,0.010,-0.373,0.108,-0.380,0.138,-0.467,0.217,-0.500,0.316,-0.496,0.375,-0.442,0.377,-0.343,0.344,-0.259,0.246,-0.254,0.148,-0.247,0.128,-0.157,0.128,-0.057,0.127,0.042,0.127,0.142,0.126,0.241,0.089,0.315,-0.010,0.320,-0.109,0.316,-0.131,0.232,-0.178,0.169] },
+    { t: 'Assembly Lane', c: 1, p: [0.500,-0.119,0.498,-0.005,0.486,0.108,0.439,0.210,0.340,0.259,0.242,0.261,0.143,0.210,0.193,0.119,0.296,0.070,0.377,-0.008,0.360,-0.115,0.254,-0.142,0.145,-0.116,0.124,-0.005,0.040,0.034,0.018,-0.067,-0.016,-0.174,-0.043,-0.281,-0.046,-0.395,-0.120,-0.467,-0.231,-0.468,-0.343,-0.459,-0.412,-0.376,-0.361,-0.298,-0.337,-0.199,-0.334,-0.085,-0.332,0.029,-0.347,0.128,-0.421,0.171,-0.425,0.259,-0.500,0.321,-0.500,0.434,-0.418,0.468,-0.305,0.461,-0.294,0.355,-0.292,0.241,-0.202,0.206,-0.088,0.206,0.026,0.200,0.114,0.140,0.123,0.028,0.120,-0.086,0.083,-0.191,0.096,-0.297,0.197,-0.341,0.310,-0.339,0.421,-0.313,0.492,-0.232] },
+    { t: 'Hyper Spaceway', c: 0, p: [-0.030,0.153,-0.031,0.047,-0.042,-0.058,-0.042,-0.164,-0.042,-0.269,-0.037,-0.375,-0.031,-0.403,0.052,-0.431,0.158,-0.435,0.263,-0.439,0.361,-0.427,0.421,-0.340,0.481,-0.253,0.500,-0.150,0.476,-0.049,0.382,-0.008,0.335,0.062,0.420,0.060,0.440,0.152,0.423,0.257,0.406,0.353,0.390,0.358,0.285,0.378,0.181,0.397,0.077,0.417,-0.026,0.436,-0.131,0.456,-0.216,0.430,-0.285,0.357,-0.280,0.265,-0.338,0.199,-0.391,0.107,-0.437,0.013,-0.456,-0.090,-0.500,-0.187,-0.456,-0.281,-0.394,-0.366,-0.327,-0.448,-0.250,-0.456,-0.227,-0.367,-0.239,-0.262,-0.252,-0.157,-0.211,-0.061,-0.165,0.035,-0.119,0.130,-0.073,0.225,-0.031,0.185,-0.031,0.140] }
+  ];
+  // RND_GAME_SHAPES:END
+  const RND_DIFF = {
+    F: { amp: 0.22, harm: 3, hill: 4, bank: 0, jumps: 0, width: 70 },
+    N: { amp: 0.32, harm: 4, hill: 10, bank: 10, jumps: 1, width: 60 },
+    D: { amp: 0.42, harm: 5, hill: 20, bank: 16, jumps: 2, width: 50 },
+  };
+  const mulberry = seed => {
+    let s = seed >>> 0;
+    return () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  };
+  // pieces choisies (2026-11-14) : bits chicanes 1, bosses 2, spirales 4, sauts 8, virages releves 16. Par defaut celles
+  // de la difficulte (code sans suffixe, comme avant : les anciens codes redonnent la meme piste) ; sinon suffixe
+  // « -<masque base 32> » (ex. 3MN-K7Q2ZP-B)
+  const RND_PIECES = [['chic', 1, 'Chicanes'], ['bump', 2, 'Bosses'], ['spiral', 4, 'Spirales'], ['jump', 8, 'Sauts'], ['bank', 16, 'Virages relevés'],
+                      ['cut', 32, 'Canyons et remblais']];
+  const RND_MASK_DEF = { F: 35, N: 63, D: 63 };
+  const rndCode = (kitIdx, len, diff, seed, mask) =>
+    `${kitIdx.toString(36).toUpperCase()}${len}${diff}-${(seed >>> 0).toString(36).toUpperCase().padStart(6, '0').slice(-6)}`
+    + (mask !== undefined && mask !== RND_MASK_DEF[diff] ? '-' + mask.toString(32).toUpperCase() : '');
+  function parseRndCode(code) {
+    const m = /^\s*([0-9A-Z])([CMLX])([FND])-([0-9A-Z]{1,6})(?:-([0-9A-V]{1,2}))?\s*$/i.exec(code || '');
+    if (!m) return null;
+    const c = { kit: parseInt(m[1], 36), len: m[2].toUpperCase(), diff: m[3].toUpperCase(), seed: parseInt(m[4], 36) >>> 0 };
+    if (m[5]) { const k = parseInt(m[5], 32); if (k !== RND_MASK_DEF[c.diff]) c.mask = k; }
+    return c;
+  }
+  // rayon (pouces) du cercle passant par a, b, c (Infinity : alignes)
+  const circR = (a, b, c) => {
+    const ab = Math.hypot(b[0] - a[0], b[1] - a[1]), bc = Math.hypot(c[0] - b[0], c[1] - b[1]), ca = Math.hypot(a[0] - c[0], a[1] - c[1]);
+    const cr = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    return Math.abs(cr) < 1e-9 ? Infinity : ab * bc * ca / (2 * Math.abs(cr));
+  };
+  // barre de progression de la piste aleatoire (2026-11-14) : meme fenetre que l'ouverture de la Creation (#crload),
+  // titre change le temps de la creation ; pct null = fin
+  async function rndProgress(pct, msg) {
+    const g = id => document.getElementById(id);                  // hors du panneau (index.html)
+    const box = g('crload'), fill = g('crloadfill'), title = box?.querySelector('.t');
+    if (!box) return;
+    if (pct == null) {
+      fill.style.width = '100%';
+      await new Promise(r => setTimeout(r, 200));
+      box.classList.remove('on'); fill.style.width = '0';
+      if (title.dataset.rnd) { title.textContent = title.dataset.rnd; delete title.dataset.rnd; }
+      return;
+    }
+    if (!title.dataset.rnd) { title.dataset.rnd = title.textContent; title.textContent = 'Création de la piste aléatoire…'; }
+    box.classList.add('on'); g('crloadmsg').textContent = msg; fill.style.width = pct + '%';
+    await new Promise(r => requestAnimationFrame(() => setTimeout(r, 30)));   // laisse la barre s'afficher
+  }
+  async function randomTrack(c, opts = {}, step = async () => {}) {
+    await step(5, 'Tracé de la route…');
+    const rnd = mulberry(c.seed ^ 0x9E3779B9), D = RND_DIFF[c.diff], kits = [...$('crkit').options].map(o => o.value);
+    const kit = kits[c.kit % kits.length], W = D.width * IN, T0 = S.terrain;
+    const cx = T0.x0 + (T0.n - 1) * T0.cell / 2, cy = T0.y0 + (T0.n - 1) * T0.cell / 2;
+    // 1. trace : courbe polaire r(t) > 0 (jamais de croisement), quelques ondulations au hasard, ellipse, rotation ;
+    // ondulations reduites jusqu'a ce que le virage le plus serre passe (rayon mini du paveur, largeur de route)
+    // deux passages de la route qui se touchent (2026-11-13, retour utilisateur 3LD-1A2B3C : « la route passe sur une
+    // autre ») : points eloignes le long du trace (> 3 largeurs) a moins d'une largeur + 10 m ; H donne : accepte si
+    // l'un passe au moins RND_CLEAR au-dessus de l'autre (pont)
+    const RND_CLEAR = 9 * IN;
+    function overlaps(A, H) {
+      const N = A.length, far = Math.ceil(3 * W / STEP), lim = W + 10 * IN;
+      for (let i = 0; i < N; i++) for (let j = i + far; j < N; j++) {
+        if (N - (j - i) < far) break;
+        if (Math.hypot(A[i][0] - A[j][0], A[i][1] - A[j][1]) < lim && (!H || Math.abs(H[i] - H[j]) < RND_CLEAR)) return true;
+      }
+      return false;
+    }
+    // forme du trace (2026-11-14, retour utilisateur « toujours un cercle vu de dessus ») : forme tiree au hasard (libre,
+    // allongee, haricot, triangle, carre, goutte), quelques points de passage irreguliers autour du centre (jamais de
+    // croisement : un rayon par direction), lisses en courbe (Catmull-Rom fermee). Trop marquee (virage trop serre ou
+    // deux bouts qui se touchent) : adoucie peu a peu vers un cercle (s)
+    // + « huit » (2026-11-14, demande utilisateur) : la route se croise une fois, un passage monte sur un pont au-dessus de
+    // l'autre (crossProfile) ; s'il ne passe pas (virage trop serre, passages trop proches), forme libre a la place
+    // + « jeu » (2026-11-14, demande utilisateur « inspire-toi des mini-cartes du jeu ») : trace d'une piste du jeu vu
+    // de dessus (RND_GAME_SHAPES), miroir et rotation au hasard, un peu d'irregularite ; croisee une fois : pont comme le
+    // huit ; virage trop serre : lissee peu a peu ; impossible : forme libre
+    const SHAPES = [['jeu', 0.45], ['libre', 0.14], ['allongée', 0.09], ['haricot', 0.07], ['huit', 0.08], ['triangle', 0.06], ['carré', 0.06], ['goutte', 0.05]];
+    let pick = rnd(), shape = SHAPES[0][0];
+    for (const [nm, w] of SHAPES) { if (pick < w) { shape = nm; break; } pick -= w; }
+    if (opts.shape) shape = opts.shape;                            // essais (?crtest) seulement
+    const tpl0 = RND_GAME_SHAPES[Math.min(RND_GAME_SHAPES.length - 1, Math.floor(rnd() * RND_GAME_SHAPES.length))], mirror = rnd() < 0.5 ? -1 : 1;
+    const gameTpl = (opts.tpl && RND_GAME_SHAPES.find(s => s.t === opts.tpl)) || tpl0;   // opts.tpl : essais seulement
+    if (opts.tpl) shape = 'jeu';
+    let crossing = shape === 'huit' || (shape === 'jeu' && gameTpl.c === 1);
+    const th0 = rnd() * 2 * Math.PI;
+    const ex = shape === 'allongée' ? 1.6 + rnd() * 0.6 : 0.85 + rnd() * 0.35;
+    const nz = (shape === 'libre' ? 0.38 : 0.14) * D.amp / 0.32;     // irregularite (plus en difficile)
+    const crossRise = (13 + rnd() * 5) * IN;                        // huit : hauteur du pont au croisement
+    const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+    let poly, K, ctrl;
+    const makeCtrl = () => {
+      poly = { triangle: 3, 'carré': 4 }[shape] || 0;
+      K = poly ? poly * 3 : shape === 'jeu' ? gameTpl.p.length / 2 : shape === 'huit' ? 16 : shape === 'libre' ? 7 + Math.floor(rnd() * 5) : 9 + Math.floor(rnd() * 4);
+      const form = th => poly ? Math.cos(Math.PI / poly) / Math.cos(((((th - th0) % (2 * Math.PI / poly)) + 2 * Math.PI / poly) % (2 * Math.PI / poly)) - Math.PI / poly)
+        : shape === 'haricot' ? 1 - 0.5 * Math.exp(-(wrap(th - th0) ** 2) / 0.25)
+        : shape === 'goutte' ? 1 + 0.45 * Math.cos(th - th0) : 1;
+      ctrl = [];
+      // huit : largeur / longueur des boucles 0,55 a 0,8 (croisement a 57-77 degres ; plus larges, leurs bouts se
+      // resserrent : rayon mini 33 m a 1,6 contre 85 m a 0,7 sur 1,8 km)
+      const B = 0.55 + rnd() * 0.25;
+      for (let k = 0; k < K; k++) {
+        if (shape === 'jeu') {                                      // piste du jeu : point k, miroir, irregularite legere
+          const j = 1 + (rnd() * 2 - 1) * nz * 0.25;
+          ctrl.push({ xy: [gameTpl.p[2 * k] * mirror * 2 * j, gameTpl.p[2 * k + 1] * 2 * j] });
+          continue;
+        }
+        if (shape === 'huit') {                                     // lemniscate de Gerono : x = sin t, y = sin t cos t
+          const t = 2 * Math.PI * k / K, j = 1 + (rnd() * 2 - 1) * nz * 0.5;
+          ctrl.push({ xy: [Math.sin(t) * j, Math.sin(t) * Math.cos(t) * B * j] });
+          continue;
+        }
+        const th = th0 + 2 * Math.PI * (k + (poly ? 0 : (rnd() - 0.5) * 0.5)) / K;
+        ctrl.push({ th, r: form(th) * (1 + (rnd() * 2 - 1) * nz) });
+      }
+    };
+    makeCtrl();
+    const rot = rnd() * 2 * Math.PI, need = Math.max(R_MIN * 1.3, W * 0.7);
+    // huit : croisement = deux points eloignes le long du trace (plus d'un quart du tour) les plus proches ; profil du
+    // pont (passage i) : palier sur 1,6 x (largeur + 10 m) de chaque cote, rampes a 9 % en moyenne
+    const crossFlat = Math.ceil(1.6 * (W + 10 * IN) / STEP), crossRamp = Math.ceil(crossRise / 0.09 / STEP);
+    function crossProfile(A) {
+      const N = A.length, q = Math.floor(N / 4);
+      let bi = -1, bj = -1, bd = Infinity;
+      for (let i = 0; i < N; i++) for (let j = i + q; j < N; j++) {
+        if (N - (j - i) < q) break;
+        const d = Math.hypot(A[i][0] - A[j][0], A[i][1] - A[j][1]); if (d < bd) { bd = d; bi = i; bj = j; }
+      }
+      const prof = new Float64Array(N);
+      for (let k = 0; k < N; k++) {
+        const d = Math.min(Math.abs(k - bi), N - Math.abs(k - bi));
+        prof[k] = d <= crossFlat ? crossRise : d < crossFlat + crossRamp ? crossRise * (1 - sstep(0, 1, (d - crossFlat) / crossRamp)) : 0;
+      }
+      return { i: bi, j: bj, prof };
+    }
+    let amp = 1, P = [];
+    for (let tr = 0; tr < 40; tr++) {
+      if ((shape === 'huit' || shape === 'jeu') && tr === 15) { shape = 'libre'; crossing = false; makeCtrl(); amp = 1; }   // impossible ici
+      const ext = 1 + (ex - 1) * amp;
+      const cp = ctrl.map(({ th, r, xy }) => {
+        let x, y;
+        if (xy) { x = xy[0]; y = xy[1]; }
+        else { const rr = 1 + (r - 1) * amp; x = rr * Math.cos(th) * ext; y = rr * Math.sin(th) / ext; }
+        return [x * Math.cos(rot) - y * Math.sin(rot), x * Math.sin(rot) + y * Math.cos(rot)]; });
+      const N = 2048, raw = [], per = N / K;
+      for (let i = 0; i < N; i++) {                                // Catmull-Rom fermee par les points de passage
+        const f = i / per, s0 = Math.floor(f), u = f - s0;
+        const p0 = cp[(s0 - 1 + K) % K], p1 = cp[s0 % K], p2 = cp[(s0 + 1) % K], p3 = cp[(s0 + 2) % K];
+        const cr = (a, b, c2, d) => 0.5 * (2 * b + (-a + c2) * u + (2 * a - 5 * b + 4 * c2 - d) * u * u + (-a + 3 * b - 3 * c2 + d) * u * u * u);
+        raw.push([cr(p0[0], p1[0], p2[0], p3[0]), cr(p0[1], p1[1], p2[1], p3[1])]);
+      }
+      let L = 0;
+      for (let i = 0; i < N; i++) L += Math.hypot(raw[(i + 1) % N][0] - raw[i][0], raw[(i + 1) % N][1] - raw[i][1]);
+      const k = RND_LEN[c.len] * IN / L;
+      // points tous les STEP le long de la courbe (boucle fermee)
+      P = []; let acc = 0, want = 0;
+      for (let i = 0; i < N; i++) {
+        const a = raw[i], b = raw[(i + 1) % N], d = Math.hypot(b[0] - a[0], b[1] - a[1]) * k;
+        while (want <= acc + d && P.length < 4000) { const u = (want - acc) / d; P.push([(a[0] + (b[0] - a[0]) * u) * k, (a[1] + (b[1] - a[1]) * u) * k]); want += STEP; }
+        acc += d;
+      }
+      if (Math.hypot(P[P.length - 1][0] - P[0][0], P[P.length - 1][1] - P[0][1]) < STEP * 0.6) P.pop();
+      let rmin = Infinity;
+      for (let i = 0; i < P.length; i++) rmin = Math.min(rmin, circR(P[(i - 2 + P.length) % P.length], P[i], P[(i + 2) % P.length]));
+      // ni virage trop serre, ni deux bouts qui se touchent (huit : sauf au croisement, ou un passage est sur le pont)
+      if (rmin >= need && !overlaps(P, crossing ? crossProfile(P).prof : null)) break;
+      if (shape === 'huit') { for (const c2 of ctrl) { c2.xy[1] *= 0.94; } continue; }  // boucles plus fines (bouts moins serres)
+      if (shape === 'jeu') {                                       // piste du jeu : lissee un peu plus (virages moins serres)
+        const old = ctrl.map(c2 => c2.xy.slice());
+        ctrl.forEach((c2, k2) => { const a = old[(k2 - 1 + K) % K], b = old[(k2 + 1) % K];
+          c2.xy = [0.5 * old[k2][0] + 0.25 * (a[0] + b[0]), 0.5 * old[k2][1] + 0.25 * (a[1] + b[1])]; });
+        continue;
+      }
+      amp *= 0.85;
+    }
+    // ondulations (2026-11-14, retour utilisateur « trop de lignes droites, manque de virages ») : la route serpente de
+    // part et d'autre du trace (2 ou 3 vagues de 180 a 450 m, nombre entier sur le tour), amplitude selon la difficulte
+    // (12 / 22 / 32 m), reduite si un virage devient trop serre ou si deux passages se rapprochent. Tirage a part
+    if (!opts.noWiggle) {                                          // opts.noWiggle : essais (?crtest) seulement
+      const wr = mulberry((c.seed ^ 0xC0FFEE) >>> 0), Lp = P.length * STEP;
+      const waves = Array.from({ length: 2 + Math.floor(wr() * 2) }, () => {
+        const lam = Lp / Math.max(2, Math.round(Lp / ((180 + wr() * 270) * IN)));
+        return { lam, a: 0.5 + wr() * 0.5, ph: wr() * 2 * Math.PI };
+      });
+      const sum = waves.reduce((s, w) => s + w.a, 0);
+      const A0 = { F: 12, N: 22, D: 32 }[c.diff] * IN;
+      // portions droites gardees (2 a 4 de 250 m, la ou le trace est deja droit) : sauts, chicanes, spirales s'y posent
+      const m0 = P.length, env = new Float64Array(m0).fill(1), Rb = P.map((p, i) => circR(P[(i - 5 + m0) % m0], p, P[(i + 5) % m0]));
+      const SL = Math.round(250 * IN / STEP), RAMPW = 15, nKeep = 2 + (c.len === 'L' || c.len === 'X' ? 1 : 0) + (c.diff === 'D' ? 1 : 0);
+      const cands = [];
+      for (let i = 0; i < m0; i++) { let ok = true; for (let k = 0; k < SL && ok; k++) if (Rb[(i + k) % m0] < 300 * IN) ok = false; if (ok) cands.push(i); }
+      const kept = [];
+      for (let t = 0; t < 40 && kept.length < nKeep && cands.length; t++) {
+        const i0 = cands[Math.floor(wr() * cands.length)];
+        if (kept.some(k => Math.min(Math.abs(k - i0), m0 - Math.abs(k - i0)) < SL + 2 * RAMPW + 20)) continue;
+        kept.push(i0);
+        for (let k = -RAMPW; k < SL + RAMPW; k++) {
+          const w = k < 0 ? sstep(0, 1, -k / RAMPW) : k >= SL ? sstep(0, 1, (k - SL + 1) / RAMPW) : 0;
+          env[(i0 + k + m0) % m0] = Math.min(env[(i0 + k + m0) % m0], w);
+        }
+      }
+      for (let A = A0; A >= 4 * IN; A *= 0.75) {
+        const m = P.length, raw = P.map((p, i) => {
+          const a = P[(i - 1 + m) % m], b = P[(i + 1) % m], l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          const o = env[i] * A / sum * waves.reduce((s, w) => s + w.a * Math.sin(2 * Math.PI * i * STEP / w.lam + w.ph), 0);
+          return [p[0] - (b[1] - a[1]) / l * o, p[1] + (b[0] - a[0]) / l * o];
+        });
+        // points tous les STEP le long de la nouvelle courbe
+        const Q2 = []; let acc = 0, want = 0;
+        for (let i = 0; i < m; i++) {
+          const a = raw[i], b = raw[(i + 1) % m], d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          while (want <= acc + d && Q2.length < 4000) { const u = (want - acc) / (d || 1); Q2.push([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u]); want += STEP; }
+          acc += d;
+        }
+        if (Math.hypot(Q2[Q2.length - 1][0] - Q2[0][0], Q2[Q2.length - 1][1] - Q2[0][1]) < STEP * 0.6) Q2.pop();
+        let rmin = Infinity;
+        for (let i = 0; i < Q2.length; i++) rmin = Math.min(rmin, circR(Q2[(i - 2 + Q2.length) % Q2.length], Q2[i], Q2[(i + 2) % Q2.length]));
+        if (rmin >= need && !overlaps(Q2, crossing ? crossProfile(Q2).prof : null)) { P = Q2; break; }
+      }
+    }
+    const shapeUsed = shape === 'huit' ? 'en 8' : shape === 'jeu' ? `inspirée de ${gameTpl.t}` : amp > 0.5 ? shape : amp > 0.2 ? shape + ' (adoucie)' : 'ronde';
+    if (rnd() < 0.5) P.reverse();                                 // sens de la course au hasard
+    let n = P.length;
+    const cross = crossing ? crossProfile(P) : null;
+    await step(20, 'Pièces de route : chicanes, bosses, spirales…');
+    // 2. PIECES SPECIALES dans le trace (2026-11-13, demande utilisateur) : chicanes, series de bosses, spirales ; nombre
+    // selon la difficulte et la longueur. Chaque piece prend une ligne droite libre (marquee « occupee » ensuite)
+    const longer = c.len === 'L' || c.len === 'X' ? 1 : 0;
+    const want = { F: { chic: 1, bump: 1, spiral: 0 },
+                   N: { chic: 1 + longer, bump: 1 + longer, spiral: rnd() < 0.6 ? 1 : 0 },
+                   D: { chic: 2 + longer, bump: 2, spiral: 1 + longer } }[c.diff];
+    // pieces choisies dans la fenetre (masque) : cochee = au moins une, decochee = aucune
+    let nJumps = D.jumps, bankDeg = D.bank;
+    if (c.mask !== undefined) {
+      const on = b => (c.mask & b) !== 0;
+      want.chic = on(1) ? Math.max(1, want.chic) : 0;
+      want.bump = on(2) ? Math.max(1, want.bump) : 0;
+      want.spiral = on(4) ? Math.max(1, want.spiral) : 0;
+      nJumps = on(8) ? Math.max(1, D.jumps) : 0;
+      bankDeg = on(16) ? D.bank || 10 : 0;
+    }
+    const radOf = A => A.map((p, i) => circR(A[(i - 2 + A.length) % A.length], p, A[(i + 2) % A.length]));
+    const shuffled = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+    let busy = new Uint8Array(n);
+    if (cross) {                                                   // croisement du huit : aucune autre piece, pas le depart
+      for (let k = -(crossFlat + crossRamp + 5); k <= crossFlat + crossRamp + 5; k++) busy[(cross.i + k + n) % n] = 1;
+      for (let k = -(crossFlat + 8); k <= crossFlat + 8; k++) busy[(cross.j + k + n) % n] = 1;
+    }
+    // debuts de suites de `len` points de rayon > 220 m, sans piece
+    const freeRuns = len => { const r = radOf(P), out = [];
+      for (let i = 0; i + len < P.length; i++) { let ok = true; for (let k = 0; k < len && ok; k++) if (r[i + k] < 220 * IN || busy[i + k]) ok = false; if (ok) out.push(i); }
+      return out; };
+    const pieces = [];
+    // 2a. chicanes : decalage lateral en S (deux virages opposes) sur ~150 m, amplitude 10 a 18 m
+    // pieces choisies a la main (masque) : plusieurs essais, chicane plus longue et plus douce (la forme d'origine, 150 m
+    // et 10 a 18 m de decalage, etait presque toujours trop serree pour la largeur de route). Sans masque : comme avant
+    // (memes pistes pour les anciens codes)
+    const chicTries = c.mask !== undefined ? 12 : 1;
+    for (let j = 0, tries = 0; j < want.chic && tries < want.chic * chicTries; tries++) {
+      if (chicTries === 1) j++;
+      const soft = chicTries > 1, L = soft ? [64, 54, 46][tries % 3] : 38, runs = freeRuns(L + 10); if (!runs.length) { if (soft && tries % 3 < 2) continue; break; }
+      const i0 = runs[Math.floor(rnd() * runs.length)] + 5, A = (soft ? 6 + rnd() * 6 : 10 + rnd() * 8) * IN * (rnd() < 0.5 ? 1 : -1), old = P.map(p => p.slice());
+      for (let k = 0; k <= L; k++) {
+        const i = i0 + k, t = k / L, a = old[i - 1], b = old[i + 1];
+        const nx = -(b[1] - a[1]), ny = b[0] - a[0], l = Math.hypot(nx, ny) || 1, off = A * Math.sin(2 * Math.PI * t) * Math.sin(Math.PI * t);
+        P[i] = [old[i][0] + nx / l * off, old[i][1] + ny / l * off];
+      }
+      const r = radOf(P); let rmin = Infinity;
+      for (let k = i0 - 3; k <= i0 + L + 3; k++) rmin = Math.min(rmin, r[(k + n) % n]);
+      if (rmin < need) { P = old; continue; }                     // virage trop serre : chicane abandonnee
+      for (let k = i0 - 5; k <= i0 + L + 5; k++) busy[(k + n) % n] = 1;
+      pieces.push('chicane');
+      if (soft) j++;
+    }
+    // 3. hauteurs : ondulations douces sur le tour (fermees), pente <= 60 % du maximum et compatible avec les virages
+    let s = [0];
+    for (let i = 1; i < n; i++) s.push(s[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+    let Ltot = s[n - 1] + Math.hypot(P[0][0] - P[n - 1][0], P[0][1] - P[n - 1][1]);
+    const hw = [1, 2, 3].map(m => ({ m, a: (rnd() * 2 - 1) * D.hill * IN / m, ph: rnd() * 2 * Math.PI }));
+    let h = s.map(v => hw.reduce((acc, q) => acc + q.a * Math.sin(2 * Math.PI * q.m * v / Ltot + q.ph), 0));
+    let rad = radOf(P);
+    let fac = 1;
+    for (let i = 0; i < n; i++) {
+      const sl = Math.abs(h[(i + 1) % n] - h[i]) / STEP;
+      if (sl > 1e-6) fac = Math.min(fac, 0.6 * SLOPE_MAX / sl);
+      // rayon mini en pente (paveur) : R_MIN * (1 + R_SLOPE * pente / pente max) <= rayon du virage
+      if (Number.isFinite(rad[i]) && sl > 1e-6) fac = Math.min(fac, Math.max(0, (rad[i] / R_MIN - 1) / R_SLOPE * SLOPE_MAX / sl));
+    }
+    h = h.map(v => v * Math.min(1, fac));
+    if (cross) {                                                   // pont du huit, puis au moins 10 m au-dessus de l'autre passage
+      h = h.map((v, k) => v + cross.prof[k]);
+      let lack = 0;
+      const far = Math.ceil(3 * W / STEP), lim = W + 10 * IN;
+      for (let a = 0; a < n; a++) if (cross.prof[a] > 0) for (let b = 0; b < n; b++) {
+        const di = Math.min(Math.abs(a - b), n - Math.abs(a - b));
+        if (di > far && Math.hypot(P[a][0] - P[b][0], P[a][1] - P[b][1]) < lim) lack = Math.max(lack, 10 * IN - (h[a] - h[b]));
+      }
+      if (lack > 0) h = h.map((v, k) => v + cross.prof[k] / crossRise * lack);
+    }
+    // 2b. bosses : 2 ou 3 bosses de 1,5 a 3 m (pente <= 22 %) sur une ligne droite
+    for (let j = 0; j < want.bump; j++) {
+      const Hb = (1.5 + rnd() * 1.5) * IN, m = Math.round(Math.max(40 * IN, Math.PI * Hb / 0.22) / STEP), nb = 2 + Math.floor(rnd() * 2);
+      const runs = freeRuns(m * nb + 10); if (!runs.length) break;
+      const i0 = runs[Math.floor(rnd() * runs.length)] + 5;
+      for (let k = 0; k < m * nb; k++) h[(i0 + k) % n] += Hb * (1 - Math.cos(2 * Math.PI * (k % m) / m)) / 2;
+      for (let k = i0 - 5; k < i0 + m * nb + 5; k++) busy[(k + n) % n] = 1;
+      pieces.push('bosses');
+    }
+    // 2c. spirales : boucle complete qui monte de 16 a 22 m et repasse au-dessus de son entree (pont), puis la route
+    // redescend a 10 %. Posee du cote ou elle a de la place (exterieur d'abord), loin du reste du trace
+    const area = P.reduce((a, p, i) => { const q = P[(i + 1) % n]; return a + p[0] * q[1] - q[0] * p[1]; }, 0);
+    // 2026-11-14, retour utilisateur « spirales trop serrees, peu de vision en arrivant dessous » : rayon 45 m -> ~80 m
+    // (65 m si la place manque ; route de 50 a 70 m de large), 22 a 28 m de hauteur libre sous le pont (16 a 22 avant)
+    const RC_TRY = [Math.max(80 * IN, W * 1.6), Math.max(65 * IN, W * 1.3)];
+    for (let j = 0; j < want.spiral; j++) {
+      const rise = (22 + rnd() * 6) * IN, Ld = rise / 0.10, nd = Math.ceil(Ld / STEP);
+      let done = false;
+      for (const Rc of RC_TRY) {
+      const m = Math.max(24, Math.round(2 * Math.PI * Rc / STEP));
+      // la sortie garde sa hauteur tant qu'elle passe au-dessus de la boucle (sinon elle la longeait a 5 m au-dessus et
+      // son talus recouvrait la route du dessous), au plus ce palier
+      const hold = Math.ceil(Math.sqrt((Rc + W + 10 * IN) ** 2 - Rc ** 2) / STEP) + 2;
+      // entree droite sur 120 m ; la redescente qui suit peut tourner, mais sans autre piece
+      const runs = freeRuns(30).filter(r0 => r0 + hold + nd + 30 < n && !busy.slice(r0, r0 + hold + nd + 30).some(Boolean));
+      for (const r0 of shuffled(runs).slice(0, 15)) {
+        const kk = r0 + 15, a = P[kk - 1], b = P[kk + 1], l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, tx = (b[0] - a[0]) / l, ty = (b[1] - a[1]) / l;
+        for (const sd of area > 0 ? [-1, 1] : [1, -1]) {           // +1 : centre a gauche (boucle trigo : exterieur = droite)
+          const C = [P[kk][0] - ty * sd * Rc, P[kk][1] + tx * sd * Rc];
+          const ph0 = Math.atan2(P[kk][1] - C[1], P[kk][0] - C[0]), circ = [];
+          for (let q = 1; q < m; q++) { const ph = ph0 + sd * 2 * Math.PI * q / m; circ.push([C[0] + Rc * Math.cos(ph), C[1] + Rc * Math.sin(ph)]); }
+          let ok = true;
+          for (const p of circ) {
+            for (let i = 0; i < n && ok; i++) {
+              const di = Math.min(Math.abs(i - kk), n - Math.abs(i - kk));
+              if (di > 45 && Math.hypot(P[i][0] - p[0], P[i][1] - p[1]) < W + 30 * IN) ok = false;
+            }
+            if (!ok) break;
+          }
+          if (!ok) continue;
+          const hk = h[kk];
+          const P2 = [...P.slice(0, kk + 1), ...circ, ...P.slice(kk + 1)];
+          const h2 = [...h.slice(0, kk + 1), ...circ.map((_, q) => hk + rise * (q + 1) / m),
+               ...h.slice(kk + 1).map((v, i) => v + rise * (1 - sstep(0, 1, (i + 1 - hold) / nd)))];
+          if (overlaps(P2, h2)) continue;                         // pas assez haut au-dessus d'un autre passage
+          P = P2; h = h2;
+          const nb = new Uint8Array(P.length), e = kk + hold + nd + 5;
+          nb.set(busy.slice(0, kk + 1), 0); nb.fill(1, kk - 15, e + m); nb.set(busy.slice(e), e + m - 1);
+          busy = nb; n = P.length; done = true; pieces.push('spirale');
+          break;
+        }
+        if (done) break;
+      }
+      if (done) break;
+      }
+    }
+    s = [0];
+    for (let i = 1; i < n; i++) s.push(s[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+    Ltot = s[n - 1] + Math.hypot(P[0][0] - P[n - 1][0], P[0][1] - P[n - 1][1]);
+    rad = radOf(P);
+    // 2e. canyons et remblais (2026-11-14, demande utilisateur) : troncons de 100 a 350 m ou la route descend de 15 a 40 m
+    // sous le sol (le terrain se creuse autour : canyon) ou monte de 12 a 35 m (talus dessous : remblai ; au-dessus de
+    // 18 m, une fois sur deux SANS talus : route en l'air, comme un pont). Hauteur par rapport au SOL (le relief de base
+    // de la piste ne l'ecrase plus), rampes a 10 % en moyenne. Nombre au hasard (0 a 4, parfois aucun), tirage a part (le
+    // reste de la piste ne change pas), jamais sur une piece, pente et virages compatibles, sans approcher un autre passage
+    const air = new Uint8Array(n);
+    if (c.mask === undefined || (c.mask & 32)) {
+      const rr = mulberry((c.seed ^ 0x5A17C0DE) >>> 0);
+      // 85 % des pistes en ont (1 a 4 selon longueur et difficulte), les autres aucune
+      const count = rr() < 0.85 ? 1 + Math.floor(rr() * (2 + longer + (c.diff === 'D' ? 1 : 0))) : 0;
+      // rampe a pente reguliere (montee de la pente sur le premier quart, descente sur le dernier) : pente maxi 4/3 de
+      // la moyenne (12 % -> 16 %), plus courte qu'une courbe en S (1,5 x)
+      const ramp01 = u => { const a = 0.25, v = 1 / (1 - a); return u <= 0 ? 0 : u >= 1 ? 1 : u < a ? v * u * u / (2 * a)
+        : u > 1 - a ? 1 - v * (1 - u) * (1 - u) / (2 * a) : v * (u - a / 2); };
+      for (let j = 0, tries = 0; j < count && tries < count * 25; tries++) {
+        const canyon = rr() < 0.5, depth = (canyon ? -(15 + rr() * 25) : 12 + rr() * 23) * IN;
+        const inAir = !canyon && depth > 18 * IN && rr() < 0.5;
+        const ramp = Math.ceil((Math.abs(depth) + 3 * IN) / 0.12 / STEP), flat = Math.round((100 + rr() * 250) * IN / STEP), len = 2 * ramp + flat;
+        if (len + 20 >= n) continue;
+        // emplacement tire parmi ceux qui sont libres sur toute la longueur (+ 5 points de chaque cote) : au hasard sur
+        // tout le tour, presque tous tombaient sur une autre piece
+        const starts = [];
+        { let run = 0;
+          for (let i = 0; i < 2 * n; i++) { run = busy[i % n] ? 0 : run + 1; if (i >= n && run >= len + 10) starts.push((i - len - 4 + n) % n); } }
+        if (!starts.length) continue;
+        const i0 = starts[Math.floor(rr() * starts.length)];
+        let ok = true;
+        const h2 = h.slice(), lift = [];
+        for (let k = 0; k <= len; k++) {
+          const w = k < ramp ? ramp01(k / ramp) : k <= ramp + flat ? 1 : ramp01((len - k) / ramp), i = (i0 + k) % n;
+          h2[i] = h[i] * (1 - w) + depth * w;
+          if (inAir && h2[i] > 6 * IN) lift.push(i);
+        }
+        for (let k = -1; k <= len + 1 && ok; k++) {
+          const i = (i0 + k + n) % n, sl = Math.abs(h2[(i + 1) % n] - h2[i]) / STEP;
+          if (sl > 0.65 * SLOPE_MAX || (Number.isFinite(rad[i]) && rad[i] < rMinAt(sl))) ok = false;
+        }
+        if (!ok || overlaps(P, h2)) continue;
+        h = h2;
+        for (let k = -5; k < len + 5; k++) busy[(i0 + k + n) % n] = 1;
+        for (const i of lift) air[i] = 1;
+        pieces.push(canyon ? 'canyon' : inAir ? 'route en l\'air' : 'remblai'); j++;
+      }
+    }
+    // 2d. terrain : 2 km au moins, sinon la taille qui contient la piste avec 450 m de marge (2,4 / 2,8 / 3,2 km) ;
+    // trace centre sur le terrain actuel
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [x, y] of P) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    const span = Math.max(x1 - x0, y1 - y0) / IN;
+    const size = T_SIZES.find(v => v >= Math.max(2000, span + 900)) || T_SIZES[T_SIZES.length - 1];
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    for (const p of P) { p[0] += cx - mx; p[1] += cy - my; }
+    // 4. depart sur la portion la plus droite (moyenne des courbures sur 80 m), jamais sur une piece
+    const curv = rad.map(r => (Number.isFinite(r) ? 1 / r : 0));
+    let best = 0, bestV = Infinity;
+    for (let i = 0; i < n; i++) { let v = 0; for (let k = -10; k <= 10; k++) v += curv[(i + k + n) % n] + busy[(i + k + n) % n]; if (v < bestV) { bestV = v; best = i; } }
+    const ord = i => (i + best) % n;
+    const Q = Array.from({ length: n }, (_, i) => P[ord(i)]), H = Array.from({ length: n }, (_, i) => h[ord(i)]);
+    const R = Array.from({ length: n }, (_, i) => rad[ord(i)]), B = Array.from({ length: n }, (_, i) => busy[ord(i)]);
+    // cote du virage (+ a gauche) : produit vectoriel des deux troncons
+    const side = Q.map((p, i) => { const a = Q[(i - 1 + n) % n], b = Q[(i + 1) % n];
+      return Math.sign((p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0])); });
+    // 5. virages releves (normale / difficile) : bord interieur a hauteur, bord exterieur releve, montee limitee a 15 %
+    const u = Q.map((_, i) => bankDeg && R[i] < 150 * IN ? side[i] * W * Math.sin(bankDeg * Math.PI / 180 * Math.min(1, (150 * IN - R[i]) / (100 * IN))) : 0);
+    const dmax = BANK_EDGE_SLOPE * STEP;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < 2 * n; i++) { const a = u[(i - 1 + n) % n], k = i % n; u[k] = Math.max(a - dmax, Math.min(a + dmax, u[k])); }
+      for (let i = 2 * n; i > 0; i--) { const a = u[(i + 1) % n], k = i % n; u[k] = Math.max(a - dmax, Math.min(a + dmax, u[k])); }
+    }
+    const us = u.map((_, i) => { let t = 0; for (let k = -3; k <= 3; k++) t += u[(i + k + n) % n]; return t / 7; });
+    // 6. sauts (normale / difficile) : sur les lignes droites (rayon > 250 m sur 100 m), loin du depart, trou de 16 m
+    const gap = new Uint8Array(n);
+    const straight = i => { for (let k = -12; k <= 12; k++) if (R[(i + k + n) % n] < 250 * IN || Math.abs(us[(i + k + n) % n]) > 1 || B[(i + k + n) % n]) return false; return true; };
+    const spots = [];
+    for (let i = 60; i < n - 60; i++) if (straight(i)) spots.push(i);
+    for (let j = 0; j < nJumps && spots.length; j++) {
+      const k = spots[Math.floor(rnd() * spots.length)];
+      for (let g = 0; g < 4; g++) gap[k + g] = 1;
+      for (let t = spots.length - 1; t >= 0; t--) if (Math.abs(spots[t] - k) < 60) spots.splice(t, 1);   // sauts espaces
+    }
+    // 7. brouillon : theme, terrain, route, peinture, decor
+    await step(40, 'Terrain et route…');
+    $('crkit').value = kit; applyKit();
+    S.terrain = newTerrain({ pos: [cx, cy] }, size); $('crsize').value = String(size);
+    S.props = []; S.waters = []; S.waterSel = -1;
+    setWidth(W);
+    S.points = Q.map((p, i) => {
+      const q = [p[0], p[1], S.groundZ + H[i], W, gap[i]];
+      const up = Math.round(Math.abs(us[i]));
+      if (up > 0) q.push(W / 2, W / 2, us[i] > 0 ? 0 : up, us[i] > 0 ? up : 0);
+      return q;
+    });
+    // passage au-dessus d'un autre (spirale) : pont, sans talus (le sol suit la route du dessous), 20 m de marge
+    { const far = Math.ceil(3 * W / STEP), lim = W + 20 * IN, top = new Uint8Array(n);
+      for (let i = 0; i < n; i++) for (let j = i + far; j < n; j++) {
+        if (n - (j - i) < far) break;
+        if (Math.hypot(Q[i][0] - Q[j][0], Q[i][1] - Q[j][1]) < lim) top[H[i] > H[j] ? i : j] = 1;
+      }
+      for (let i = 0; i < n; i++) if (top[i]) for (let k = -3; k <= 3; k++) setNoTalus(S.points[(i + k + n) % n], true);
+      for (let i = 0; i < n; i++) if (air[ord(i)]) setNoTalus(S.points[i], true); }      // routes en l'air (2e)
+    S.closed = true; S.back = 0;
+    S.start = { pos: [Q[0][0], Q[0][1]], yaw: Math.atan2(Q[1][1] - Q[0][1], Q[1][0] - Q[0][0]) };
+    $('crbar').value = c.diff === 'F' ? 'all' : 'curves';
+    setMarks(opts.marks ? { edges: true, curbs: true, center: false } : {});
+    placeFromPoints(); refreshTerrainMesh(); rebuild();
+    // peinture : taches des autres sols du theme loin de la route
+    await step(60, 'Peinture du sol…');
+    const T = S.terrain, Dd = roadDistance(), noise = aiNoise(rnd), nm = Math.min(4, MATERIALS.length);
+    if (nm > 1) for (let j = 0; j < T.n; j++) for (let i = 0; i < T.n; i++) {
+      const v = j * T.n + i; if (Dd[v] < 15 * IN) continue;
+      const val = noise(i * T.cell, j * T.cell, 260 * IN);
+      if (val > 0.45) T.paint[v] = 1; else if (val < -0.55 && nm > 2) T.paint[v] = 2;
+    }
+    if (opts.decor) {                                              // relief, objets et eau : decor automatique a graine fixe
+      await step(70, 'Relief, décor et eau (quelques secondes)…');
+      const keep = Object.fromEntries([...AI_FIELDS, 'craibig', 'craisight'].map(id => [id, $(id).type === 'checkbox' ? $(id).checked : $(id).value]));
+      aiPreset(['balanced', 'nature', 'wild', 'clear'][Math.floor(rnd() * 4)]);
+      $('craiamp').value = String({ F: 15, N: 30, D: 50 }[c.diff]);
+      // decor fourni et varie : densite maxi, petits decors x2,2, familles des themes proches, gros decors de fond
+      aiDecor((c.seed * 2654435761) >>> 0, { density: 3, small: 2.2, variety: true, big: true, borrow: Math.max(1, +$('craiborrow').value) });
+      for (const [id, v] of Object.entries(keep)) { if ($(id).type === 'checkbox') $(id).checked = v; else $(id).value = v; }
+      aiSaveOptions(); aiShowValues();
+    } else { refreshTerrainMesh(); rebuild(); renderProps(); renderWater(); }
+    S.rndCode = rndCode(c.kit, c.len, c.diff, c.seed, c.mask);
+    saveDraft();
+    return { shape: shapeUsed, length: Math.round(Ltot / IN), jumps: nJumps ? [...gap].filter((g, i) => g && !gap[(i - 1 + n) % n]).length : 0, size, pieces };
+  }
+  function openRandomDialog() {
+    if (S.opening) return;
+    const kits = [...$('crkit').options].map(o => [o.value, o.textContent]);
+    // theme : celui des Reglages de la piste (2026-11-14 : le code gardait le theme de la derniere piste creee quand on
+    // l'avait change dans les Reglages)
+    const kitNow = Math.max(0, kits.findIndex(([k]) => k === $('crkit').value));
+    const cur = { ...(parseRndCode(S.rndCode) || { len: 'M', diff: 'N', seed: (Math.random() * 36 ** 6) >>> 0 }), kit: kitNow };
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:30;display:flex;align-items:center;justify-content:center;padding:16px';
+    const sel = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+    ov.innerHTML = `<div class="card" style="max-width:440px;width:100%;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px">
+      <div style="margin-bottom:6px"><b>🎲 Piste aléatoire</b></div>
+      <div class="note" style="font-size:12px;margin-bottom:10px">Tout est créé d'après le code : tracé, relief, peinture, décor, eau. Le même code redonne toujours la même piste : partage-le ! Remplace la route et le terrain actuels (Ctrl+Z pour revenir).</div>
+      <label style="display:block;margin-bottom:8px">Code<div style="display:flex;gap:4px;margin-top:2px">
+        <input id="rdcode" type="text" maxlength="14" style="${sel};flex:1;font-family:monospace;font-size:15px;letter-spacing:1px">
+        <button id="rdnew" title="Nouveau code au hasard">🎲</button></div></label>
+      <div id="rdbad" style="color:var(--err,#e55);font-size:12px;margin:-4px 0 6px" hidden>Code invalide (exemple : 3MN-K7Q2ZP)</div>
+      <label style="display:block;margin-bottom:6px">Thème<select id="rdkit" style="${sel}">${kits.map(([k, l], i) => `<option value="${i}">${l}</option>`).join('')}</select></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+        <label>Longueur<select id="rdlen" style="${sel}"><option value="C">Courte (≈ 1,8 km)</option><option value="M">Moyenne (≈ 2,6 km)</option><option value="L">Longue (≈ 3,4 km)</option><option value="X">Très longue (≈ 4,2 km)</option></select></label>
+        <label>Difficulté<select id="rddiff" style="${sel}"><option value="F">Facile</option><option value="N">Normale</option><option value="D">Difficile</option></select></label></div>
+      <div style="margin-bottom:8px">Pièces de route
+        <div style="display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:3px">${RND_PIECES.map(([, b, l]) =>
+          `<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" class="rdpc" data-b="${b}"> ${l}</label>`).join('')}</div>
+        <div class="note" style="font-size:11px;margin-top:2px">Cochée : au moins une sur la piste (si la place le permet). Décochée : aucune.</div></div>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="rddecor" checked> Relief, décor et eau automatiques</label>
+      <label style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><input type="checkbox" id="rdmarks" checked> Marquage au sol</label>
+      <div style="display:flex;justify-content:flex-end;gap:6px"><button id="rdno">Annuler</button><button id="rdyes" class="primary">🎲 Créer la piste</button></div></div>`;
+    document.body.appendChild(ov);
+    const q = s => ov.querySelector(s);
+    const boxes = [...ov.querySelectorAll('.rdpc')];
+    const showPieces = c => { const m = c.mask ?? RND_MASK_DEF[c.diff]; boxes.forEach(b => { b.checked = (m & +b.dataset.b) !== 0; }); };
+    const show = c => { q('#rdcode').value = rndCode(c.kit, c.len, c.diff, c.seed, c.mask); q('#rdkit').value = String(c.kit % kits.length);
+                        q('#rdlen').value = c.len; q('#rddiff').value = c.diff; q('#rdbad').hidden = true; showPieces(c); };
+    let c = { ...cur, kit: cur.kit % kits.length };
+    show(c);
+    for (const id of ['#rdkit', '#rdlen', '#rddiff']) q(id).onchange = () => { c = { ...c, kit: +q('#rdkit').value, len: q('#rdlen').value, diff: q('#rddiff').value }; show(c); };
+    // pieces : masque garde seulement s'il differe de celui de la difficulte (code court sinon)
+    boxes.forEach(b => b.onchange = () => {
+      const m = boxes.reduce((a, x) => a | (x.checked ? +x.dataset.b : 0), 0);
+      c = { ...c, mask: m === RND_MASK_DEF[c.diff] ? undefined : m }; show(c);
+    });
+    q('#rdnew').onclick = () => { c = { ...c, seed: (Math.random() * 36 ** 6) >>> 0 }; show(c); };
+    q('#rdcode').oninput = () => { const p = parseRndCode(q('#rdcode').value); q('#rdbad').hidden = !!p;
+      if (p) { c = { ...p, kit: p.kit % kits.length }; q('#rdkit').value = String(c.kit); q('#rdlen').value = c.len; q('#rddiff').value = c.diff; showPieces(c); } };
+    q('#rdno').onclick = () => ov.remove();
+    q('#rdyes').onclick = async () => {
+      const p = parseRndCode(q('#rdcode').value);
+      if (!p) { q('#rdbad').hidden = false; return; }
+      const opts = { decor: q('#rddecor').checked, marks: q('#rdmarks').checked };
+      ov.remove();
+      if (histTimer) histCommit();
+      let r;
+      S.opening = true;                                            // pas de seconde creation pendant celle-ci
+      try { r = await randomTrack({ ...p, kit: p.kit % kits.length }, opts, rndProgress); }
+      catch (e) { status('Erreur : ' + e.message, 'err'); return; }
+      finally { S.opening = false; await rndProgress(null); }
+      const pc = ['spirale', 'chicane', 'bosses', 'canyon', 'remblai', 'route en l\'air'].map(k => [k, r.pieces.filter(x => x === k).length]).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`);
+      status(`Piste ${S.rndCode} : ${r.length} m, forme ${r.shape}` + (r.jumps ? `, ${r.jumps} saut(s)` : '') + (pc.length ? `, ${pc.join(', ')}` : '')
+             + ` — terrain ${sizeLabel(r.size)} km. Retouche-la puis « Générer la piste »`, 'ok');
+    };
   }
 
   function setWidth(w) {
@@ -2522,6 +3500,7 @@ export function initCreator(ctx) {
     for (const [id, k] of [['crmroute', 'route'], ['crmedges', 'edges'], ['crmbridge', 'bridge'], ['crmterrain', 'terrain'], ['crmpaint', 'paint'], ['crmprops', 'props']]) $(id).classList.toggle('primary', m === k);
     paver.visible = m === 'route'; brush.visible = false;
     S.chase = m === 'route'; orbit.enabled = !S.chase;
+    updateGhost(true);
     // pinceaux : clic gauche = pinceau, clic droit = tourner la vue, clic milieu = deplacer (molette : zoom)
     if (m !== 'route' && !S.savedButtons) {
       S.savedButtons = { ...orbit.mouseButtons };
@@ -3006,7 +3985,9 @@ export function initCreator(ctx) {
   // essais automatiques seulement (adresse avec ?crtest) : fonctions de la Creation accessibles depuis la console
   if (/[?&]crtest\b/.test(location.search)) window.__crtest = { S, setMode, crossingAt, bridgePlan, selectBridge, makeBridge, tryProp, seatOf, roadUnder, undo, effPoints, applyBrush, pick, setTool, roofMask, roofMesh,
                                                                   refreshTerrainMesh, camera, orbit, saveDraft, ptc, propProxy, selectProp, propZ,
-                                                                  waterBasin, renderWater, waterPointerDown, placeFromPoints, slopeOfEnd, selectEdge, edgeZone, edgeSmooth, setEdgeZone };
+                                                                  waterBasin, renderWater, waterPointerDown, placeFromPoints, slopeOfEnd, selectEdge, edgeZone, edgeSmooth, setEdgeZone,
+                                                                  randomTrack, parseRndCode, roadDistance, rndProgress, rndCode,
+                                                                  kindOf, dimOf, rad, roleOf, apart };
   $('crmbridge').onclick = () => setMode('bridge');
   $('crbrh').oninput = e => { $('crbrhv').textContent = e.target.value; showBridge(); };
   $('crbrl').oninput = e => { $('crbrlv').textContent = e.target.value; showBridge(); };
@@ -3173,7 +4154,7 @@ export function initCreator(ctx) {
     const far = farFromRoad();
     if (far && far.share >= FAR_TRIM_SHARE) {
       const t = await choose(`${Math.round(far.share * 100)} % de la carte est à plus de ${FAR_TRIM_M} m de la route : personne n'y roule, mais le jeu doit la charger.\n\n`
-        + `La retirer de la piste générée ? Le relief, la peinture et les ${far.props} objet(s) qui s'y trouvent n'y seront pas. Ton brouillon reste complet : tu pourras regénérer sans retrait.`,
+        + `La retirer de la piste générée ? Le relief et la peinture n'y seront pas, mais la découpe contourne les ${far.props} objet(s) et l'eau qui s'y trouvent : le sol reste sous eux. Ton brouillon reste complet : tu pourras regénérer sans retrait.`,
         ['✂ Retirer cette partie', 'Tout garder']);
       if (t < 0) return;
       trim = t === 0;
@@ -3183,7 +4164,7 @@ export function initCreator(ctx) {
       const dest = target.isNew ? await createTarget(target) : getTrack();
       status('Génération de la piste…');
       const r = await api('/api/create_build', { track: dest, points: S.points, closed: S.closed, ground_z: S.groundZ,
-                                                  kit: $('crkit').value, barriers: $('crbar').value, props: S.props, waters: S.waters,
+                                                  kit: $('crkit').value, barriers: $('crbar').value, marks: S.marks, signs: S.signs, props: S.props, waters: S.waters,
                                                   terrain: { ...packFull(S.terrain), ...(trim ? { trim_m: FAR_TRIM_M } : {}) }, wipe });
       await onGenerate({ ...r, wipe, track: dest });
     } catch (e) { status('Erreur : ' + e.message, 'err'); }
@@ -3238,6 +4219,8 @@ export function initCreator(ctx) {
     } else if (Number.isFinite(src?.ground_z)) { S.groundZ = src.ground_z; far.position.z = S.groundZ - 60; }
     $('crsize').value = String(S.terrain.size);
     $('crbar').value = src?.barriers || 'curves';
+    setMarks(src?.marks); setSigns(src?.signs);
+    S.rndCode = typeof src?.rnd === 'string' ? src.rnd : '';      // code de la piste aleatoire (propose a la reouverture)
     setBlend(Number.isFinite(src?.terrain?.blend) ? src.terrain.blend : BLEND_DEF);
     setFade(Number.isFinite(src?.terrain?.fade) ? src.terrain.fade : FADE_DEF);
     S.info = info;
@@ -3294,7 +4277,10 @@ export function initCreator(ctx) {
   function rehide() {
     if (!S.active) return;
     const saved = new Map(S.savedVis || []);
-    scene.children.forEach(c => { if (c === group || c.isLight) return; saved.set(c, c.visible); c.visible = false; });
+    // objets deja caches par open() : leur etat d'origine est garde (2026-11-13 : il etait remplace par « cache » ->
+    // en revenant dans Edition apres un changement de map, le decor restait invisible, seul le sol gris de collision
+    // s'affichait, meme apres « Actualiser ») ; seuls les objets apparus depuis sont notes
+    scene.children.forEach(c => { if (c === group || c.isLight) return; if (!saved.has(c)) saved.set(c, c.visible); c.visible = false; });
     S.savedVis = [...saved];
   }
   // « Enregistrer » dans la Creation : brouillon du navigateur + copie sur le serveur (autre navigateur, autre PC)

@@ -10,21 +10,50 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 
 ---
 
-## What's new in v0.6
+## What's new in v0.6.5
 
+Everything below has been tried in a race.
 
 ### Create tab
-- **Water**: Relief › *💧 Fill with water*, click at the bottom of a dug hole and it fills up to its lowest edge. Adjustable level (0 to 20 m below the edge) and 5 water types (clear, lagoon, swamp, dark, mud). Shallow water (under 1.5 m): you drive on the bottom; deeper: you fall and respawn on the road. 
-- **Automatic scenery adds ponds** now and then: 1 to 3 water spots in hollows of the terrain, never on the road; they are regenerated or removed with the automatic scenery. 
-- **Edit scenery placed in Create**: Scenery › By hand › *✋ Modify*: click an object to move it, **rotate it on all 3 axes**, resize it, raise or lower it, duplicate or delete it.
-- **Bridge tool** (*🌉 Bridge*): click where two roads cross, the clicked road rises above the other. 
+- **🎲 Random track from a code** (Track settings › *Random track (code)…*): pick the theme, the length (1.8 / 2.6 / 3.4 / 4.2 km), the difficulty and which pieces to use, and the editor builds the whole track: layout (shapes inspired by the game's own tracks, figure-eights with a bridge), spirals, chicanes, bumps, jumps, banked turns, canyons and embankments, terrain paint, automatic scenery, water and road markings. The terrain size is picked automatically. **The same code always gives the same track**, so codes can be shared. Everything can be edited afterwards, then *Generate the track* as usual.
+- **🧩 Special pieces** (Route › *Pieces* tab): banked turn (angle, radius, banking), spiral (turns, radius, gap between loops), chicane / slalom, jump, bumps, ramp, straight. Added at the end of the road in one click, with a yellow preview (red with the reason when it can't fit). The inner edge of banked pieces stays level with the road and the outer edge rises gently.
+- **🖌 Road markings** (Route › *Settings*): edge lines, dashed center line, red and white curbs inside tight turns. Painted on the road without collision.
+- The Route column is sorted into 3 tabs (*Driving*, *Pieces*, *Settings*), with a separator under the tool buttons.
+- Bigger, curved jump ramp (5 m over 30 m).
+- Automatic scenery: more varied, objects no longer overlap, ponds at least 5 m below their edge.
+- Trimming the far terrain: smooth edge, bands of ground kept towards far objects and water.
+- Barriers now touch the road (no more gap).
+
+### Edit tab
+- **🌦 Weather** (Ambience › *Weather*): rain, thunderstorm (Tiger Temple), snow, blizzard (Blizzard Bluff), falling leaves, pollen (Coco Park), fireflies (Mystery Caves), in 3 densities. The game's own effects are placed along the saved route at install.
+- **🖌 Road markings on any map** (Map finishing › *Road markings…*): road width measured on the collision, or a fixed width when the road and its shoulders have the same ground.
+- *Falls and respawns*: no more fall zones under bridges or a raised road.
+
+### Track / category tab
+- **🏁 1 or 2 lap races**: adds 1 and 2 to the lap choice of the race settings (also offered in the OCTR export, offline only). Not compatible with an OCTR mod that ships its own `update3.pak` (Nurburgring…).
+
+### Fixes
+- Switching map with the Create tab open: Create kept the old map's draft and the Edit view then stayed empty / grey, even after *Refresh*.
+- Reversing on a spiral or another piece put the kart under the road.
+- The Linux 0.6 AppImage was missing the Create tab (`creator.js`).
+- Automatic scenery could take minutes when the map had water.
+
+## What was new in v0.6
+
+Items marked *(not tried in game yet)* work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
+
+### Create tab
+- **Water**: Relief › *💧 Fill with water*, click at the bottom of a dug hole and it fills up to its lowest edge. Adjustable level (0 to 20 m below the edge) and 5 water types (clear, lagoon, swamp, dark, mud). Shallow water (under 1.5 m): you drive on the bottom; deeper: you fall and respawn on the road. *(not tried in game yet)*
+- **Automatic scenery adds ponds** now and then: 1 to 3 water spots in hollows of the terrain, never on the road; they are regenerated or removed with the automatic scenery. *(not tried in game yet)*
+- **Edit scenery placed in Create**: Scenery › By hand › *✋ Modify*: click an object to move it, **rotate it on all 3 axes**, resize it, raise or lower it, duplicate or delete it. *(rotation on 3 axes not tried in game yet)*
+- **Bridge tool** (*🌉 Bridge*): click where two roads cross, the clicked road rises above the other. *(not tried in game yet)*
 - **Edges tool**: *〰 Smooth between the ends* evens out width and raise between the two ends of the selected zone; − / + buttons (and keys) to shrink or enlarge the zone, white markers at its ends.
 - **Paver**: after reversing, the road picks up the slope and banking of the road behind it again (no more bump).
 - *Delete the whole road* also removes the embankments the old road had made in the ground.
 - Water is drawn opaque in the 3D view (painted grass under it no longer turns it green).
 
 ### Edit tab
-- **Animated objects** (Add › *🎞 Animated object…*): animals, characters, banners, balloons, sails… from other tracks, with an **animated preview**. They are copied into your track when it's installed. Click them in the 3D view to move them, **rotate them on 3 axes** and resize them. Tried in game. 
+- **Animated objects** (Add › *🎞 Animated object…*): animals, characters, banners, balloons, sails… from other tracks, with an **animated preview**. They are copied into your track when it's installed. Click them in the 3D view to move them, **rotate them on 3 axes** and resize them. Tried in game. *(3-axis rotation not tried in game yet)*
 - The 3D previews of the object libraries can be **rotated and zoomed with the mouse** (double-click: back to the start view).
 - "Place at the centre of the view" now aims at what is really at the centre of the screen.
 - Map packs: created tracks are listed with their number and menu name (no more rows of "Custom Map").
@@ -45,7 +74,7 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 
 ## What was new in v0.5
 
-Items marked work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
+Items marked *(not tried in game yet)* work in the editor and pass their offline tests, but nobody has confirmed them in a race yet.
 
 ### Automatic updates
 - The editor checks GitHub at launch and offers the new version; it replaces itself and restarts. Your saves, settings and FFmpeg stay in place. **v0.4 has no updater: install v0.5 by hand once.**
@@ -54,21 +83,21 @@ Items marked work in the editor and pass their offline tests, but nobody has con
 - New look: line icons, a vertical tool bar on the 3D view, mouse hints in the status bar, tabs in work order (Create, Edit, Track / category).
 - **Scene objects** panel (replaces Search): every object of the map by category (scenery by model, invisible walls, lights, crates, boosters, fall zones), with 3D thumbnails, select, show / hide and details.
 - The right-hand inspector is laid out in blocks (Position, Tool, Actions...) for scenery, crates, boosters, splines, grid, finish line, lights.
-- **Colorize an object** (Edit › select › *Colorize…*, or right-click): tint that keeps the texture's details, or flat paint, with intensity and live preview; parts of the object and "all identical objects" can be chosen. 
+- **Colorize an object** (Edit › select › *Colorize…*, or right-click): tint that keeps the texture's details, or flat paint, with intensity and live preview; parts of the object and "all identical objects" can be chosen. *(not tried in game yet)*
 - **Faster editing on big maps**: adding objects, colouring, changing a ground type... no longer rebuilds the whole collision each time (about 2 minutes on a big map). It is rebuilt once, on **Save** (orange dot on the button), and always before installing or checking.
 
 ### Create tab
 - New panel in blocks, Scenery in two tabs (*Automatic* / *By hand*).
-- **Smarter automatic scenery**: styles (balanced, nature, clear, wild, built), amount per family, objects borrowed from other themes when the ground has no matching object, corners kept clear. 
+- **Smarter automatic scenery**: styles (balanced, nature, clear, wild, built), amount per family, objects borrowed from other themes when the ground has no matching object, corners kept clear. *(not tried in game yet)*
 - Bigger height range (road from -200 m to +300 m), road banking up to 30°, slopes with or without embankment per section, embankment width, smooth blending between ground paints, tilted objects that sit on the slope, "Place the kart" to choose the start. *(partly tried in game)*
 - Parts of the map far from the road can be trimmed at generation (lighter map).
 - "Generate the track" now offers a **new track** by default, so nobody overwrites Crash Cove by mistake.
 
 ### Race
 - **Rotatable crates**, automatic crate rows centred on the race line.
-- **Reverse the race direction** (or one spline). 
-- Better route detection on stacked roads (spirals, 3 levels) and jumps up to 80 m; AI lanes that keep their width where road pieces overlap. 
-- Falls and respawns work on tracks whose respawn points are in the RaceSystem (Star Circuit, Slide Coliseum, Turbo Track...). 
+- **Reverse the race direction** (or one spline). *(not tried in game yet)*
+- Better route detection on stacked roads (spirals, 3 levels) and jumps up to 80 m; AI lanes that keep their width where road pieces overlap. *(not tried in game yet)*
+- Falls and respawns work on tracks whose respawn points are in the RaceSystem (Star Circuit, Slide Coliseum, Turbo Track...). *(not tried in game yet)*
 - More game tracks can be edited (Thunder Struck, Out of Time, Electron Avenue and the tracks whose race line is in the _Design).
 
 ### Game and install
@@ -165,6 +194,18 @@ Third-party: [three.js](https://threejs.org) (MIT, `ctr_tools/editor/vendor/thre
 Importe ta map (OBJ / COLLADA) ou **construis-la de zéro dans l'éditeur**, transforme-la en course jouable en quelques clics et ajoute-la au jeu comme **nouvelle piste** ou à la place d'une piste existante : IA, caisses, boosters, réapparitions, mini-carte, images de menu, ta propre musique, lumières et même téléporteurs.
 
 Ce dossier contient l'éditeur seul. **CTR Track Installer**, l'appli à part pour les joueurs, n'en fait pas partie.
+
+### Nouveautés de la v0.6.5
+Tout ce qui suit a été essayé en course.
+
+- **🎲 Piste aléatoire à partir d'un code** (Réglages de la piste › *Piste aléatoire (code)…*) : choisis le thème, la longueur (1,8 / 2,6 / 3,4 / 4,2 km), la difficulté et les pièces, l'éditeur crée toute la piste : tracé (formes inspirées des pistes du jeu, huits avec pont), spirales, chicanes, bosses, sauts, virages relevés, canyons et remblais, peinture du sol, décor automatique, eau et marquage. La taille du terrain est choisie toute seule. **Le même code redonne toujours la même piste** : les codes se partagent. Tout se retouche ensuite, puis *Générer la piste* comme d'habitude.
+- **🧩 Pièces spéciales** (Route › onglet *Pièces*) : virage relevé (angle, rayon, inclinaison), spirale (tours, rayon, écart entre les boucles), chicane / slalom, saut, bosses, rampe, ligne droite. Ajoutées au bout de la route en un clic, avec aperçu jaune (rouge, avec la raison, si elles ne passent pas). Le bord intérieur des pièces inclinées reste à hauteur de route, l'extérieur monte en douceur.
+- **🖌 Marquage au sol** (Route › *Réglages*) : lignes de bord, ligne centrale en tirets, vibreurs rouges et blancs à l'intérieur des virages serrés ; peint sur la route, sans collision.
+- Colonne Route rangée en 3 onglets (*Conduite*, *Pièces*, *Réglages*), séparateur sous les boutons d'outils. Tremplin des sauts plus grand et courbe (5 m sur 30 m). Décor automatique plus varié, sans objets qui se rentrent dedans, eau au moins 5 m sous le bord. Découpe du terrain lointain au bord lisse, avec des bandes de sol vers les objets et l'eau éloignés. Barrières collées à la route.
+- **🌦 Météo** (Ambiance › *Météo*) : pluie, orage (Tiger Temple), neige, tempête de neige (Blizzard Bluff), feuilles qui tombent, pollen (Coco Park), lucioles (Mystery Caves), 3 densités ; effets du jeu posés le long du parcours enregistré à l'installation.
+- **🖌 Marquage au sol sur n'importe quelle map** (Finitions de la map › *Marquage au sol…*) : largeur de route mesurée sur la collision, ou largeur fixe quand la route et ses bas-côtés ont le même sol. *Chutes et réapparitions* : plus de zones de chute sous les ponts ou une route en hauteur.
+- **🏁 Courses de 1 ou 2 tours** (onglet Piste / catégorie) : ajoute 1 et 2 au choix des tours des réglages de course (aussi proposé à l'export OCTR, hors ligne seulement). Incompatible avec un mod OCTR qui a son propre `update3.pak` (Nurburgring…).
+- **Corrections** : changement de map avec l'onglet Création ouvert (la Création gardait le brouillon de l'ancienne map, puis la vue Édition restait vide / grise, même après *Actualiser*) ; kart sous la route en reculant sur une spirale ou une autre pièce ; onglet Création absent de l'AppImage Linux 0.6 ; décor automatique qui pouvait durer plusieurs minutes avec de l'eau.
 
 ### Nouveautés de la v0.6
 Les points marqués *(pas encore essayé en jeu)* marchent dans l'éditeur et passent leurs tests hors jeu, sans confirmation en course pour l'instant.

@@ -287,6 +287,7 @@ def export_track(track, zf, folder):
     # -- reglages
     amb = json.load(open(S.ambiance_path(track))) if os.path.exists(S.ambiance_path(track)) else None
     mp['ambiance'] = amb
+    mp['weather'] = S.weather_settings(track) or None    # meteo (2026-11-13)
     mp['own_sky'] = bool(S._sky_name(S.IgzFile(S.pak_tool.read_latest(S.ARCHIVES, S.lighting_file(track), S.track_pak(track))[0])))
     mp['light'] = S.light_settings(track)
     mp['lights'] = S.read_lights(track)                    # lumieres ajoutees (lampadaires...)
@@ -422,7 +423,7 @@ def _clean_target(track):
     S = _S()
     S.reset_track(track, 'all')
     S.apply_flyby(track, {})
-    for p in (S.ambiance_path(track), S.light_path(track), S.lights_path(track), S.road_source_path(track), S.menu_settings_path(track),
+    for p in (S.ambiance_path(track), S.weather_path(track), S.light_path(track), S.lights_path(track), S.road_source_path(track), S.menu_settings_path(track),
               os.path.join(S.OUT_DIR, f'{track}_minimap.json'), S.custom_textures_path(track)):
         if os.path.exists(p):
             os.remove(p)
@@ -767,6 +768,8 @@ def import_map(zf, folder, track, report):
     if amb:
         S.set_ambiance({'track': track, 'preset': amb.get('preset', 'day'), 'values': amb.get('values') or {},
                         'sky': amb.get('sky') or ''})
+    if mp.get('weather'):
+        S.set_weather({'track': track, **mp['weather']})
     light = mp.get('light') or {}
     if int(light.get('collision_cell') or 0):
         S.apply_light({'track': track, 'collision_cell': light['collision_cell']})

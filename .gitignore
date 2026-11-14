@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.build_venv/
+
+# Construction des applications 
+.build/
+dist/
+exe/
+appimage/
+*.AppImage
+*.AppDir/
+*.spec
+
+# Donnees locales (sauvegardes, journal, reglages)
+out/
+exports/
+ctr_editor_config.json
+
+# Fichiers du jeu, maps importees et packs de maps : ne jamais les publier
+*.pak
+*.bk2
+*.igb
+*.zip
+extracted/
+map*/
+ctr_tools/pylib/
+
+# FFmpeg : trop gros pour GitHub, a installer a part
+ffmpeg*
+ffmpeg_licence/
+*.exe

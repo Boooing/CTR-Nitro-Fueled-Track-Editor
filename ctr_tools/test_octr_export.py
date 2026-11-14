@@ -53,7 +53,7 @@ def main():
     check(T1 in info and T2 in info and info[T1]['created'], 'les deux pistes creees sont proposees')
     check(info[T1]['group'] == 'Mario Kart 8', f"groupe actuel propose : {info[T1]['group']}")
     r = octr_export.build({'tracks': [{'track': T1, 'name': 'Circuit Lune'}, {'track': T2, 'name': 'Volcan Été'}, {'track': T1, 'name': 'doublon'}],
-                           'category': 'Ma Coupe d\'Été', 'mod_name': 'Mon Pack', 'version': '1.2.3'})
+                           'category': 'Ma Coupe d\'Été', 'mod_name': 'Mon Pack', 'version': '1.2.3', 'laps': False})
     print('\n'.join('      ' + l for l in r['report']))
     check(r['track_ids'] == [T1, T2], 'deux pistes enregistrees, doublon ignore')
     check(r['name'] == 'mon-pack-1.2.3.zip', f"nom du fichier sans prefixe : {r['name']}")
@@ -62,7 +62,7 @@ def main():
     with zipfile.ZipFile(r['path']) as z:
         z.extractall(x)
     man = json.load(open(os.path.join(x, 'mod.json'), encoding='utf-8'))
-    check(man['name'] == 'Mon Pack' and man['version'] == '1.2.3' and man['compatibility']['online'] == 'allowed', 'manifeste du mod')
+    check(man['name'] == 'Mon Pack' and man['version'] == '1.2.3' and man['compatibility']['online'] == 'allowed', 'manifeste du mod (sans 1 et 2 tours : en ligne autorise)')
     paks = sorted(os.listdir(os.path.join(x, 'archives')))
     check([p for p in paks if p == 'update3.pak'] and all(any(p.startswith(t.lower()) for p in paks) for t in (T1, T2)), f'archives : {paks}')
     a, idx, _ = pak_tool.cached_archive(os.path.join(x, 'archives', 'update3.pak'))
@@ -91,8 +91,20 @@ def main():
     v = subprocess.run([sys.executable, VALID, x, '--validate'], capture_output=True, text=True)
     check(v.returncode == 0, 'validateur OCTR : ' + (v.stdout or v.stderr).strip()[:200])
     # une seule piste, sans nom de mod
-    s = octr_export.build({'track': T1, 'name': 'Seule', 'category': 'Solo'})
+    s = octr_export.build({'track': T1, 'name': 'Seule', 'category': 'Solo', 'laps': True})
     check(s['id'] == 'ctr-editor-seule', f"une seule piste : {s['id']}")
+    # courses de 1 et 2 tours : menu des tours dans update3, mod hors ligne seulement
+    import race_laps
+    with zipfile.ZipFile(s['path']) as z:
+        ms = json.loads(z.read('mod.json'))
+        u3 = os.path.join(tmp, 'u3s.pak')
+        open(u3, 'wb').write(z.read('archives/update3.pak'))
+    check(ms['compatibility']['online'] == 'offline-only', 'avec 1 et 2 tours : hors ligne seulement')
+    u, iu, _ = pak_tool.cached_archive(u3)
+    rs = race_laps.RACESETTING.lower()
+    check(rs in iu and race_laps.read_laps(u.read(iu[rs])) == race_laps.SHORT_LAPS, 'avec 1 et 2 tours : menu des tours dans update3')
+    u.f.close()
+    pak_tool.invalidate_cache(u3)
     # copie d'une piste du jeu dont l'image de fond a ete changee : la copie l'affiche, la piste du jeu garde la sienne
     src = 'T111_Crash_Cove'
     bg = server.menu_image_logical(src, 'background')
