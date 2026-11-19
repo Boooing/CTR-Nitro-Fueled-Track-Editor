@@ -353,4 +353,8 @@ def _pywebview_or_browser(url):
 
 
 if __name__ == '__main__':
+    # processus de calcul (encodage de la collision en parallele, 2026-11-17) : dans l'exe, un processus lance
+    # reexecute ce programme ; freeze_support() le fait travailler au lieu de rouvrir l'editeur
+    import multiprocessing
+    multiprocessing.freeze_support()
     sys.exit(main())

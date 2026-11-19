@@ -34,7 +34,9 @@ def main(archives):
     server.ARCHIVES = archives
     with tempfile.TemporaryDirectory() as d:
         server.OUT_DIR = d
-        server.import_model({'track': T, 'name': 'Route', 'obj': RAMP_OBJ, 'pos': [0, 0, 0], 'surface': 38})
+        # rampe posee SUR le parcours : un objet loin de la piste n'a plus de collision (allegement, depuis l'ecriture du test)
+        at = [float(v) for v in server.race_path_points(T)[0][0][:3]]
+        server.import_model({'track': T, 'name': 'Route', 'obj': RAMP_OBJ, 'pos': at, 'surface': 38})
         arts = server.art_files(T)
         counts0 = {a: len(DecorFile(server.base_file(T, a)[0]).objects()) for a in arts}
         owners = server.collision_owners(T)
@@ -45,11 +47,13 @@ def main(archives):
         names = sorted(n for v in left.values() for n in v)
         check(len(names) == 2 and 'RaceTrack_Collision' in names,
               f'decor : {sum(counts0.values())} -> {names} (la route importee + l\'entite qui active la collision du sol)')
+        server.ensure_collision(T)          # collision differee (defer_collision) : calculee ici, comme a « Enregistrer »
         ge = GroundEditor(open(server.saved_path(server.collision_file(T)), 'rb').read())
         prims = sorted(((len(m['mesh'].prims), m['instance']) for m in ge.meshes), reverse=True)
         check(prims[0][0] == 8 and all(n == 1 for n, _ in prims[1:]),
               f'collision : la rampe seule (8 triangles) ; {len(prims) - 1} maillages d\'origine vides')
-        check(any('nouvelle map' in l for l in r['report']) and r['remaining'], f"{len(r['remaining'])} elements restants listes")
+        # collision differee : le rapport annonce le recalcul a « Enregistrer » (avant : « collision nouvelle map »)
+        check(any('nouvelle map' in l or 'Enregistrer' in l for l in r['report']) and r['remaining'], f"{len(r['remaining'])} elements restants listes")
         # triangles geants (modele tres agrandi) : decoupes pour la collision (sinon on passe au travers en jeu)
         big = ((0.0, 0.0, 0.0), (120000.0, 0.0, 0.0), (0.0, 90000.0, 0.0))
         parts = server.subdivide_tri(big)
@@ -92,6 +96,7 @@ def main(archives):
         check(not server.moved_away_logicals(T), 'decoches : remis a leur place')
         back = {a: len(DecorFile(open(server.saved_path(a), 'rb').read()).objects()) for a in arts}
         check(all(back[a] == counts0[a] for a in arts), 'retour : tous les objets d\'origine reviennent')
+        server.ensure_collision(T)          # collision differee : calculee comme a « Enregistrer »
         ge2 = GroundEditor(open(server.saved_path(server.collision_file(T)), 'rb').read())
         check(sum(len(m['mesh'].prims) for m in ge2.meshes) > 9000, 'retour : sol d\'origine + rampe dans la collision')
     print('tous les tests passent')

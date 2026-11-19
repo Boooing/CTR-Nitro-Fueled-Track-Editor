@@ -155,6 +155,20 @@ def model_mesh(data):
     """(positions [x,y,z,...], indices [...]) de tous les draw calls d'un modele, doublons retires."""
     z = IgzFile(data)
     positions, indices, seen = [], [], set()
+    # pieces du modele (preview.model_transforms, 2026-11-18) : la collision suit l'image du jeu (cartes de Hot Air
+    # Skyway : 6 m plus haut que les sommets bruts)
+    dc_mat = {}
+    try:
+        from preview import model_transforms
+        md = next((o for o, t in z.objects.items() if t == 'igModelData'), None)
+        mats = model_transforms(z, md) if md is not None else None
+        dp = z.deref(md + 0x80) if mats else None
+        for i, m in enumerate(mats or []):
+            d = z.deref(dp + 8 * i) if dp is not None else None
+            if d is not None and m is not None:
+                dc_mat[d] = m
+    except Exception:  # noqa: BLE001 - pieces illisibles : sommets bruts
+        dc_mat = {}
     for o, t in z.objects.items():
         if t != 'igModelDrawCallData':
             continue
@@ -186,8 +200,14 @@ def model_mesh(data):
                     break
         vbuf, vo = z._loc(vdata)
         base = len(positions) // 3
+        m = dc_mat.get(o)
         for i in range(nv):
-            positions += struct.unpack_from('<3f', vbuf, vo + i * stride + pos_off)
+            v = struct.unpack_from('<3f', vbuf, vo + i * stride + pos_off)
+            if m is not None:
+                v = (v[0] * m[0, 0] + v[1] * m[1, 0] + v[2] * m[2, 0] + m[3, 0],
+                     v[0] * m[0, 1] + v[1] * m[1, 1] + v[2] * m[2, 1] + m[3, 1],
+                     v[0] * m[0, 2] + v[1] * m[1, 2] + v[2] * m[2, 2] + m[3, 2])
+            positions += v
         ibuf, io = z._loc(idata)
         indices += [base + i for i in struct.unpack_from(f'<{ni}H', ibuf, io)]
     return positions, indices

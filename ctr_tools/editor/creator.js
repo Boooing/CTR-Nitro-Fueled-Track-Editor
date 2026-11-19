@@ -27,7 +27,13 @@ const T_CELL = 8 * IN;               // maille du terrain (8 m) ; cote au choix 
 const T_SIZES = [1200, 1600, 2000, 2400, 2800, 3200];  // m (3,6 et 4 km retires le 2026-11-08 : trop grands pour le jeu)
 const FAR_TRIM_M = 400, FAR_TRIM_SHARE = 0.25;          // generation : retrait propose si au moins ce quart de la carte est a plus de 400 m de la route
 const SINK_UNDER_ROAD = 0.25 * IN, BLEND_MIN = 6 * IN;   // raccord route -> terrain (track_creator)
+const CAT_VERSION = 2;                 // catalogue du decor (track_creator.CATALOG_VERSION) : objets semes marques c = 2
 const BLEND_DEF = 0.75, SCULPT_FULL = 3 * IN;   // largeur du talus par m de denivele ; relief sculpte qui garde sa hauteur pres de la route
+// largeur du raccord route -> relief (pouces) pour un denivele dz (track_creator._blend_width idem, 2026-11-16 : sur un
+// relief sculpte le raccord tombait a BLEND_MIN pour une maille de 8 m -> saccades / dents de scie au bord de la route)
+const SCULPT_KEEP = 0.5, RAMP_CELLS = 2.5, RAMP_DZ = 4 * IN;
+const blendWidth = (dz, free, slope, cell) => Math.max(BLEND_MIN, Math.min(1, dz / RAMP_DZ) * RAMP_CELLS * cell,
+                                                       dz * slope * (SCULPT_KEEP + (1 - SCULPT_KEEP) * free));
 const FADE_DEF = 4, MIX_MAX = 24;               // fondu entre peintures (track_creator : FADE_DEF, MIX_MAX)
 const T_LO = -200 * IN, T_HI = 300 * IN;    // relief : memes limites que la route (H_MIN, H_MAX)
 let MATERIALS = [                     // ordre = indice de peinture (matieres du kit, track_creator.KITS ; remplacees a l'ouverture)
@@ -86,6 +92,84 @@ export const padLabel = b => !b ? '—' : b.b != null
 export function initCreator(ctx) {
   const { THREE, scene, camera, orbit, view, renderer, api, status, ask, choose, getTrack, getStart, onGenerate, chooseTarget, createTarget } = ctx;
   const group = new THREE.Group(); group.visible = false; scene.add(group);
+  // caisses et boosters prevus par la piste aleatoire (S.items) : apercu, poses a « Generer la piste »
+  const itemGroup = new THREE.Group(); group.add(itemGroup);
+  // reperes grossis (comme ceux de l'Edition) pour etre vus de loin : caisse « ? » jaune, caisse de fruits verte, fruit orange
+  const crateTex = (bg, txt) => { const cv = document.createElement('canvas'); cv.width = cv.height = 64; const g = cv.getContext('2d');
+    g.fillStyle = bg; g.fillRect(0, 0, 64, 64); g.strokeStyle = '#5a3a10'; g.lineWidth = 6; g.strokeRect(3, 3, 58, 58);
+    g.fillStyle = '#fff'; g.font = 'bold 42px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(txt, 32, 35);
+    const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; return new THREE.MeshBasicMaterial({ map: t }); };
+  const ITEM_LOOK = {
+    question: [new THREE.BoxGeometry(150, 150, 150), crateTex('#f0a020', '?'), 75],
+    fruit: [new THREE.BoxGeometry(150, 150, 150), crateTex('#3aa84a', 'W'), 75],
+    wumpa: [new THREE.SphereGeometry(45, 12, 10), new THREE.MeshBasicMaterial({ color: 0xff6a1a }), 50] };
+  // booster : comme dans l'Edition (zone en boite orange translucide + aretes, plaque pleine, fleche) ; une plaque seule,
+  // orange pale a plat, se perdait sur le sable (retour utilisateur 2026-11-16 « je ne vois pas les boosters »)
+  const BOOST_MAT = new THREE.MeshBasicMaterial({ color: 0xff6a00, side: THREE.DoubleSide });
+  const BOOST_ZONE = new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.28, depthWrite: false });
+  const BOOST_EDGE = new THREE.LineBasicMaterial({ color: 0xffe27a });
+  const ARROW_MAT = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, depthWrite: false });
+  // caisses et boosters reposes sur la route telle qu'elle est affichee (effPoints : tremplins, bords releves, relief et
+  // decor du tirage appliques). 2026-11-16 : leur hauteur venait du trace AVANT ces retouches -> plaques des boosters 2 a 5 m
+  // SOUS la route, invisibles. Point de route le plus proche en plan ET en hauteur (ponts : pas la route du dessus) ;
+  // hauteur au decalage lateral (bord releve) ; inclinaison : pente sur ~16 m et pente laterale (comme « Poser au sol »)
+  function seatItems(it) {
+    const E = S.points.length > 1 ? effPoints() : null, n = E?.length || 0;
+    if (!n) return;
+    const near = p => { let k = -1, best = Infinity;
+      for (let i = 0; i < n; i++) { const q = E[i], d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (d > q[3] / 2 + 10 * IN) continue;
+        const c = d + 3 * Math.abs(q[2] - p[2]); if (c < best) { best = c; k = i; } }
+      return k; };
+    const at = i => E[((i % n) + n) % n];
+    const zOf = (q, x, y) => { const off = (x - q[0]) * q[6] + (y - q[1]) * q[7];
+      return q[2] + q[5] * Math.max(-1, Math.min(1, off / (q[3] / 2))); };
+    for (const o of [...(it.boosts || []), ...(it.crates || [])]) {
+      const k = near(o.pos);
+      if (k < 0) continue;
+      const q = E[k];
+      o.pos = [o.pos[0], o.pos[1], zOf(q, o.pos[0], o.pos[1])];
+      if (o.kind === 'wumpa') continue;
+      // pente : meme decalage lateral, 2 points avant / apres
+      const off = (o.pos[0] - q[0]) * q[6] + (o.pos[1] - q[1]) * q[7], a = at(k - 2), b = at(k + 2);
+      const za = a[2] + a[5] * Math.max(-1, Math.min(1, off / (a[3] / 2))), zb = b[2] + b[5] * Math.max(-1, Math.min(1, off / (b[3] / 2)));
+      const d = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      // pente dans le sens de l'objet (yaw) et laterale (bord releve), projetees sur ses axes
+      const tx = (b[0] - a[0]) / d, ty = (b[1] - a[1]) / d, sAlong = (zb - za) / d, sLeft = q[5] / (q[3] / 2);
+      const c = Math.cos(o.yaw || 0), s = Math.sin(o.yaw || 0);
+      // gradient du sol (monde) = sAlong * t + sLeft * gauche(t) ; sur les axes de l'objet : avant (c, s), gauche (-s, c)
+      const gx = sAlong * tx - sLeft * ty, gy = sAlong * ty + sLeft * tx;
+      const fwd = gx * c + gy * s, left = -gx * s + gy * c, L = Math.hypot(fwd, left, 1);
+      const rx = Math.asin(Math.max(-1, Math.min(1, left / L))), ry = Math.atan2(-fwd / L, 1 / L);
+      o.tilt = Math.max(Math.abs(rx), Math.abs(ry)) > 35 * Math.PI / 180 ? [0, 0] : [+rx.toFixed(4), +ry.toFixed(4)];
+    }
+  }
+  function renderItems() {
+    itemGroup.clear();
+    const it = S.items;
+    if (!it || it.v !== 2) return;
+    seatItems(it);
+    for (const c of it.crates || []) {
+      const [geo, mat, lift] = ITEM_LOOK[c.kind] || ITEM_LOOK.question, m = new THREE.Mesh(geo, mat);
+      // inclinee comme la route (meme convention que le jeu : R = Rz Ry Rx -> ordre 'ZYX' de three.js)
+      const [rx, ry] = c.tilt || [0, 0];
+      m.position.set(c.pos[0], c.pos[1], c.pos[2] + 8 + lift); m.rotation.set(rx, ry, c.yaw || 0, 'ZYX'); itemGroup.add(m);
+    }
+    for (const b of it.boosts || []) {
+      // plaque et fleche dans un repere incline comme la route (« Poser au sol »)
+      const [rx, ry] = b.tilt || [0, 0], box = new THREE.Group();
+      box.position.set(b.pos[0], b.pos[1], b.pos[2]); box.rotation.set(rx, ry, b.yaw, 'ZYX');
+      const pad = new THREE.Mesh(new THREE.PlaneGeometry(b.dims[0], b.dims[1]), BOOST_MAT);
+      pad.position.z = 14; pad.renderOrder = 2; box.add(pad);
+      const s = new THREE.Shape(); s.moveTo(b.dims[0] * 0.35, 0); s.lineTo(-b.dims[0] * 0.25, b.dims[1] * 0.25); s.lineTo(-b.dims[0] * 0.25, -b.dims[1] * 0.25);
+      const arrow = new THREE.Mesh(new THREE.ShapeGeometry(s), ARROW_MAT);    // fleche : sens du turbo
+      arrow.position.z = 16; arrow.renderOrder = 3; box.add(arrow);
+      const zg = new THREE.BoxGeometry(b.dims[0], b.dims[1], b.dims[2]), zone = new THREE.Mesh(zg, BOOST_ZONE);
+      zone.position.z = b.dims[2] / 2; zone.renderOrder = 4; box.add(zone);
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(zg), BOOST_EDGE); edges.position.z = b.dims[2] / 2; box.add(edges);
+      itemGroup.add(box);
+    }
+  }
   const S = { active: false, mode: 'route', points: [], closed: false, pos: null, yaw: 0, slope: 0, width: W_DEF, groundZ: 0,
               keys: new Set(), back: 0, chase: true, start: null, last: 0, warned: 0, savedVis: null,
               tool: 'raise', radius: 30 * IN, strength: 0.5, paint: 2, brushing: false, flatZ: null, mouse: null,
@@ -225,10 +309,9 @@ export function initCreator(ctx) {
   const brush =new THREE.Mesh(new THREE.RingGeometry(0.92, 1, 48), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthTest: false }));
   brush.visible = false;
   group.add(far, terrainMesh, road, banks, edgeL, edgeR, center, startMark, startLine, paver, brush);
-  // tunnels (track_creator._roof_mask) : relief garde au-dessus de la route comme un plafond, dessine des deux cotes
+  // (ancien maillage des ponts de terre / tunnels, supprimes le 2026-11-16 : garde vide et cache)
   const roofMesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }));
   roofMesh.visible = false; group.add(roofMesh);
-  // ponts de terre (outil Relief « Relier deux sommets ») et trait d'apercu entre le 1er sommet et la souris
 
   // panneau
   const panel = document.createElement('div');
@@ -258,18 +341,14 @@ export function initCreator(ctx) {
     #creatorPanel .crcard label{font-size:12px}
     #creatorPanel .crsep{height:2px;margin:12px -2px 4px;border-radius:1px;background:var(--muted);opacity:.55}`;
   document.head.appendChild(css);
-  panel.innerHTML = `<div style="font-weight:600;font-size:14px;margin-bottom:6px">🛣 Création de piste</div>
-    <details id="crsetup" class="crcard" style="margin-top:0" open><summary>⚙ Réglages de la piste</summary>
-    <div style="${row}">
-      <span>Thème</span><select id="crkit" style="width:100%"></select>
-      <span>Terrain</span><select id="crsize" style="width:100%" title="Taille du carré de base">${T_SIZES.map(s => `<option value="${s}">${sizeLabel(s)} km × ${sizeLabel(s)} km</option>`).join('')}</select>
-      <span>Barrières</span><select id="crbar" style="width:100%"><option value="curves">Extérieur des virages serrés</option><option value="all">Les deux bords, partout</option><option value="none">Aucune</option></select>
-      <span>Qualité</span><select id="crq" style="width:100%" title="Résolution de la vue et détail des objets pendant la création. Auto : la résolution baisse toute seule si la carte graphique peine, remonte si elle a de la marge. Maximale : objets d'origine. Basse : objets très simplifiés, pour les petits PC. Aucun effet sur la piste générée."><option value="auto">Auto</option><option value="0">Maximale</option><option value="2">Moyenne</option><option value="3">Basse</option></select>
-    </div>
-    <button id="crrandom" style="width:100%;margin-top:8px" title="Piste complète créée d'après un code (tracé, relief, décor…) : le même code redonne la même piste">🎲 Piste aléatoire (code)…</button></details>
-    ${H('Outil')}
-    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px"><button id="crmroute" style="grid-column:span 2">🛣 Route</button><button id="crmedges" style="grid-column:span 2">↔ Bords</button><button id="crmbridge" style="grid-column:span 2" title="Faire passer une route au-dessus d'une autre là où elles se croisent">🌉 Pont</button><button id="crmterrain" style="grid-column:span 2">⛰ Relief</button><button id="crmpaint" style="grid-column:span 2">🎨 Peinture</button><button id="crmprops" style="grid-column:span 2">🌴 Décor</button></div>
-    <div class="crsep"></div>
+  // titre : l'en-tete unique de l'inspecteur (« Outil de base · Route », index.html syncInspector, 2026-11-15)
+  // « Piste aléatoire » : outil de la barre de gauche (index.html #railrandom, 2026-11-17) ; ancien bouton du panneau garde masque
+  panel.innerHTML = `<div hidden>
+      <button id="crrandom" title="Piste complète créée d'après un code (tracé, relief, décor…) : le même code redonne la même piste">🎲 Piste aléatoire…</button></div>
+    <!-- outils : dans la barre de gauche de l'editeur depuis l'onglet unique (2026-11-14, B5) ; rangee gardee masquee -->
+    <div id="crmodes" hidden>${H('Outil')}
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px"><button id="crmroute" style="grid-column:span 2">🛣 Route</button><button id="crmedges" style="grid-column:span 2">↔ Bords</button><button id="crmbridge" style="grid-column:span 2" title="Faire passer une route au-dessus d'une autre là où elles se croisent">🌉 Pont</button><button id="crmterrain" style="grid-column:span 2">⛰ Relief</button><button id="crmpaint" style="grid-column:span 2">🎨 Peinture</button><button id="crmprops" style="grid-column:span 2">🌴 Décor</button></div></div>
+    <!-- (separateur sous l'en-tete retire le 2026-11-18, demande utilisateur : l'en-tete de l'inspecteur a deja sa ligne) -->
     <div id="credges" hidden>
       <details class="crhelp"><summary>ℹ Comment faire</summary><div class="note">Clic sur un bord de la route : une poignée apparaît. Flèche rouge (vers l'extérieur) : élargir ou amincir ce côté. Flèche bleue (vers le haut) : relever ou abaisser le bord (virage relevé). Les points voisins suivent en douceur, le terrain dessous se raccorde. Clic droit : tourner la vue.</div></details>
       <div style="margin-bottom:6px">Zone sélectionnée : <b id="credgerv">30</b> m de part et d'autre
@@ -300,7 +379,7 @@ export function initCreator(ctx) {
       <!-- 2026-11-13 : trois onglets (l'utilisateur trouvait la colonne Route trop chargee) -->
       <div class="crsub" style="margin-top:8px"><button id="crrtdrive">🚗 Conduite</button><button id="crrtpieces">🧩 Pièces</button><button id="crrtset">⚙ Réglages</button></div>
       <div id="crrpdrive">
-      <div class="note" style="margin:0 0 6px">Conduis le paveur : la route se pose derrière lui. Ferme la boucle en revenant dans le cercle vert.</div>
+      <details class="crhelp" style="margin-top:0"><summary>ℹ Comment faire</summary><div class="note">Conduis le paveur : la route se pose derrière lui. Ferme la boucle en revenant dans le cercle vert.</div></details>
       <div class="crcard">
       <label style="display:block;margin-bottom:6px">Largeur : <b id="crw"></b> m<input id="crwidth" type="range" min="${W_MIN / IN}" max="${W_MAX / IN}" value="${W_DEF / IN}" style="width:100%"></label>
       <label style="display:block;margin-bottom:2px" title="Le kart et la route penchent progressivement vers cet angle en roulant (30° sur 40 m). L'angle reste jusqu'à ce que tu le changes. Touches T et G.">Inclinaison : <b id="crrollv">à plat</b>
@@ -311,7 +390,7 @@ export function initCreator(ctx) {
       <button id="crstartpick" style="width:100%;margin-top:6px" title="Clique ensuite sur le terrain : le kart s'y place et la route partira de là. Le départ de la course suit à la génération.">📍 Placer le kart (point de départ)</button>
       </div>
       <div id="crrppieces" hidden>
-      <div class="note" style="font-size:12px;margin:0 0 6px">Ajoutée au bout de la route, devant le kart (aperçu jaune). Ctrl+Z pour annuler.</div>
+      <details class="crhelp" style="margin-top:0"><summary>ℹ Comment faire</summary><div class="note">Ajoutée au bout de la route, devant le kart (aperçu jaune). Ctrl+Z pour annuler.</div></details>
       <div id="crpiecegrid" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px">
         <button data-piece="banked">↪ Virage relevé</button><button data-piece="spiral">🌀 Spirale</button>
         <button data-piece="slalom">〰 Chicane / slalom</button><button data-piece="jump">🛫 Saut</button>
@@ -342,7 +421,9 @@ export function initCreator(ctx) {
       <button id="crtalusall" style="width:100%;margin-bottom:6px" title="Applique le réglage « Talus sous la route » (onglet Conduite) à toute la route déjà posée">Appliquer le talus à toute la route</button>
       <label style="display:block" title="Largeur du talus de chaque côté, pour 10 m de dénivelé entre la route et le sol. Plus petit : talus plus raide, qui prend moins de place. S'applique à toute la piste.">Largeur du talus : <b id="crblendv"></b><input id="crblend" type="range" min="0.25" max="1.5" step="0.25" value="${BLEND_DEF}" style="width:100%"></label>
       </div>
-      <button id="crreset" class="danger" style="width:100%;margin-top:4px">🗑 Supprimer toute la route</button>
+      <!-- 2026-11-14 : suppressions a part, sous un separateur (moins de risque de clic par erreur) -->
+      <div class="crsep" style="margin-top:16px"></div>
+      <button id="crreset" class="danger" style="width:100%;margin-top:8px">🗑 Supprimer toute la route</button>
       </div>
       <details class="crhelp"><summary>⌨ Commandes du paveur</summary>
       <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px;font-size:12px;color:var(--muted);margin-top:4px">
@@ -384,17 +465,17 @@ export function initCreator(ctx) {
     <div id="crprops" hidden>
       <div class="crsub"><button id="crptauto">🤖 Automatique</button><button id="crptman">🖌 À la main</button></div>
       <div id="crpaneauto">
-        <div class="note" style="font-size:11px;margin:8px 0 0">Construit un décor d'après le thème, les peintures et les pentes, avec de gros objets en fond de carte. Tes objets et ton relief faits à la main sont gardés.</div>
+        <details class="crhelp"><summary>ℹ Comment faire</summary><div class="note">Construit un décor d'après le thème, les peintures et les pentes, avec de gros objets en fond de carte. Tes objets et ton relief faits à la main sont gardés.</div></details>
         <div class="crcard"><h4>Style</h4>
           <div class="crchips"><button data-aipreset="balanced">⚖ Équilibré</button><button data-aipreset="nature">🌳 Nature</button><button data-aipreset="clear">👁 Dégagé</button><button data-aipreset="wild">🌲 Sauvage</button><button data-aipreset="built">🏘 Aménagé</button></div>
         </div>
-        <div class="crcard"><h4>Quantité</h4>
+        <details class="crcard"><summary>Quantité</summary>
           <div class="crrow2">
             <span>Densité :</span><select id="craidens"><option value="0">Légère</option><option value="1" selected>Normale</option><option value="2">Dense</option></select>
             ${[['craiveg', '🌳 Végétation', 'Arbres, buissons, herbes et fleurs'], ['crairock', '🗻 Rochers', 'Rochers, cristaux, fossiles'], ['craibuilt', '🏠 Objets et bâtiments', 'Statues, piliers, machines, maisons, huttes'], ['crairoad', '🚧 Bord de route', 'Panneaux, lampes, barrières, pneus : surtout à l\'extérieur des virages']]
               .map(([id, l, tip]) => `<span title="${tip}">${l}</span><select id="${id}" title="${tip}"><option value="0">Aucun</option><option value="1">Peu</option><option value="2" selected>Normal</option><option value="3">Beaucoup</option></select>`).join('')}
           </div>
-        </div>
+        </details>
         <details id="craiadv" class="crcard"><summary>Réglages avancés</summary>
           <label style="display:block;margin-bottom:4px" title="Bande laissée vide de chaque côté de la route (les panneaux et lampes du bord de route restent). Plus grand : piste plus lisible, moins chargée.">Bande dégagée au bord : <b id="craiclearv">4</b> m<input id="craiclear" type="range" min="0" max="30" step="1" value="4" style="width:100%"></label>
           <label style="display:block;margin-bottom:4px" title="Distance jusqu'où le décor s'étend de chaque côté de la route. Plus petit : décor concentré près de la piste.">Étendue : jusqu'à <b id="craireachv">230</b> m de la route<input id="craireach" type="range" min="80" max="300" step="10" value="230" style="width:100%"></label>
@@ -411,7 +492,7 @@ export function initCreator(ctx) {
         <div id="crairep" class="note" data-noi18n hidden style="font-size:11px;margin-top:6px"></div>
       </div>
       <div id="crpaneman" hidden>
-        <div class="note" style="font-size:11px;margin:8px 0 0">Objets de tous les thèmes, posés sur le sol à la génération, jamais sur la route. Clic gauche maintenu : pinceau, clic droit : tourner la vue.</div>
+        <details class="crhelp"><summary>ℹ Comment faire</summary><div class="note">Objets de tous les thèmes, posés sur le sol à la génération, jamais sur la route. Clic gauche maintenu : pinceau, clic droit : tourner la vue.</div></details>
         <div class="crcard">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
             <span style="flex:1;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">1. Objets à semer · <span id="crpsel" style="text-transform:none"></span></span>
@@ -427,16 +508,16 @@ export function initCreator(ctx) {
             <div id="crpeinfo" class="note" style="font-size:12px">Clique sur un objet (posé à la main ou par le décor automatique) pour le modifier.</div>
             <div id="crpeset" style="display:none">
               <div class="crchips" style="margin:6px 0"><button data-ptm="translate" title="W">✥ Déplacer</button><button data-ptm="rotate" title="E">⟳ Tourner</button><button data-ptm="scale" title="R">⤢ Taille</button></div>
-              <div class="crrow2" style="margin-bottom:6px">
+              <div class="crrow2" id="crpefields" style="margin-bottom:6px">
                 <span title="Rotation autour de la verticale">Rotation Z (°)</span><input id="crpeyaw" type="number" step="5" style="width:100%" title="Rotation autour de la verticale">
                 <span title="Inclinaison autour de l'axe X (rouge), en plus de la pente du sol">Inclinaison X (°)</span><input id="crperx" type="number" step="5" min="-180" max="180" style="width:100%" title="Inclinaison autour de l'axe X (rouge), en plus de la pente du sol">
                 <span title="Inclinaison autour de l'axe Y (vert), en plus de la pente du sol">Inclinaison Y (°)</span><input id="crpery" type="number" step="5" min="-180" max="180" style="width:100%" title="Inclinaison autour de l'axe Y (vert), en plus de la pente du sol">
-                <span>Taille (×)</span><input id="crpes" type="number" step="0.05" min="0.05" max="20" style="width:100%">
+                <span>Taille (×)</span><input id="crpes" type="number" step="0.05" min="0.05" max="100" style="width:100%">
                 <span title="Décalage au-dessus (ou au-dessous) du sol. 0 : posé sur le sol, il suit le relief.">Hauteur (m)</span><input id="crpedz" type="number" step="0.5" style="width:100%" title="Décalage au-dessus (ou au-dessous) du sol. 0 : posé sur le sol, il suit le relief.">
               </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px"><button id="crpeground" title="Hauteur remise à 0 : l'objet suit de nouveau le sol">⤓ Au sol</button><button id="crpedup" title="Copie posée à côté (Ctrl+D)">⧉ Dupliquer</button><button id="crpedel" class="danger" title="Suppr">🗑 Supprimer</button></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px"><button id="crpeground" title="Hauteur remise à 0 : l'objet suit de nouveau le sol">⤓ Au sol</button><button id="crpedup" title="Copie posée à côté (Ctrl+D) ; plusieurs objets sélectionnés : tous copiés, les copies deviennent la sélection">⧉ Dupliquer</button><button id="crpedel" class="danger" title="Suppr">🗑 Supprimer</button></div>
               <div id="crpewarn" class="note" style="font-size:11px;margin-top:4px;color:var(--err)" hidden></div>
-              <div class="note" style="font-size:11px;margin-top:4px">W déplacer · E tourner · R taille · Suppr · Échap : désélectionner</div>
+              <div class="note" style="font-size:11px;margin-top:4px">Maj+clic ou Ctrl+clic : plusieurs objets · W déplacer · E tourner · R taille · Ctrl+D dupliquer · Suppr · Échap : désélectionner</div>
             </div>
           </div>
         </div>
@@ -446,27 +527,44 @@ export function initCreator(ctx) {
           <div class="note" style="font-size:11px;margin:4px 0 0">Gros objets (⛰) : seulement en fond de map, derrière les autres. Au pinceau, tu peux les poser plus près.</div>
         </div>
       </div>
-      <div class="crcard"><h4>Objets semés</h4>
-        <div id="crpstat" class="note" style="margin-bottom:6px"></div>
-        <button id="crpclear" class="danger" style="width:100%">🗑 Supprimer tous les objets</button>
-      </div>
+      <div class="crsep" style="margin-top:16px"></div>
+      <div id="crpstat" class="note" style="margin:8px 0 6px"></div>
+      <button id="crpclear" class="danger" style="width:100%">🗑 Supprimer tous les objets</button>
     </div>
     <div id="crbrushhome"><div id="crbrush" class="crcard" hidden>
       <label style="display:block;margin-bottom:4px">Taille du pinceau : <b id="crr"></b> m<input id="crradius" type="range" min="6" max="150" value="30" style="width:100%"></label>
       <label style="display:block;margin-bottom:6px">Force : <b id="crs"></b><input id="crstrength" type="range" min="5" max="100" value="50" style="width:100%"></label>
       <label id="crspeedrow" style="display:block;margin-bottom:6px" title="Multiplie la vitesse à laquelle le sol monte, se creuse, s'aplanit ou se lisse">Vitesse : <b id="crspeedv">x1</b><input id="crspeed" type="range" min="1" max="10" step="1" value="1" style="width:100%"></label>
     </div></div>
-    <button id="crtreset" class="danger" style="width:100%;margin-top:6px" hidden>🗑 Tout supprimer</button>
-    <div style="position:sticky;bottom:-40px;z-index:1;background:var(--panel);border-top:1px solid var(--line);margin:10px 0 -40px;padding:6px 0 40px">
+    <button id="crtreset" class="danger" style="width:100%;margin-top:16px" hidden>🗑 Tout supprimer</button>
+    <div style="position:sticky;bottom:0;z-index:1;background:var(--panel);border-top:1px solid var(--line);margin:10px 0 0;padding:6px 0 8px">
       <div id="crstat" style="margin-bottom:6px;font-size:12px"></div>
       <div style="display:flex;gap:6px"><button id="crundo" title="Annuler (Ctrl+Z)" disabled>↶</button>
         <button id="crredo" title="Rétablir (Ctrl+Y)" disabled>↷</button><button id="crclose">⭕ Fermer la boucle</button>
-        <button id="crgo" class="go" style="flex:1">⚙ Générer la piste</button></div></div>`;
+        <button id="crgo" class="go" style="flex:1;display:none">⚙ Générer la piste</button></div></div>`;
+  // crgo masque : « Générer la piste » est un bouton de la barre du haut de l'editeur (2026-11-14), qui appelle generate()
   // panneau dans la barre de droite (a la place de « Sélection ») quand l'editeur la fournit, sinon sur la vue
   const host = ctx.details || view;
   if (ctx.details) panel.style.cssText = 'font-size:13px;padding:2px 0';
   host.appendChild(panel);
-  const $ = id => panel.querySelector('#' + id);
+  // 2026-11-14, demande utilisateur (« panneau de droite trop bordelique ») : reglages de la piste (theme, terrain,
+  // barrieres, qualite) dans une barre en haut de la vue 3D, a la place de la barre de l'Edition (masquee en Creation)
+  const topbar = document.createElement('div');
+  topbar.id = 'crtopbar'; topbar.hidden = true;
+  const tcss = document.createElement('style');
+  tcss.textContent = `#crtopbar{position:fixed;top:calc(var(--top,44px) + 8px);left:calc(var(--side,0px) + 8px);right:calc(var(--details,0px) + 8px);z-index:3;
+      display:flex;flex-wrap:wrap;gap:6px;align-items:center;pointer-events:none;font-size:12.5px}
+    #crtopbar[hidden]{display:none}
+    #crtopbar>label{pointer-events:auto;display:flex;align-items:center;gap:6px;background:#1d2026e6;border:1px solid var(--line);border-radius:8px;padding:3px 4px 3px 9px;color:var(--muted)}
+    #crtopbar select{padding:3px 6px;font-size:12.5px;max-width:230px}`;
+  document.head.appendChild(tcss);
+  topbar.innerHTML = `<label><span>Thème</span><select id="crkit"></select></label>
+    <label title="Taille du carré de base"><span>Terrain</span><select id="crsize">${T_SIZES.map(s => `<option value="${s}">${sizeLabel(s)} × ${sizeLabel(s)} km</option>`).join('')}</select></label>
+    <label><span>Barrières</span><select id="crbar"><option value="curves">Extérieur des virages serrés</option><option value="all">Les deux bords, partout</option><option value="none">Aucune</option></select></label>
+    <label title="Affiche aussi ce que tu as ajouté dans Édition (objets, imports, copies, caisses, boosters). Ils sont à leur place actuelle : à la génération, ils sont reposés sur le nouveau sol."><input type="checkbox" id="crghost" checked><span>Ajouts d'Édition</span></label>
+    <label title="Résolution de la vue et détail des objets pendant la création. Auto : la résolution baisse toute seule si la carte graphique peine, remonte si elle a de la marge. Maximale : objets d'origine. Basse : objets très simplifiés, pour les petits PC. Aucun effet sur la piste générée."><span>Qualité</span><select id="crq"><option value="auto">Auto</option><option value="0">Maximale</option><option value="2">Moyenne</option><option value="3">Basse</option></select></label>`;
+  document.body.appendChild(topbar);
+  const $ = id => panel.querySelector('#' + id) || topbar.querySelector('#' + id);
 
   // ---- decor seme (mode Decor) : objets du kit (pose a la generation), reperes simples dans l'apercu ----
   // familles d'objets de TOUS les themes (un objet d'un theme se seme sur n'importe quel autre)
@@ -543,13 +641,21 @@ export function initCreator(ctx) {
   const buriedTooMuch = p => { const st = seatOf(p); if (st.onRoad || p.t === 'rock' || kindOf(p)?.rock) return false;
                                return st.bury > Math.max(0.6 * IN, 0.15 * st.h); };
   // objet pose a la main SUR la route (p.road = 1, pinceau seulement) : passage le plus haut sous lui, ou null
+  // 2026-11-18 (« semer pose les objets sur la route du dessus plutot que le sol ») : la route la plus PROCHE DU SOL a cet
+  // endroit, plus la plus haute ; une route a plus de ROAD_NEAR_GROUND au-dessus du sol (pont, spirale) ne compte pas :
+  // l'objet va sur le sol dessous (propConflict ecarte ceux qui toucheraient le tablier)
+  const ROAD_NEAR_GROUND = 4 * IN;
   function roadUnder(p) {
-    const G = roadIndex(), a = Math.floor(p.x / G.size), b = Math.floor(p.y / G.size);
-    let top = null;
+    const G = roadIndex(), a = Math.floor(p.x / G.size), b = Math.floor(p.y / G.size), z0 = shownAt(p.x, p.y);
+    let best = null, bd = Infinity;
     for (let u = a - 1; u <= a + 1; u++) for (let v = b - 1; v <= b + 1; v++) {
-      for (const q of G.cells.get(u * 100003 + v) || []) if (Math.hypot(p.x - q[0], p.y - q[1]) < q[3] / 2 && (top === null || q[2] > top)) top = q[2];
+      for (const q of G.cells.get(u * 100003 + v) || []) {
+        if (Math.hypot(p.x - q[0], p.y - q[1]) >= q[3] / 2) continue;
+        const d = Math.abs(q[2] - z0);
+        if (d < bd) { bd = d; best = q[2]; }
+      }
     }
-    return top;
+    return best !== null && best - z0 <= ROAD_NEAR_GROUND ? best : null;
   }
   function seatOf(p) {
     let st = seats.get(p);
@@ -640,14 +746,19 @@ export function initCreator(ctx) {
   propDummy.rotation.order = 'ZYX';
   const Q = { level: 0, sum: 0, n: 0, from: 0, down: 0, up: -1e9, wait: 60000, cull: 0, bad: 0, loading: 0, lost: false };   // qualite de la vue (voir setQuality)
   const propMeshes = new Map();                           // zone + modele -> InstancedMesh gardee d'un calcul a l'autre
+  // objets de la base caches dans l'editeur (Edition : H, Maj+H ; 2026-11-16) : seulement l'affichage, pour la session
+  const propHidden = new Set();
   function renderProps() {
     let off = 0;
     const buckets = new Map(), lod = propLod();
     for (const p of S.props) {
+      if (propHidden.has(p)) continue;                    // cache dans l'editeur (H) : genere quand meme
       // la route a change depuis le semis (pont, rampe) : objet ecarte a la generation, donc pas montre
       if (!kindOf(p)) { off++; continue; }                // famille inconnue : ignoree aussi a la generation
       const st = seatOf(p);
-      st.off ??= propConflict(p) || !inTerrain(p) || (!st.onRoad && (st.deg > STEEP_MAX || inRoof(p)));
+      // objet place a la main (p.ed : deplace, tourne, duplique) : pose meme s'il touche la route ou sur une pente
+      // (2026-11-19 ; track_creator.props_items le garde aussi) ; seul le hors-terrain l'ecarte
+      st.off ??= p.ed ? !inTerrain(p) : propConflict(p) || !inTerrain(p) || (!st.onRoad && (st.deg > STEEP_MAX || inRoof(p)));
       if (st.off) { off++; continue; }
       const m = p.m % (kindOf(p)?.n || 1), mdl = propModel(p.k, p.t, m), d = dimOf(p), o = propDummy;
       if (mdl) o.scale.setScalar(p.s);
@@ -678,6 +789,7 @@ export function initCreator(ctx) {
       im.userData.maxR = b.maxR; im.userData.props = b.props;
     }
     if (S.propSelP) syncPropSel();
+    if (S.propMany?.length > 1) drawMany();
     Q.cull = 0;                                           // masquage des petits objets (qualite basse) refait aussitot
     syncAi();
     const stat = `${S.props.length - off} objet(s) semé(s)` +
@@ -697,7 +809,7 @@ export function initCreator(ctx) {
   function tryProp(x, y, c = pickSel(), manual = false) {
     if (!c) return false;
     const k = kindOf(c), [a, b] = k.scale;
-    const p = { k: c.k, t: c.t, m: c.m, x, y, yaw: +(Math.random() * 2 * Math.PI).toFixed(3), s: c.s ?? +(a + Math.random() * (b - a)).toFixed(2) };
+    const p = { k: c.k, t: c.t, m: c.m, x, y, yaw: +(Math.random() * 2 * Math.PI).toFixed(3), s: c.s ?? +(a + Math.random() * (b - a)).toFixed(2), c: CAT_VERSION };
     if (manual && roadUnder(p) !== null) p.road = 1;
     if (!seatOf(p).onRoad && seatOf(p).deg > STEEP_MAX) return false;     // falaise : rien n'y tient
     if (propConflict(p) || !inTerrain(p)) return false;
@@ -712,7 +824,7 @@ export function initCreator(ctx) {
   function sowAlongRoad() {
     if (!pickSel()) { status('Choisis d\'abord un ou plusieurs objets dans la liste', 'err'); return; }
     let n = 0, nb = 0;
-    const far = +$('crpfar').value, small = !!pickSel(false), big = !!pickSel(true);
+    const far = +$('crpfar').value, small = !!pickSel(false), big = !!pickSel(true), old = new Set(S.props);
     for (let i = 0; i < S.points.length; i += 6) {           // tous les ~24 m, des deux cotes
       const a = S.points[i], b = S.points[Math.min(S.points.length - 1, i + 1)];
       let tx = b[0] - a[0], ty = b[1] - a[1]; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
@@ -730,6 +842,8 @@ export function initCreator(ctx) {
         if (at(a[3] / 2 + (Math.max(k.big_min ?? 60, far) + r + Math.random() * 60) * IN, (Math.random() - 0.5) * 24 * IN, side, c)) nb++;
       }
     }
+    const wetOut = dropPropsInWater(p => old.has(p));             // semis : rien dans l'eau non plus (2026-11-14)
+    n = Math.max(0, n - wetOut);
     renderProps(); saveDraft();
     status(`${n + nb} objet(s) semé(s) le long de la route` + (nb ? ` dont ${nb} gros objet(s) en fond de map` : ''), 'ok');
   }
@@ -808,7 +922,9 @@ export function initCreator(ctx) {
     if (T.aih) { for (let v = 0; v < T.h.length; v++) T.h[v] -= T.aih[v]; T.aih.fill(0); }
   }
   // collines et creux, nuls pres de la route et plus marques vers le bord de la carte
-  function aiRelief(amp, rnd, D) {
+  // far (m, piste aleatoire, 2026-11-16) : collines de fond en plus, montant de ~200 m a ~350 m de la route (rendu
+  // « fini » : la carte se ferme sur des hauteurs au lieu d'une plaine)
+  function aiRelief(amp, rnd, D, far = 0) {
     const T = S.terrain, n = T.n, c = T.cell, noise = aiNoise(rnd);
     T.aih ??= new Float32Array(n * n);
     const near = Math.max(30, amp * 1.2) * IN, wide = near + Math.max(60, amp * 3) * IN, rim = 220 * IN;
@@ -817,7 +933,8 @@ export function initCreator(ctx) {
       if (!m) continue;
       const edge = Math.min(i, j, n - 1 - i, n - 1 - j) * c, up = sstep(rim, 0, edge);
       const hill = noise(x, y, 320 * IN) * 1.5 * (1 - up) + up * (0.9 + 0.5 * noise(x, y, 180 * IN));
-      const next = Math.max(T_LO, Math.min(T_HI, T.h[v] + amp * IN * hill * m));
+      const back = far ? far * IN * sstep(200 * IN, 350 * IN, D[v]) * (0.7 + 0.45 * noise(x + 9e5, y, 230 * IN)) : 0;
+      const next = Math.max(T_LO, Math.min(T_HI, T.h[v] + amp * IN * hill * m + back));
       T.aih[v] = next - T.h[v]; T.h[v] = next;
     }
   }
@@ -868,7 +985,7 @@ export function initCreator(ctx) {
     S.props.forEach(add);
     function put(c, m, x, y) {
       const k = c.d, [a, b] = k.scale;
-      const p = { k: c.k, t: c.t, m, x, y, yaw: +(rnd() * 2 * Math.PI).toFixed(3), s: +(a + rnd() * (b - a)).toFixed(2), ai: 1 };
+      const p = { k: c.k, t: c.t, m, x, y, yaw: +(rnd() * 2 * Math.PI).toFixed(3), s: +(a + rnd() * (b - a)).toFixed(2), ai: 1, c: CAT_VERSION };
       if (!inTerrain(p) || seatOf(p).deg > STEEP_MAX || buriedTooMuch(p) || propConflict(p, true)) return false;
       const sp = k.spacing * IN, bp = rad(p);
       const clash = q => { const gap = !!k.big !== !!kindOf(q)?.big ? 0 : Math.max(sp, (kindOf(q)?.spacing || 3) * IN) * 0.8;
@@ -982,6 +1099,27 @@ export function initCreator(ctx) {
     }
     return got;
   }
+  // objets poses dans l'eau retires (2026-11-14, retour utilisateur « le decor genere pose parfois des objets dans
+  // l'eau ») : TOUTES les eaux (decor auto, remplies, peintes ; avant : celles du decor auto seulement) et toute
+  // l'emprise du pied de l'objet + une demi-case de marge (avant : le seul sommet le plus proche du centre : objets de
+  // la rive a moitie dans l'eau gardes). keep(p) vrai : objet non concerne (deja la avant). -> nombre retire
+  function dropPropsInWater(keep) {
+    const T = S.terrain; if (!T || !S.waters.length) return 0;
+    const n = T.n, wet = new Uint8Array(n * n);
+    let any = false;
+    for (const w of S.waters) { const b = waterBasin(w); if (b) b.region.forEach((r, v) => { if (r) { wet[v] = 1; any = true; } }); }
+    if (!any) return 0;
+    const before = S.props.length;
+    S.props = S.props.filter(p => {
+      if (keep(p) || p.road || p.ed) return true;         // pose a la main : laisse ou il est
+      const R = footOf(p) + 0.5 * T.cell, ci = (p.x - T.x0) / T.cell, cj = (p.y - T.y0) / T.cell, k = R / T.cell;
+      for (let j = Math.max(0, Math.floor(cj - k)); j <= Math.min(n - 1, Math.ceil(cj + k)); j++)
+        for (let i = Math.max(0, Math.floor(ci - k)); i <= Math.min(n - 1, Math.ceil(ci + k)); i++)
+          if (wet[j * n + i] && Math.hypot(i - ci, j - cj) * T.cell <= R) return false;
+      return true;
+    });
+    return before - S.props.length;
+  }
   function inAiWater(x, y) {                                    // objet dans une eau du decor automatique
     const T = S.terrain, n = T.n, v = Math.round((y - T.y0) / T.cell) * n + Math.round((x - T.x0) / T.cell);
     return S.waters.some(w => w.ai && waterBasin(w)?.region[v]);
@@ -996,18 +1134,14 @@ export function initCreator(ctx) {
     S.waters = S.waters.filter(w => !w.ai); if (S.waterSel >= S.waters.length) S.waterSel = -1;
     aiClearRelief();
     const amp = +$('craiamp').value;
-    if (amp > 0) aiRelief(amp, rnd, roadDistance());
+    if (amp > 0 || extra?.farHills) aiRelief(amp, rnd, roadDistance(), extra?.farHills || 0);
     refreshTerrainMesh(); rebuild();
     const nw = aiWaters(rnd, roadDistance());                   // points d'eau dans les creux (parfois)
     const o = { ...aiOptions(), ...(extra || {}) };                // extra : reglages imposes (piste aleatoire)
     const { count: c, missing, borrowed } = aiPlace(rnd, o);
     // rien de pose dans l'eau. Zones d'eau calculees UNE fois (2026-11-14 : inAiWater par objet refaisait le remplissage
     // de chaque eau pour chacun des ~4000 objets -> plusieurs minutes, navigateur bloque sur 0LD-IW7ENN-1R)
-    if (nw) {
-      const T = S.terrain, n = T.n, wet = new Uint8Array(n * n);
-      for (const w of S.waters) if (w.ai) { const b = waterBasin(w); if (b) b.region.forEach((r, v) => { if (r) wet[v] = 1; }); }
-      S.props = S.props.filter(p => !p.ai || !wet[Math.round((p.y - T.y0) / T.cell) * n + Math.round((p.x - T.x0) / T.cell)]);
-    }
+    dropPropsInWater(p => !p.ai);
     renderWater(); syncWaterLevel();
     renderProps(); saveDraft(); aiSaveOptions();
     const n = Object.values(c).reduce((a, b) => a + b, 0), names = S.info?.kits || {};
@@ -1090,22 +1224,26 @@ export function initCreator(ctx) {
     ['🗿 Piliers, statues et ruines', ['pillar', 'statue', 'column', 'tiki', 'fossil', 'bones']],
     ['🏠 Bâtiments et huttes', ['house', 'hut', 'building']],
     ['⚙ Machines et industrie', ['pipe', 'barrel', 'fan', 'beam', 'machine', 'tesla', 'drum', 'magnet', 'gear', 'gears', 'cart', 'tech']],
-    ['🪧 Objets et décorations', ['beach', 'deco', 'sign', 'fence', 'wood', 'torch', 'lamp', 'lantern', 'spike', 'tire', 'kart', 'card', 'speaker']]];
+    ['🪧 Objets et décorations', ['beach', 'deco', 'sign', 'fence', 'wood', 'torch', 'lamp', 'lantern', 'spike', 'tire', 'kart', 'card', 'speaker']],
+    ['⤴ Rampes et tremplins', ['ramp']]];                  // 2026-11-18 : memes 5 rampes dans tous les themes
   const typeOf = (t, k) => k.big ? '⛰ Gros objets (fond de map)' : (PROP_TYPES.find(([, ts]) => ts.includes(t))?.[0] || '📦 Autres objets');
   // classement par type : une seule categorie par famille, tous themes confondus (tous les palmiers ensemble...)
   const TYPE_ALIAS = { gears: 'gear' };
+  // (libelles du catalogue reclasse du 2026-11-17 : track_creator_catalog.FAMILIES ; anciennes cles gardees)
   const TYPE_LABELS = {
-    palm: '🌴 Palmiers', tree: '🌳 Arbres', pine: '🌲 Sapins', plant: '🌿 Plantes', grass: '🌿 Herbes', flower: '🌸 Fleurs',
-    giant: '🌼 Fleurs géantes', bush: '🌿 Buissons', kelp: '🌿 Algues', coral: '🪸 Coraux', cactus: '🌵 Cactus',
-    mushroom: '🍄 Champignons', vine: '🌿 Lianes et souches', rock: '🪨 Rochers', crystal: '💎 Cristaux', gems: '💎 Trésors',
-    snow: '❄ Neige et glaçons', pillar: '🏛 Piliers', statue: '🗿 Statues', column: '🏛 Colonnes et tours', tiki: '🗿 Tikis',
-    fossil: '🦴 Fossiles', bones: '🦴 Os et étoiles de mer', house: '🏠 Maisons', hut: '🛖 Huttes', building: '🏭 Bâtiments',
-    pipe: '🛢 Tuyaux', barrel: '🛢 Barils', fan: '⚙ Ventilateurs', beam: '🏗 Poutres', machine: '🤖 Machines',
+    palm: '🌴 Palmiers', tree: '🌳 Arbres', pine: '🌲 Sapins', plant: '🌿 Plantes', grass: '🌾 Herbes', flower: '🌸 Fleurs',
+    giant: '🌼 Fleurs géantes', bush: '🌿 Buissons et plantes', kelp: '🌊 Algues', coral: '🪸 Coraux', cactus: '🌵 Cactus',
+    mushroom: '🍄 Champignons', vine: '🍂 Lianes, racines et souches', rock: '🪨 Rochers', crystal: '💎 Cristaux et trésors', gems: '💎 Trésors',
+    snow: '❄ Neige et glaçons', pillar: '🏛 Piliers et colonnes', statue: '🗿 Statues', column: '🏛 Colonnes et tours', tiki: '🗿 Tikis',
+    fossil: '🦴 Fossiles', bones: '🐚 Os, coquillages et étoiles de mer', house: '🏠 Maisons et bâtiments', hut: '🛖 Huttes', building: '🏭 Bâtiments',
+    pipe: '🛢 Tuyaux et vannes', barrel: '📦 Barils, caisses et wagonnets', fan: '⚙ Ventilateurs', beam: '🏗 Poutres', machine: '⚙ Machines et engrenages',
     tesla: '⚡ Bobines', drum: '🛢 Fûts et vannes', magnet: '🧲 Aimants et pilons', gear: '⚙ Engrenages',
-    cart: '⛏ Wagonnets et outils', tech: '🖥 Écrans et panneaux', beach: '⚓ Objets de plage', deco: '🏮 Décorations',
-    sign: '🪧 Panneaux', fence: '🚧 Barrières', wood: '🪵 Poteaux et clôtures', torch: '🔥 Torches et chandelles',
-    lamp: '💡 Lampes', lantern: '🏮 Lanternes', spike: '🚧 Grilles et pics', tire: '🛞 Pneus et bottes de foin',
-    kart: '🏎 Karts exposés', card: '🃏 Cartes et loterie', speaker: '🔊 Haut-parleurs', big: '⛰ Gros objets (fond de map)' };
+    cart: '⛏ Wagonnets et outils', tech: '🖥 Écrans et panneaux', beach: '⚓ Barques et épaves', deco: '🏮 Décorations',
+    sign: '🪧 Panneaux et drapeaux', fence: '🚧 Clôtures, poteaux et planches', wood: '🪵 Poteaux et clôtures', torch: '🔥 Torches et chandelles',
+    lamp: '💡 Lampes, lanternes et torches', lantern: '🏮 Lanternes', spike: '🚧 Grilles et pics', tire: '🛞 Pneus et bottes de foin',
+    kart: '🏎 Karts exposés', card: '🃏 Cartes et loterie', speaker: '🔊 Haut-parleurs', prop: '🧩 Objets divers',
+    ramp: '⤴ Rampes et tremplins',
+    big: '⛰ Falaises et gros objets (fond)' };
   const typeKey = t => TYPE_ALIAS[t] || t;
   const SORT_KEY = 'ctr_creator_sort';
   try { $('crpsort').value = localStorage.getItem(SORT_KEY) || 'style'; } catch (e) { /* sans importance */ }
@@ -1125,7 +1263,9 @@ export function initCreator(ctx) {
     const kits = [cur, ...(S.info?.order || Object.keys(names)).filter(k => k !== cur)];
     if ($('crpsort').value === 'type') {
       const groups = [...PROP_TYPES.map(([l]) => l), '📦 Autres objets', '⛰ Gros objets (fond de map)'];
-      const fams = kits.flatMap(kit => Object.entries(propKinds).filter(([kk, k]) => kk.startsWith(kit + '|') && shownCount(k)));
+      // rampes : la meme famille dans chaque theme -> seulement celle du theme courant (sinon 26 fois chaque rampe)
+      const fams = kits.flatMap(kit => Object.entries(propKinds).filter(([kk, k]) => kk.startsWith(kit + '|') && shownCount(k)
+        && (kk.split('|')[1] !== 'ramp' || kit === cur)));
       grid.innerHTML = groups.map(g => [g, fams.filter(([kk, k]) => typeOf(kk.split('|')[1], k) === g)]).filter(([, f]) => f.length)
         .map(([g, f], i) => {
           // meme famille dans tous les themes : une seule categorie (theme du modele en infobulle)
@@ -1282,7 +1422,7 @@ export function initCreator(ctx) {
       const k1 = (k + 1) % P.length;                    // sauts compris : le sol suit la route, seule la route s'arrete
       const l0 = EL[k], l1 = EL[k1], r0 = ER[k], r1 = ER[k1];
       const slope = S.blendSlope ?? BLEND_DEF;
-      const reach = T.cell + Math.max(BLEND_MIN, slope * (Math.abs(P[k][2] - S.groundZ) + Math.abs(P[k][5]) + hMax + 2 * IN));
+      const reach = T.cell + blendWidth(Math.abs(P[k][2] - S.groundZ) + Math.abs(P[k][5]) + hMax + 2 * IN, 1, slope, T.cell);
       const x0 = Math.min(l0[0], l1[0], r0[0], r1[0]) - reach, x1 = Math.max(l0[0], l1[0], r0[0], r1[0]) + reach;
       const y0 = Math.min(l0[1], l1[1], r0[1], r1[1]) - reach, y1 = Math.max(l0[1], l1[1], r0[1], r1[1]) + reach;
       const i0 = Math.max(I0, Math.floor((x0 - T.x0) / T.cell)), i1 = Math.min(I1, Math.ceil((x1 - T.x0) / T.cell));
@@ -1294,7 +1434,7 @@ export function initCreator(ctx) {
         // hors de portee pour CE sommet (la portee ci-dessus vaut pour le plus haut du terrain) : rien de plus a calculer
         const gapX = x < ex0 ? ex0 - x : x > ex1 ? x - ex1 : 0, gapY = y < ey0 ? ey0 - y : y > ey1 ? y - ey1 : 0;
         const free = 1 - Math.min(1, Math.abs(T.h[v]) / SCULPT_FULL);   // relief sculpte : raccord resserre (track_creator._conform)
-        const dz = Math.max(Math.abs(h0[v] - zlo), Math.abs(h0[v] - zhi)), lim = T.cell + Math.max(BLEND_MIN, slope * free * dz);
+        const dz = Math.max(Math.abs(h0[v] - zlo), Math.abs(h0[v] - zhi)), lim = T.cell + blendWidth(dz, free, slope, T.cell);
         if (gapX * gapX + gapY * gapY > lim * lim) continue;
         // sous la route : sa surface reelle ; a cote : le bord le plus proche
         const surf = inTri(x, y, l0, l1, r1) ?? inTri(x, y, l0, r1, r0);
@@ -1305,7 +1445,7 @@ export function initCreator(ctx) {
         }
         rz -= below;
         if (P[k][8] && rz > h0[v]) continue;                 // sans talus : le sol reste dessous (la tranchee, elle, reste)
-        const bl = Math.max(BLEND_MIN, Math.abs(rz - h0[v]) * slope * free);
+        const bl = blendWidth(Math.abs(rz - h0[v]), free, slope, T.cell);
         if (d >= T.cell + bl) continue;
         if (last[v] >= 0 && k - last[v] > 3) { if (runV[v] < acc[v]) acc[v] = runV[v]; runD[v] = Infinity; }   // autre passage
         let val = rz;
@@ -1314,11 +1454,13 @@ export function initCreator(ctx) {
         last[v] = k;
       }
     }
-    // S.raw : sol raccorde ; S.shown (affiche) en est une copie ou les ponts de terre sont fusionnes (refreshTerrainMesh)
+    // S.raw : sol raccorde ; S.shown (affiche) en est une copie (refreshTerrainMesh)
     const out = S.raw?.length === N ? S.raw : new Float32Array(N);
     for (let j = J0; j <= J1; j++) for (let i = I0, v = j * n + I0; i <= I1; i++, v++) {
       const a = runD[v] < Infinity ? Math.min(acc[v], runV[v]) : acc[v];
-      out[v] = a < Infinity && !T.dig?.[v] ? a : h0[v];                // creuse sous la route : relief garde
+      // creuse sous la route : relief garde seulement s'il est PLUS BAS que le raccord (route en pont) ; plus haut, raccord
+      // normal (2026-11-16 : sinon une butte montee au bord devenait un pont de terre au-dessus de la route)
+      out[v] = a < Infinity ? (T.dig?.[v] ? Math.min(a, h0[v]) : a) : h0[v];
     }
     clearRoad(out, EL, ER, P, rg);
     S.raw = out;
@@ -1503,140 +1645,17 @@ export function initCreator(ctx) {
     used.forEach((m, g) => terrainGeo.addGroup(start[m], count[m] * 6, g));
     terrainMesh.material = used.map(m => { const key = sigOf(m, mixes), mix = m > last ? mixes[m - last - 1] : null, mt = matOf(mix ? mix[0] : m), mb = mix && matOf(mix[1]);
       if (!terrainMats.has(key)) terrainMats.set(key, mix && mt.png && mb.png ? mixMaterial(key, mt, mb, mix[2]) : new THREE.MeshBasicMaterial({ vertexColors: true,
-        side: THREE.DoubleSide,                               // dessous des ponts de terre (refreshRoof) avec la meme matiere
+        side: THREE.DoubleSide,
         ...(mt.png ? { map: kitTexture(mt.png, mt.kit) } : { color: new THREE.Color(...mt.color) }) }));
       return terrainMats.get(key); });
     terrainFaces = { paint: tp.slice(), last, used, mixes, fade, sig: used.map(c => sigOf(c, mixes)).join(),
                      best, mats: new Map(used.map((m, g) => [m, terrainMesh.material[g]])) };
   }
-  // ---- tunnels (2026-11-11 ; meme calcul que track_creator._roof_mask) : la ou le relief marque (pinceau Deplacer sur
-  // le cote, ou Creuser sous la route) passe a plus de ROOF_CLEAR au-dessus de la route, il reste au-dessus comme un
-  // plafond et la route passe dessous. Sans marque, une tranchee profonde reste une tranchee. ----
-  const ROOF_CLEAR = 8 * IN, ROOF_EDGE = 0.3 * IN, ROOF_REACH = 60 * IN, ROOF_THICK = 6 * IN, ROOF_KEEP = 12 * IN, ROOF_KEEP_R = 40 * IN;
-  let roofRoad = { src: null };
-  function roofRoadZ() {                                      // dessus de la route sous chaque sommet (NaN hors route)
-    const T = S.terrain, n = T.n, c = T.cell, E = S.eff || effPoints(), key = `${T.x0}|${T.y0}|${c}|${n}`;
-    if (roofRoad.src === E && roofRoad.key === key) return roofRoad.rz;
-    const rz = new Float32Array(n * n).fill(NaN);
-    for (const q of E) {
-      if (q[4]) continue;
-      const r = q[3] / 2, z = q[2] + 6;
-      const i0 = Math.max(0, Math.floor((q[0] - r - T.x0) / c)), i1 = Math.min(n - 1, Math.ceil((q[0] + r - T.x0) / c));
-      const j0 = Math.max(0, Math.floor((q[1] - r - T.y0) / c)), j1 = Math.min(n - 1, Math.ceil((q[1] + r - T.y0) / c));
-      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
-        const v = j * n + i;
-        if (Math.hypot(T.x0 + i * c - q[0], T.y0 + j * c - q[1]) < r && !(rz[v] >= z)) rz[v] = z;
-      }
-    }
-    roofRoad = { src: E, key, rz };
-    return rz;
-  }
-  function roofMask() {                                       // sommets du plafond (Uint8Array) ou null
-    const T = S.terrain; if (!T?.dig || !T.dig.some(v => v)) return null;
-    const n = T.n, N = n * n, H = S.raw; if (!H || H.length !== N) return null;
-    const rz = roofRoadZ(), h0 = v => S.groundZ + T.h[v], low = v => h0(v) - H[v];
-    const roof = new Uint8Array(N), ref = new Float32Array(N);
-    let front = [];
-    for (let v = 0; v < N; v++) if (T.dig[v] && rz[v] === rz[v] && h0(v) - rz[v] >= ROOF_CLEAR) { roof[v] = 1; ref[v] = rz[v]; front.push(v); }
-    if (!front.length) return null;
-    const ok = (w, r) => !roof[w] && low(w) > ROOF_EDGE && h0(w) >= r + ROOF_CLEAR / 2 && (rz[w] !== rz[w] || h0(w) - rz[w] >= ROOF_CLEAR);
-    for (let d = 1, maxD = Math.ceil(ROOF_REACH / T.cell); d <= maxD && front.length; d++) {
-      const next = [];
-      for (const v of front) {
-        const i = v % n, j = (v - i) / n;
-        for (const w of [i > 0 ? v - 1 : -1, i < n - 1 ? v + 1 : -1, j > 0 ? v - n : -1, j < n - 1 ? v + n : -1])
-          if (w >= 0 && ok(w, ref[v])) { roof[w] = 1; ref[w] = ref[v]; next.push(w); }
-      }
-      front = next;
-    }
-    roof.ref = ref;                                           // dessus de la route couverte, par sommet (volume du tunnel)
-    // partie au-dessus de la route (sommets de la route et leurs 4 voisins) : dalle avec le vide dessous ; le reste
-    // (flancs des buttes reliees) est plein jusqu'au sol (track_creator : span)
-    const onRoad = v => rz[v] === rz[v];
-    roof.span = new Uint8Array(N);
-    for (let v = 0; v < N; v++) if (roof[v]) {
-      const i = v % n, j = (v - i) / n;
-      roof.span[v] = onRoad(v) || (i > 0 && onRoad(v - 1)) || (i < n - 1 && onRoad(v + 1)) || (j > 0 && onRoad(v - n)) || (j < n - 1 && onRoad(v + n)) ? 1 : 0;
-    }
-    // au-dessus de la route, seule la partie haute de la bande reste (ROOF_KEEP sous son sommet local) : ses bords en pente
-    // pendaient en voiles jusque pres de la route (track_creator idem)
-    const k = Math.round(ROOF_KEEP_R / T.cell), drop = [];
-    for (let v = 0; v < N; v++) if (roof.span[v]) {
-      const i = v % n, j = (v - i) / n;
-      let peak = -Infinity;
-      for (let b = Math.max(0, j - k); b <= Math.min(n - 1, j + k); b++) for (let a = Math.max(0, i - k); a <= Math.min(n - 1, i + k); a++)
-        if (roof.span[b * n + a]) peak = Math.max(peak, h0(b * n + a));
-      if (h0(v) < Math.max(ref[v] + ROOF_CLEAR + ROOF_THICK, peak - ROOF_KEEP)) drop.push(v);
-    }
-    for (const v of drop) roof[v] = roof.span[v] = 0;
-    return roof;
-  }
-  // objet seme sur l'emprise d'un plafond : ni dessus ni dans le tunnel (ecarte a la generation aussi)
-  const inRoof = p => { const T = S.terrain, R = S.roof; if (!R || !T) return false;
-    const i = Math.round((p.x - T.x0) / T.cell), j = Math.round((p.y - T.y0) / T.cell);
-    return i >= 0 && j >= 0 && i < T.n && j < T.n && !!R[j * T.n + i]; };
-  function refreshRoof() {
-    const R = roofMask(), had = !!S.roof;
-    S.roof = R;
-    if (had !== !!R) clearSeats();
-    roofMesh.geometry.dispose(); roofMesh.geometry = new THREE.BufferGeometry();
-    if (!R) { roofMesh.visible = false; return; }
-    // FUSIONNE AU RELIEF, meme calcul que la generation (track_creator, « tunnels ») : les flancs des buttes reliees sont
-    // le relief lui-meme (S.shown, refreshTerrainMesh) ; seule la partie au-dessus de la route est dessinee ici, son dessus
-    // dans le prolongement du relief (meme hauteur, meme ombrage, memes peintures case par case), dessous = dalle de
-    // ROOF_THICK (jamais a moins de ROOF_CLEAR de la route) qui rejoint le dessus des buttes a ses bouts
-    const T = S.terrain, n = T.n, c = T.cell, H = S.shown, rep = (S.kitInfo?.ground_repeat || 12) * IN;
-    // dessus : relief du pont ; hors du pont, le sol affiche (bloc ou butte que la bande rejoint)
-    const top = v => R[v] ? S.groundZ + T.h[v] : H[v];
-    // case du pont : un coin au moins au-dessus de la route, les autres dans le pont OU sur du relief haut que la bande
-    // touche (pas abaisse par le raccord, au moins ROOF_CLEAR au-dessus de la route) : la bande s'y soude sans trou
-    const cellOk = new Uint8Array((n - 1) * (n - 1));
-    for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
-      const a = j * n + i, q = [a, a + 1, a + n, a + n + 1];
-      if (!q.some(v => R.span[v])) continue;
-      const ref = Math.max(...q.filter(v => R.span[v]).map(v => R.ref[v]));
-      cellOk[j * (n - 1) + i] = q.every(v => R[v] || (S.groundZ + T.h[v] - S.raw[v] <= ROOF_EDGE && H[v] >= ref + ROOF_CLEAR)) ? 1 : 0;
-    }
-    const isCell = (i, j) => i >= 0 && j >= 0 && i < n - 1 && j < n - 1 && cellOk[j * (n - 1) + i] === 1;
-    const bot = v => R.span[v] ? Math.min(top(v) - 0.5 * IN, Math.max(top(v) - ROOF_THICK, H[v], R.ref[v] + ROOF_CLEAR)) : top(v);
-    // ombrage du relief (refreshTerrainMesh) d'apres la surface vue de dessus : pont compris
-    const surf = top, in2 = 1 / (2 * c);
-    const shade = v => {
-      const i = v % n, j = (v - i) / n, a = i > 0 ? v - 1 : v, b = i < n - 1 ? v + 1 : v, d0 = j > 0 ? v - n : v, d1 = j < n - 1 ? v + n : v;
-      const nx = -(surf(b) - surf(a)) * in2, ny = -(surf(d1) - surf(d0)) * in2, dot = (nx * 0.45 + ny * -0.35 + 0.82) / Math.sqrt(nx * nx + ny * ny + 1);
-      return Math.min(1, 0.55 + 0.5 * Math.max(0, dot));
-    };
-    const best = terrainFaces.best, groups = new Map(), bz = new Map();
-    const B = v => { if (!bz.has(v)) bz.set(v, bot(v)); return bz.get(v); };
-    let out = null;
-    const P = (v, z, s) => { const x = T.x0 + (v % n) * c, y = T.y0 + Math.floor(v / n) * c; out.pos.push(x, y, z); out.uv.push(x / rep, y / rep); out.col.push(s, s, s); };
-    const tri = (a, za, b, zb, d, zd, s) => { P(a, za, s ?? shade(a)); P(b, zb, s ?? shade(b)); P(d, zd, s ?? shade(d)); };
-    for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
-      if (!isCell(i, j)) continue;
-      const code = best?.[j * (n - 1) + i] ?? 0;
-      out = groups.get(code) || groups.set(code, { pos: [], uv: [], col: [] }).get(code);
-      const a = j * n + i, q = [a, a + 1, a + n + 1, a + n], t = v => top(v) - 2;           // -2 : comme le relief
-      tri(q[0], t(q[0]), q[1], t(q[1]), q[2], t(q[2])); tri(q[0], t(q[0]), q[2], t(q[2]), q[3], t(q[3]));       // dessus
-      tri(q[0], B(q[0]), q[2], B(q[2]), q[1], B(q[1]), 0.45); tri(q[0], B(q[0]), q[3], B(q[3]), q[2], B(q[2]), 0.45);   // dessous
-      for (const [di, dj, p, r] of [[0, -1, q[0], q[1]], [1, 0, q[1], q[2]], [0, 1, q[2], q[3]], [-1, 0, q[3], q[0]]]) {
-        if (isCell(i + di, j + dj) || !(R.span[p] || R.span[r])) continue;      // paroi (pas entre deux sommets de butte)
-        tri(p, t(p), r, t(r), r, B(r), 0.6); tri(p, t(p), r, B(r), p, B(p), 0.6);
-      }
-    }
-    const pos = [], uv = [], col = [], mats = [];
-    for (const [code, g] of groups) {
-      roofMesh.geometry.addGroup(pos.length / 3, g.pos.length / 3, mats.length);
-      mats.push(terrainFaces.mats?.get(code) || terrainMesh.material[0] || roofMesh.userData.mat0);
-      for (const x of g.pos) pos.push(x);
-      for (const x of g.uv) uv.push(x);
-      for (const x of g.col) col.push(x);
-    }
-    roofMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    roofMesh.geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    roofMesh.geometry.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    roofMesh.material = mats;
-    roofMesh.visible = pos.length > 0;
-  }
+  // ---- ponts de terre / tunnels (relief garde au-dessus de la route) : SUPPRIMES le 2026-11-16 a la demande de
+  // l'utilisateur (track_creator idem). Restent ces deux appels vides pour l'apercu et le semis d'objets ----
+  function roofMask() { return null; }
+  const inRoof = () => false;
+  function refreshRoof() { S.roof = null; roofMesh.visible = false; }
   // box : zone modifiee (monde), le reste du maillage ne bouge pas ; sans box : tout le terrain
   function refreshTerrainMesh(box = null) {
     clearSeats(box);                                          // objets de la zone : a reposer sur le sol
@@ -1644,14 +1663,8 @@ export function initCreator(ctx) {
     let rg = box && S.shown?.length === N && terrainGeo.attributes.position?.count === N ? gridRange(box) : null;
     if (box && !rg && S.shown?.length === N && terrainGeo.attributes.position?.count === N) { refreshTerrainFaces(); return; }   // hors du terrain
     conform(rg);
-    // pont de terre fusionne au relief (track_creator idem) : sous la partie au-dessus de la route, sol au niveau de la
-    // route (vide jusqu'a la dalle) ; flancs des buttes reliees rendus au relief (un seul bloc avec la bande)
     S.shown.set(S.raw);
-    const under = roofMask(), mods = new Set();
-    if (under) for (let v = 0; v < N; v++) if (under[v]) {
-      S.shown[v] = under.span[v] ? Math.min(S.raw[v], under.ref[v] - 16) : S.groundZ + T.h[v];   // ref : dessus de la route
-      mods.add(v);
-    }
+    const mods = new Set();
     if (rg) for (const v of [...mods, ...(S.mods || [])]) {   // modifie hors de la zone recalculee : tout renvoyer
       const i = v % n, j = (v - i) / n;
       if (i < rg.i0 || i > rg.i1 || j < rg.j0 || j > rg.j1) { rg = null; break; }
@@ -1908,6 +1921,8 @@ export function initCreator(ctx) {
     const before = S.waters.length;
     S.waters = S.waters.filter(w => !w.paint || w.v.length);
     if (S.waters.length !== before) S.waterSel = -1;
+    const gone = dropPropsInWater(p => !p.ai);                // decor automatique dans l'eau peinte : retire
+    if (gone) { renderProps(); status(`${gone} objet(s) du décor automatique retiré(s) de l'eau`, 'ok'); }
     renderWater(); syncWaterLevel(); saveDraft();
   }
   // nouvelle eau au point p : WATER_DZ sous le bord ; trou moins profond que ca : eau a mi-profondeur.
@@ -1970,9 +1985,13 @@ export function initCreator(ctx) {
     }
     const w = r.w;
     S.waters.push(w); S.waterSel = S.waters.length - 1;
+    // objets du decor automatique qui se retrouvent dans cette eau : retires (ceux poses a la main restent)
+    const gone = dropPropsInWater(p => !p.ai);
+    if (gone) renderProps();
     renderWater(); syncWaterLevel(); saveDraft();
     const inf = S.waterInfo[S.waterSel];
-    status(`Trou rempli : ${Math.round(inf.area)} m², ${(inf.depth / IN).toFixed(1).replace('.', ',')} m au plus profond` +
+    status((gone ? `${gone} objet(s) du décor automatique retiré(s) de l'eau · ` : '') +
+           `Trou rempli : ${Math.round(inf.area)} m², ${(inf.depth / IN).toFixed(1).replace('.', ',')} m au plus profond` +
            (inf.deep ? ' (profond : on y tombe, réapparition sur la route)' : ' (peu profond : on roule au fond)') +
            (inf.road ? ' — ⚠ la route passe dans l\'eau : baisse le niveau' : ''), inf.road ? 'err' : 'ok');
   }
@@ -2063,7 +2082,7 @@ export function initCreator(ctx) {
   }
 
   const draftKey = () => 'ctr_creator_' + getTrack();
-  // ponts de terre : liste creuse [sommet, hauteur, ...] et epaisseur (upt)
+  const GHOST_KEY = 'ctr_creator_ghost';
   const packTerrain = T => T && { x0: T.x0, y0: T.y0, cell: T.cell, n: T.n, h: Array.from(T.h, v => Math.round(v)), paint: Array.from(T.paint),
                                   ...(T.dig?.some(v => v) ? { dig: Array.from(T.dig) } : {}) };
   // relief du decor automatique (pouces, entiers 16 bits en base64) : 2,7 caracteres par sommet, pour le retirer apres reouverture
@@ -2075,10 +2094,26 @@ export function initCreator(ctx) {
                                ...(T.aih?.some(v => v) ? { aih: packI16(T.aih) } : {}) };
   // brouillon ecrit au plus une fois par seconde (700 Ko a chaque point pose par le paveur), et a la fermeture
   let draftTimer = 0;
-  const saveDraft = () => { draftTimer ||= setTimeout(writeDraft, 1000); histSchedule(); };
+  // toute modification : la base n'est plus celle de la derniere generation (point sur « Générer la piste », apercu dans l'Edition)
+  const saveDraft = () => { S.genDirty = true; S.editN = (S.editN || 0) + 1; draftTimer ||= setTimeout(writeDraft, 1000); histSchedule(); };
   addEventListener('pagehide', () => { if (draftTimer) writeDraft(); });
-  const writeDraft = () => { clearTimeout(draftTimer); draftTimer = 0; try { localStorage.setItem(draftKey(), JSON.stringify({ at: Date.now(), points: S.points, closed: S.closed, ground_z: S.groundZ, start: S.points.length <= 1 ? S.start : undefined, width: S.width, barriers: $('crbar').value, marks: S.marks, signs: S.signs, rnd: S.rndCode || undefined, props: S.props, waters: S.waters, kit: $('crkit').value, sel: [...S.sel], far: +$('crpfar').value,
-                                                                                   terrain: packFull(S.terrain) })); } catch (e) { /* sans importance */ } };
+  // brouillon trop gros pour le navigateur (piste aleatoire ~2 Mo, plusieurs pistes : ~5 Mo de place) : l'ecriture echouait
+  // sans rien dire et la reouverture reprenait l'ancienne base (2026-11-14) -> copie sur le serveur (plus recente : prise
+  // a l'ouverture), message une fois
+  let serverDraftTimer = 0;
+  const writeDraft = () => {
+    clearTimeout(draftTimer); draftTimer = 0;
+    const d = { at: Date.now(), cat: CAT_VERSION, points: S.points, closed: S.closed, ground_z: S.groundZ, start: S.points.length <= 1 ? S.start : undefined, width: S.width, barriers: $('crbar').value, marks: S.marks, signs: S.signs, rnd: S.rndCode || undefined, items: S.items || undefined, props: S.props, waters: S.waters, kit: $('crkit').value, sel: [...S.sel], far: +$('crpfar').value,
+                terrain: packFull(S.terrain) };
+    try { localStorage.setItem(draftKey(), JSON.stringify(d)); return; } catch (e) { /* place du navigateur pleine */ }
+    const track = getTrack();
+    clearTimeout(serverDraftTimer);
+    serverDraftTimer = setTimeout(() => {
+      fetch('/api/creator_draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track, draft: d }) })
+        .catch(() => status('⚠ Brouillon de la base non enregistré (navigateur plein, serveur injoignable) : « Enregistrer » avant de fermer', 'err'));
+    }, 300);
+    if (!S.draftWarned) { S.draftWarned = true; status('Brouillon de la base trop gros pour le navigateur : il est gardé sur le serveur à la place'); }
+  };
   const closeR = () => Math.max(CLOSE_DIST, S.width * 0.8);
 
   // ---- annuler / retablir : instantane du brouillon (trace, bords, objets, relief, peinture, reglages) pris un
@@ -2097,20 +2132,35 @@ export function initCreator(ctx) {
   const histSame = (a, b) => a.meta === b.meta && sameArr(a.h, b.h) && sameArr(a.paint, b.paint) && sameArr(a.dig, b.dig);
   function histButtons() {
     $('crundo').disabled = histAt <= 0; $('crredo').disabled = histAt >= hist.length - 1;
-    // fleches de la barre du haut : meme etat ($ ne cherche que dans le panneau de droite)
-    document.getElementById('undo').disabled = histAt <= 0; document.getElementById('redo').disabled = histAt >= hist.length - 1;
+    // fleches de la barre du haut : meme etat ($ ne cherche que dans le panneau de droite) ; Creation fermee : ce sont
+    // celles de l'Edition (elle y melange ses etapes et celles faites ici sur les objets de la base)
+    if (S.active) { document.getElementById('undo').disabled = histAt <= 0; document.getElementById('redo').disabled = histAt >= hist.length - 1; }
   }
-  function histReset() { clearTimeout(histTimer); histTimer = 0; hist = [histSnap()]; histAt = 0; histButtons(); }
+  // historique de la base de la piste chargee : garde d'une ouverture a l'autre, et rempli aussi quand la Creation est
+  // fermee (objets de la base retouches depuis l'Edition, 2026-11-17 : avant, Ctrl+Z ne pouvait pas les defaire)
+  function histReset() { clearTimeout(histTimer); histTimer = 0; hist = [{ ...histSnap(), at: 0 }]; histAt = 0; S.histTrack = S.loadedTrack; histButtons(); }
   function histSchedule() { clearTimeout(histTimer); histTimer = setTimeout(histCommit, 350); }
   function histCommit() {
     clearTimeout(histTimer); histTimer = 0;
-    if (!S.active || histAt < 0) return;
+    if (histAt < 0 || S.histTrack !== S.loadedTrack) return;
     if (S.brushing || S.keys.size || tc?.dragging) { histSchedule(); return; }   // geste en cours : etape a la fin
     const s = histSnap();
     if (histSame(s, hist[histAt])) return;
+    // Creation fermee : seules les retouches faites a la main sur les objets de la base (ext*) font une etape ; le reste
+    // (report des retouches a l'enregistrement, generation) devient le nouvel etat de depart, sans etape a annuler
+    if (!S.active && !S.extPending) { s.at = hist[histAt].at; hist[histAt] = s; return; }
+    S.extPending = false;
+    s.at = Date.now();                                       // heure de l'etape : Ctrl+Z de l'Edition defait la plus recente des deux piles
     hist.length = histAt + 1; hist.push(s);
     if (hist.length > HIST_MAX) hist.shift();
     histAt = hist.length - 1; histButtons();
+    ctx.onBaseEdit?.();
+  }
+  // pour la pile commune de l'Edition : heure de l'etape a annuler / a retablir (-1 : aucune)
+  function histTimes() {
+    if (histTimer) histCommit();
+    if (S.histTrack !== S.loadedTrack || histAt < 0) return { undo: -1, redo: -1 };
+    return { undo: histAt > 0 ? hist[histAt].at || 0 : -1, redo: histAt < hist.length - 1 ? hist[histAt + 1].at || 0 : -1 };
   }
   function histRestore(s) {
     const m = JSON.parse(s.meta);
@@ -2138,12 +2188,16 @@ export function initCreator(ctx) {
     if (tc?.dragging || S.brushing) return;
     if (histTimer) histCommit();                              // modification toute fraiche : d'abord en faire une etape
     if (histAt <= 0) { status('Rien à annuler'); return; }
-    histRestore(hist[--histAt]); status('Annulé');
+    histRestore(hist[--histAt]); genAgain(); status('Annulé');
   }
   function redo() {
     if (tc?.dragging || S.brushing || histAt >= hist.length - 1) return;
-    histRestore(hist[++histAt]); status('Rétabli');
+    histRestore(hist[++histAt]); genAgain(); status('Rétabli');
   }
+  // base revenue (Annuler / Retablir) a l'etat de la derniere generation : plus « à générer » (2026-11-17 : l'indicateur
+  // restait leve apres avoir annule la seule retouche faite depuis la generation)
+  function genMark() { if (histTimer) histCommit(); S.genSnap = histSnap(); }
+  function genAgain() { if (S.genSnap) S.genDirty = !histSame(hist[histAt], S.genSnap); }
 
   function resetPaver() {
     const st = S.start, z = heightAt(st.pos[0], st.pos[1]);
@@ -2196,7 +2250,19 @@ export function initCreator(ctx) {
   function placeFromPoints() {
     const p = S.points[S.points.length - 1];
     S.pos = new THREE.Vector3(p[0], p[1], effZ(p)); S.roll = rollOf(p); setRollTarget(S.roll); setTalus(!p[9]);
-    if (S.points.length > 1) { const q = S.points[S.points.length - 2]; S.yaw = Math.atan2(p[1] - q[1], p[0] - q[0]); }
+    if (S.points.length > 1) {
+      const q = S.points[S.points.length - 2];
+      S.yaw = Math.atan2(p[1] - q[1], p[0] - q[0]);
+      // cap du kart au dernier point (2026-11-18, « le kart ne reprend plus le meme angle si on efface ») : dans un virage,
+      // la corde du dernier pas est en retard d'un demi-pas sur le cap qu'avait le kart -> on prolonge le virage des deux
+      // derniers pas (meme courbure), sauf saut ou cassure (> 30 deg entre deux pas : raccord, piece posee)
+      if (S.points.length > 2) {
+        const o = S.points[S.points.length - 3];
+        let d = S.yaw - Math.atan2(q[1] - o[1], q[0] - o[0]);
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        if (Math.abs(d) < Math.PI / 6 && !p[4] && !q[4]) S.yaw += d / 2;
+      }
+    }
     else S.yaw = S.start.yaw;
     S.slope = slopeOfEnd();
   }
@@ -2500,7 +2566,7 @@ export function initCreator(ctx) {
     const T = S.terrain, P = S.points; if (!T) return;
     for (let k = Math.max(0, P.length - 46); k <= P.length; k++) {
       const q = k < P.length ? P[k] : p, [wl, wr, hl, hr] = edgesOf(q);
-      const m = T.cell + Math.max(wl, wr) + Math.max(BLEND_MIN, (S.blendSlope ?? BLEND_DEF) * (Math.abs(q[2] - S.groundZ) + Math.abs(hl) + Math.abs(hr) + (S.hMax || 0) + 2 * IN)) + 4 * IN;
+      const m = T.cell + Math.max(wl, wr) + blendWidth(Math.abs(q[2] - S.groundZ) + Math.abs(hl) + Math.abs(hr) + (S.hMax || 0) + 2 * IN, 1, S.blendSlope ?? BLEND_DEF, T.cell) + 4 * IN;
       S.paveBox = growBox(S.paveBox, q[0] - m, q[1] - m, q[0] + m, q[1] + m);
     }
   }
@@ -2554,7 +2620,11 @@ export function initCreator(ctx) {
     if (S.active) S.propsDirty = true;          // objets allégés (propLod) ; la résolution ne change plus d'elle-même
   });
   function tick(t) {
-    if (!S.active) return;
+    if (!S.active) {
+      // apercu de la base dans l'Edition : modeles du decor arrives depuis (reperes provisoires -> vrais objets)
+      if (group.visible && propGroup.visible && S.propsDirty && t - (S.lastProps || 0) > 300) { renderProps(); S.propsDirty = false; S.lastProps = t; }
+      return;
+    }
     updateQuality(t, t - (S.last || t));
     const dt = Math.min(0.1, (t - (S.last || t)) / 1000); S.last = t;
     const propGap = S.props.length > 500 ? 500 : 100;        // beaucoup d'objets : ils suivent moins souvent
@@ -2708,15 +2778,18 @@ export function initCreator(ctx) {
       for (let b = 0; b < A; b++) for (let i = 0; i < m; i++) st.push({ k: 0, dz: f(i + 1) - f(i), roll: 0 });
       straight(8 * IN);
     } else if (k === 'ramp') {                                // pente qui monte doucement, palier, puis se remet a plat
-      const H = piece.up * A * IN, p = piece.up * B / 100;
-      let s = 0, done = 0;
-      for (let g = 0; g < 4000; g++) {
-        const rest = H - done, brake = s * s / (2 * SLOPE_RATE) + Math.abs(s) * STEP;
-        const want = Math.abs(rest) > brake ? p : 0;
-        s += Math.max(-SLOPE_RATE * STEP, Math.min(SLOPE_RATE * STEP, want - s));
-        if (want === 0 && Math.abs(s) < 1e-4) break;
-        st.push({ k: 0, dz: s * STEP, roll: 0 }); done += s * STEP;
-      }
+      // 2026-11-18 (« rampes enormement longues, en rouge ») : l'ancien calcul pas a pas depassait parfois la hauteur,
+      // repartait vers le haut et ne s'arretait qu'au bout de 4 000 pas (16 km : 614 reglages sur 832). Profil direct :
+      // pente 0 -> pic (SLOPE_RATE), palier, pic -> 0 ; pic abaisse si le denivele est trop petit pour la pente choisie ;
+      // hauteur totale recalee exactement
+      const H = A * IN, p0 = B / 100;
+      const pk = Math.min(p0, Math.sqrt(H * SLOPE_RATE));          // montee + descente de pente seules = pk^2 / SLOPE_RATE
+      const Lr = pk / SLOPE_RATE, Lf = Math.max(0, (H - pk * pk / SLOPE_RATE) / pk), L = 2 * Lr + Lf;
+      const n = Math.max(2, Math.ceil(L / STEP));
+      const slopeAt = x => x < Lr ? pk * x / Lr : x < Lr + Lf ? pk : Math.max(0, pk * (L - x) / Lr);
+      const dz = Array.from({ length: n }, (_, i) => slopeAt((i + 0.5) * L / n));
+      const sum = dz.reduce((a, v) => a + v, 0) || 1;
+      for (const v of dz) st.push({ k: 0, dz: piece.up * v * H / sum, roll: 0 });
       straight(8 * IN);
     } else straight(A * IN);
     return st;
@@ -2878,9 +2951,9 @@ export function initCreator(ctx) {
   ];
   // RND_GAME_SHAPES:END
   const RND_DIFF = {
-    F: { amp: 0.22, harm: 3, hill: 4, bank: 0, jumps: 0, width: 70 },
-    N: { amp: 0.32, harm: 4, hill: 10, bank: 10, jumps: 1, width: 60 },
-    D: { amp: 0.42, harm: 5, hill: 20, bank: 16, jumps: 2, width: 50 },
+    F: { amp: 0.22, harm: 3, hill: 4, bank: 8, jumps: 0, width: 70 },
+    N: { amp: 0.32, harm: 4, hill: 10, bank: 13, jumps: 1, width: 60 },
+    D: { amp: 0.42, harm: 5, hill: 20, bank: 18, jumps: 2, width: 50 },
   };
   const mulberry = seed => {
     let s = seed >>> 0;
@@ -2891,7 +2964,7 @@ export function initCreator(ctx) {
   // « -<masque base 32> » (ex. 3MN-K7Q2ZP-B)
   const RND_PIECES = [['chic', 1, 'Chicanes'], ['bump', 2, 'Bosses'], ['spiral', 4, 'Spirales'], ['jump', 8, 'Sauts'], ['bank', 16, 'Virages relevés'],
                       ['cut', 32, 'Canyons et remblais']];
-  const RND_MASK_DEF = { F: 35, N: 63, D: 63 };
+  const RND_MASK_DEF = { F: 51, N: 63, D: 63 };            // facile : virages releves aussi (2026-11-14 ; 35 avant)
   const rndCode = (kitIdx, len, diff, seed, mask) =>
     `${kitIdx.toString(36).toUpperCase()}${len}${diff}-${(seed >>> 0).toString(36).toUpperCase().padStart(6, '0').slice(-6)}`
     + (mask !== undefined && mask !== RND_MASK_DEF[diff] ? '-' + mask.toString(32).toUpperCase() : '');
@@ -2953,7 +3026,11 @@ export function initCreator(ctx) {
     // + « jeu » (2026-11-14, demande utilisateur « inspire-toi des mini-cartes du jeu ») : trace d'une piste du jeu vu
     // de dessus (RND_GAME_SHAPES), miroir et rotation au hasard, un peu d'irregularite ; croisee une fois : pont comme le
     // huit ; virage trop serre : lissee peu a peu ; impossible : forme libre
-    const SHAPES = [['jeu', 0.45], ['libre', 0.14], ['allongée', 0.09], ['haricot', 0.07], ['huit', 0.08], ['triangle', 0.06], ['carré', 0.06], ['goutte', 0.05]];
+    // + « anguleuse » et « épingles » (2026-11-16, retour utilisateur « manque de virages secs a plus de 90 degres,
+    // souvent un rond ou un ovale ») : polygone irregulier (5 a 9 sommets, dont 1 a 3 rentrants pour « épingles ») dont
+    // chaque coin est arrondi au rayon juste suffisant (lignes droites + virages serres), au lieu d'une courbe lisse
+    // + « bloc » (voir blocPoly) : forme la plus frequente ; formes presque rondes (libre, goutte, triangle, carre...) rares
+    const SHAPES = [['bloc', 0.6], ['jeu', 0.2], ['huit', 0.07], ['épingles', 0.08], ['anguleuse', 0.03], ['haricot', 0.02]];
     let pick = rnd(), shape = SHAPES[0][0];
     for (const [nm, w] of SHAPES) { if (pick < w) { shape = nm; break; } pick -= w; }
     if (opts.shape) shape = opts.shape;                            // essais (?crtest) seulement
@@ -2966,9 +3043,105 @@ export function initCreator(ctx) {
     const nz = (shape === 'libre' ? 0.38 : 0.14) * D.amp / 0.32;     // irregularite (plus en difficile)
     const crossRise = (13 + rnd() * 5) * IN;                        // huit : hauteur du pont au croisement
     const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
-    let poly, K, ctrl;
+    let poly, K, ctrl, corner = false, rf = 1;
+    // « bloc » (2026-11-16, retour utilisateur « toujours une base de rond vu de dessus, ennuyeux a jouer ») : les
+    // autres formes tournent toutes autour d'un centre (presque convexes). Ici un amas de cases pousse au hasard sur une
+    // grille (bras de preference : L, U, S, T, os, zigzag ; ni trou, ni cases qui ne se touchent que par un coin), son
+    // contour devient le polygone, coins arrondis comme « anguleuse ». Taille des cases choisie pour que deux bords de
+    // route restent a plus d'une largeur l'un de l'autre et que deux coins de suite (demi-tour) passent
+    const blocPoly = () => {
+      const needB = Math.max(R_MIN * 1.3, W * 0.7), cmin = Math.max(2.3 * needB, 2 * W);
+      const Lw = RND_LEN[c.len] * IN;
+      // perimetre d'un amas « en arbre » de M cases = 2M + 2 cotes ; M au plus ce que la taille mini permet
+      const Mmax = Math.max(4, Math.floor((Lw / cmin - 2) / 2));
+      for (let att = 0; att < 30; att++) {
+        const M = Math.max(4, Mmax - Math.floor(rnd() * Math.min(3, Mmax - 3)) - Math.floor(att / 6));
+        const on = new Set(['0,0']), has = (x, y) => on.has(x + ',' + y);
+        const pinch = (x, y) => {                                   // 2x2 avec seulement deux cases en diagonale
+          for (const [dx, dy] of [[0, 0], [-1, 0], [0, -1], [-1, -1]]) {
+            const q = [[x + dx, y + dy], [x + dx + 1, y + dy], [x + dx, y + dy + 1], [x + dx + 1, y + dy + 1]]
+              .map(([u, v]) => (u === x && v === y) || has(u, v));
+            if ((q[0] && q[3] && !q[1] && !q[2]) || (q[1] && q[2] && !q[0] && !q[3])) return true;
+          }
+          return false;
+        };
+        const holes = () => {                                       // case vide enfermee ?
+          let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+          for (const s of on) { const [x, y] = s.split(',').map(Number); x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+          const seen = new Set([(x0 - 1) + ',' + (y0 - 1)]), st = [[x0 - 1, y0 - 1]];
+          while (st.length) { const [x, y] = st.pop();
+            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const u = x + dx, v = y + dy, k = u + ',' + v;
+              if (u < x0 - 1 || u > x1 + 1 || v < y0 - 1 || v > y1 + 1 || seen.has(k) || on.has(k)) continue; seen.add(k); st.push([u, v]); } }
+          return seen.size + on.size < (x1 - x0 + 3) * (y1 - y0 + 3);
+        };
+        for (let g = 0; on.size < M && g < 400; g++) {
+          const fr = new Map();                                    // cases voisines libres, ponderees : bras (1 voisin) d'abord
+          for (const s of on) { const [x, y] = s.split(',').map(Number);
+            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const u = x + dx, v = y + dy, k = u + ',' + v;
+              if (on.has(k) || fr.has(k)) continue;
+              const nb = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([a, b]) => has(u + a, v + b)).length;
+              // bras qui s'eloignent du depart : formes plus ouvertes (plus de parties rentrantes)
+              fr.set(k, nb === 1 ? 3 * (1 + 0.5 * Math.hypot(u, v)) : nb === 2 ? 0.15 : 0.02); } }
+          let tot = 0; for (const w of fr.values()) tot += w;
+          let pk = rnd() * tot, cell = null;
+          for (const [k, w] of fr) { if (pk < w) { cell = k; break; } pk -= w; }
+          if (!cell) break;
+          const [x, y] = cell.split(',').map(Number);
+          if (pinch(x, y)) continue;
+          on.add(cell); if (holes()) on.delete(cell);
+        }
+        if (on.size < M) continue;
+        // contour (sens trigo, interieur a gauche) : un seul cycle (ni trou ni pincement)
+        const next = new Map();
+        for (const s of on) { const [x, y] = s.split(',').map(Number);
+          if (!has(x, y - 1)) next.set(x + ',' + y, [x + 1, y]);
+          if (!has(x + 1, y)) next.set((x + 1) + ',' + y, [x + 1, y + 1]);
+          if (!has(x, y + 1)) next.set((x + 1) + ',' + (y + 1), [x, y + 1]);
+          if (!has(x - 1, y)) next.set(x + ',' + (y + 1), [x, y]); }
+        const first = next.keys().next().value.split(',').map(Number), loop = [first];
+        for (let p = next.get(first.join(',')); p && (p[0] !== first[0] || p[1] !== first[1]) && loop.length <= next.size; p = next.get(p.join(','))) loop.push(p);
+        if (loop.length !== next.size) continue;
+        const vs = loop.filter((p, i) => { const a = loop[(i - 1 + loop.length) % loop.length], b = loop[(i + 1) % loop.length];
+          return (p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0]) !== 0; });   // coins seulement
+        if (vs.length < 6) continue;                                // rectangle (amas en ligne) : pas de partie rentrante
+        // irregularite : etirement 0,8-1,25 et sommets bouges de +-0,12 case (les angles ne sont plus tous droits)
+        const sx = 0.8 + rnd() * 0.45, sy = 1 / sx;
+        let mx = 0, my = 0; for (const [x, y] of vs) { mx += x / vs.length; my += y / vs.length; }
+        const pts = vs.map(([x, y]) => [(x - mx + (rnd() - 0.5) * 0.24) * sx, (y - my + (rnd() - 0.5) * 0.24) * sy]);
+        let Lp = 0; for (let i = 0; i < pts.length; i++) Lp += Math.hypot(pts[(i + 1) % pts.length][0] - pts[i][0], pts[(i + 1) % pts.length][1] - pts[i][1]);
+        if (Lw / Lp * Math.min(sx, sy) * 0.85 < cmin * 0.95) continue; // cases trop petites a cette longueur : moins de cases
+        return pts;
+      }
+      return null;
+    };
     const makeCtrl = () => {
       poly = { triangle: 3, 'carré': 4 }[shape] || 0;
+      if (shape === 'bloc') {
+        const pts = blocPoly();
+        if (pts) { corner = true; K = pts.length; ctrl = pts.map(xy => ({ xy })); rf = 1 + rnd() * 0.3; return; }
+        shape = 'épingles';                                         // amas impossible (piste tres courte) : epingles
+      }
+      corner = shape === 'anguleuse' || shape === 'épingles';
+      if (corner) {                                                 // sommets du polygone (coins arrondis plus loin)
+        // peu de sommets (4 a 7) : virages de 60 a 140 degres ; epingles : 6 a 9 sommets dont des rentrants profonds
+        const ep = shape === 'épingles';
+        const oneNotch = !ep && rnd() < 0.6;                        // anguleuse : 4-5 sommets, ou 5-6 dont 1 rentrant
+        K = ep ? 6 + Math.floor(rnd() * 4) : (oneNotch ? 5 : 4) + Math.floor(rnd() * 2);
+        const notch = new Set();
+        if (ep || oneNotch) {                                  // sommets rentrants, jamais voisins (anguleuse : parfois 1)
+          const nn = ep ? 1 + Math.floor(rnd() * Math.min(3, Math.floor(K / 2) - 1)) : 1;
+          for (let t = 0; t < 20 && notch.size < nn; t++) { const k = Math.floor(rnd() * K);
+            if (!notch.has(k) && !notch.has((k + 1) % K) && !notch.has((k - 1 + K) % K)) notch.add(k); }
+        }
+        ctrl = [];
+        for (let k = 0; k < K; k++) {
+          const th = th0 + 2 * Math.PI * (k + (rnd() - 0.5) * 0.6) / K;
+          ctrl.push({ th, r: notch.has(k) ? (ep ? 0.12 + rnd() * 0.2 : 0.3 + rnd() * 0.2) : 0.65 + rnd() * 0.55 });
+        }
+        // rayon des coins : 1 a 1,4 x le minimum (un virage de 90 degres tient en 65 a 95 m ; elargi si ca ne passe pas)
+        rf = 1 + rnd() * 0.4;
+        return;
+      }
       K = poly ? poly * 3 : shape === 'jeu' ? gameTpl.p.length / 2 : shape === 'huit' ? 16 : shape === 'libre' ? 7 + Math.floor(rnd() * 5) : 9 + Math.floor(rnd() * 4);
       const form = th => poly ? Math.cos(Math.PI / poly) / Math.cos(((((th - th0) % (2 * Math.PI / poly)) + 2 * Math.PI / poly) % (2 * Math.PI / poly)) - Math.PI / poly)
         : shape === 'haricot' ? 1 - 0.5 * Math.exp(-(wrap(th - th0) ** 2) / 0.25)
@@ -3013,20 +3186,45 @@ export function initCreator(ctx) {
     }
     let amp = 1, P = [];
     for (let tr = 0; tr < 40; tr++) {
-      if ((shape === 'huit' || shape === 'jeu') && tr === 15) { shape = 'libre'; crossing = false; makeCtrl(); amp = 1; }   // impossible ici
+      // impossible ici : « bloc » a la place (2026-11-16 ; « libre » avant, qui finissait souvent ronde)
+      if ((shape === 'huit' || shape === 'jeu') && tr === 16) { shape = 'bloc'; crossing = false; makeCtrl(); amp = 1; }
       const ext = 1 + (ex - 1) * amp;
       const cp = ctrl.map(({ th, r, xy }) => {
         let x, y;
         if (xy) { x = xy[0]; y = xy[1]; }
         else { const rr = 1 + (r - 1) * amp; x = rr * Math.cos(th) * ext; y = rr * Math.sin(th) / ext; }
         return [x * Math.cos(rot) - y * Math.sin(rot), x * Math.sin(rot) + y * Math.cos(rot)]; });
-      const N = 2048, raw = [], per = N / K;
-      for (let i = 0; i < N; i++) {                                // Catmull-Rom fermee par les points de passage
-        const f = i / per, s0 = Math.floor(f), u = f - s0;
-        const p0 = cp[(s0 - 1 + K) % K], p1 = cp[s0 % K], p2 = cp[(s0 + 1) % K], p3 = cp[(s0 + 2) % K];
-        const cr = (a, b, c2, d) => 0.5 * (2 * b + (-a + c2) * u + (2 * a - 5 * b + 4 * c2 - d) * u * u + (-a + 3 * b - 3 * c2 + d) * u * u * u);
-        raw.push([cr(p0[0], p1[0], p2[0], p3[0]), cr(p0[1], p1[1], p2[1], p3[1])]);
+      const raw = [];
+      if (corner) {                                                // polygone : droites + coins arrondis (rayon rf x need)
+        let Lp = 0; for (let k = 0; k < K; k++) Lp += Math.hypot(cp[(k + 1) % K][0] - cp[k][0], cp[(k + 1) % K][1] - cp[k][1]);
+        const r0 = rf * need / (RND_LEN[c.len] * IN / Lp);       // rayon voulu, en unites du polygone (echelle approchee)
+        const arcs = cp.map((v, k) => {
+          const a = cp[(k - 1 + K) % K], b = cp[(k + 1) % K];
+          const l1 = Math.hypot(v[0] - a[0], v[1] - a[1]), l2 = Math.hypot(b[0] - v[0], b[1] - v[1]);
+          const d1 = [(v[0] - a[0]) / l1, (v[1] - a[1]) / l1], d2 = [(b[0] - v[0]) / l2, (b[1] - v[1]) / l2];
+          const phi = Math.atan2(d1[0] * d2[1] - d1[1] * d2[0], d1[0] * d2[0] + d1[1] * d2[1]), ta = Math.tan(Math.abs(phi) / 2);
+          const t = Math.min(r0 * ta, 0.45 * Math.min(l1, l2)), r = ta > 1e-6 ? t / ta : 0, sg = Math.sign(phi) || 1;
+          const E = [v[0] - d1[0] * t, v[1] - d1[1] * t], Cc = [E[0] - d1[1] * r * sg, E[1] + d1[0] * r * sg];
+          return { E, X: [v[0] + d2[0] * t, v[1] + d2[1] * t], C: Cc, r, phi, a0: Math.atan2(E[1] - Cc[1], E[0] - Cc[0]) };
+        });
+        const ds = Lp / 3000;
+        for (let k = 0; k < K; k++) {
+          const A = arcs[k], B = arcs[(k + 1) % K];
+          const na = Math.max(1, Math.ceil(Math.abs(A.phi) * A.r / ds));
+          for (let q = 0; q < na; q++) { const ph = A.a0 + A.phi * q / na; raw.push([A.C[0] + A.r * Math.cos(ph), A.C[1] + A.r * Math.sin(ph)]); }
+          const ls = Math.hypot(B.E[0] - A.X[0], B.E[1] - A.X[1]), nl = Math.max(1, Math.ceil(ls / ds));
+          for (let q = 0; q < nl; q++) raw.push([A.X[0] + (B.E[0] - A.X[0]) * q / nl, A.X[1] + (B.E[1] - A.X[1]) * q / nl]);
+        }
+      } else {
+        const N = 2048, per = N / K;
+        for (let i = 0; i < N; i++) {                              // Catmull-Rom fermee par les points de passage
+          const f = i / per, s0 = Math.floor(f), u = f - s0;
+          const p0 = cp[(s0 - 1 + K) % K], p1 = cp[s0 % K], p2 = cp[(s0 + 1) % K], p3 = cp[(s0 + 2) % K];
+          const cr = (a, b, c2, d) => 0.5 * (2 * b + (-a + c2) * u + (2 * a - 5 * b + 4 * c2 - d) * u * u + (-a + 3 * b - 3 * c2 + d) * u * u * u);
+          raw.push([cr(p0[0], p1[0], p2[0], p3[0]), cr(p0[1], p1[1], p2[1], p3[1])]);
+        }
       }
+      const N = raw.length;
       let L = 0;
       for (let i = 0; i < N; i++) L += Math.hypot(raw[(i + 1) % N][0] - raw[i][0], raw[(i + 1) % N][1] - raw[i][1]);
       const k = RND_LEN[c.len] * IN / L;
@@ -3043,9 +3241,25 @@ export function initCreator(ctx) {
       // ni virage trop serre, ni deux bouts qui se touchent (huit : sauf au croisement, ou un passage est sur le pont)
       if (rmin >= need && !overlaps(P, crossing ? crossProfile(P).prof : null)) break;
       if (shape === 'huit') { for (const c2 of ctrl) { c2.xy[1] *= 0.94; } continue; }  // boucles plus fines (bouts moins serres)
+      if (shape === 'bloc') {                                      // amas : coins un peu plus larges, sinon un autre amas
+        if (tr >= 24) { shape = 'épingles'; makeCtrl(); amp = 1; } else if (tr % 3 === 2) makeCtrl(); else rf *= 1.08;
+        continue;
+      }
+      if (corner) { rf *= 1.12; amp *= 0.9; continue; }          // coins plus larges, polygone un peu plus regulier
       if (shape === 'jeu') {                                       // piste du jeu : lissee un peu plus (virages moins serres)
-        const old = ctrl.map(c2 => c2.xy.slice());
-        ctrl.forEach((c2, k2) => { const a = old[(k2 - 1 + K) % K], b = old[(k2 + 1) % K];
+        // 2026-11-16 : seulement autour des virages trop serres (avant : tout le trace, la forme finissait en rond) ;
+        // deux bouts trop proches (aucun virage en cause) : tout le trace comme avant
+        const old = ctrl.map(c2 => c2.xy.slice()), rr = P.map((p, i) => circR(P[(i - 2 + P.length) % P.length], p, P[(i + 2) % P.length]));
+        const kw = RND_LEN[c.len] * IN / L, bad = new Uint8Array(K);
+        cp.forEach((q, k2) => {
+          let bi = 0, bd = Infinity;
+          for (let i = 0; i < P.length; i += 2) { const d = Math.hypot(P[i][0] - q[0] * kw, P[i][1] - q[1] * kw); if (d < bd) { bd = d; bi = i; } }
+          for (let d = -12; d <= 12; d++) if (rr[(bi + d + P.length) % P.length] < need) { bad[k2] = 1; break; }
+        });
+        const anyBad = bad.some(Boolean);
+        ctrl.forEach((c2, k2) => {
+          if (anyBad && !bad[k2] && !bad[(k2 + 1) % K] && !bad[(k2 - 1 + K) % K]) return;
+          const a = old[(k2 - 1 + K) % K], b = old[(k2 + 1) % K];
           c2.xy = [0.5 * old[k2][0] + 0.25 * (a[0] + b[0]), 0.5 * old[k2][1] + 0.25 * (a[1] + b[1])]; });
         continue;
       }
@@ -3060,8 +3274,12 @@ export function initCreator(ctx) {
         const lam = Lp / Math.max(2, Math.round(Lp / ((180 + wr() * 270) * IN)));
         return { lam, a: 0.5 + wr() * 0.5, ph: wr() * 2 * Math.PI };
       });
+      // 2026-11-14, retour utilisateur « manque encore beaucoup de virages » : une vague courte de plus (120 a 220 m) et
+      // amplitude 12 / 22 / 32 m -> 20 / 32 / 42 m (toujours reduite si un virage devient trop serre)
+      const wr2 = mulberry((c.seed ^ 0xB3E7D) >>> 0);
+      waves.push({ lam: Lp / Math.max(2, Math.round(Lp / ((120 + wr2() * 100) * IN))), a: 0.35 + wr2() * 0.3, ph: wr2() * 2 * Math.PI });
       const sum = waves.reduce((s, w) => s + w.a, 0);
-      const A0 = { F: 12, N: 22, D: 32 }[c.diff] * IN;
+      const A0 = { F: 20, N: 32, D: 42 }[c.diff] * IN;
       // portions droites gardees (2 a 4 de 250 m, la ou le trace est deja droit) : sauts, chicanes, spirales s'y posent
       const m0 = P.length, env = new Float64Array(m0).fill(1), Rb = P.map((p, i) => circR(P[(i - 5 + m0) % m0], p, P[(i + 5) % m0]));
       const SL = Math.round(250 * IN / STEP), RAMPW = 15, nKeep = 2 + (c.len === 'L' || c.len === 'X' ? 1 : 0) + (c.diff === 'D' ? 1 : 0);
@@ -3097,7 +3315,8 @@ export function initCreator(ctx) {
       }
     }
     const shapeUsed = shape === 'huit' ? 'en 8' : shape === 'jeu' ? `inspirée de ${gameTpl.t}` : amp > 0.5 ? shape : amp > 0.2 ? shape + ' (adoucie)' : 'ronde';
-    if (rnd() < 0.5) P.reverse();                                 // sens de la course au hasard
+    if (opts.traceOnly) return { P, shape: shapeUsed, amp, rf, K, base: shape };     // essais (?crtest) : trace seul, rien n'est modifie
+    if (rnd() < 0.5) P.reverse();                                // sens de la course au hasard
     let n = P.length;
     const cross = crossing ? crossProfile(P) : null;
     await step(20, 'Pièces de route : chicanes, bosses, spirales…');
@@ -3154,31 +3373,98 @@ export function initCreator(ctx) {
     let s = [0];
     for (let i = 1; i < n; i++) s.push(s[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
     let Ltot = s[n - 1] + Math.hypot(P[0][0] - P[n - 1][0], P[0][1] - P[n - 1][1]);
-    const hw = [1, 2, 3].map(m => ({ m, a: (rnd() * 2 - 1) * D.hill * IN / m, ph: rnd() * 2 * Math.PI }));
-    let h = s.map(v => hw.reduce((acc, q) => acc + q.a * Math.sin(2 * Math.PI * q.m * v / Ltot + q.ph), 0));
-    let rad = radOf(P);
-    let fac = 1;
-    for (let i = 0; i < n; i++) {
-      const sl = Math.abs(h[(i + 1) % n] - h[i]) / STEP;
-      if (sl > 1e-6) fac = Math.min(fac, 0.6 * SLOPE_MAX / sl);
-      // rayon mini en pente (paveur) : R_MIN * (1 + R_SLOPE * pente / pente max) <= rayon du virage
-      if (Number.isFinite(rad[i]) && sl > 1e-6) fac = Math.min(fac, Math.max(0, (rad[i] / R_MIN - 1) / R_SLOPE * SLOPE_MAX / sl));
-    }
-    h = h.map(v => v * Math.min(1, fac));
-    if (cross) {                                                   // pont du huit, puis au moins 10 m au-dessus de l'autre passage
-      h = h.map((v, k) => v + cross.prof[k]);
-      let lack = 0;
-      const far = Math.ceil(3 * W / STEP), lim = W + 10 * IN;
-      for (let a = 0; a < n; a++) if (cross.prof[a] > 0) for (let b = 0; b < n; b++) {
-        const di = Math.min(Math.abs(a - b), n - Math.abs(a - b));
-        if (di > far && Math.hypot(P[a][0] - P[b][0], P[a][1] - P[b][1]) < lim) lack = Math.max(lack, 10 * IN - (h[a] - h[b]));
+    for (let k = 0; k < 6; k++) rnd();                             // (anciens tirages des ondulations : suite inchangee)
+    let rad = radOf(P), h;
+    // 2026-11-14, retour utilisateur « manque beaucoup de montees / descentes » : l'ancien relief (3 ondulations sur le
+    // tour) etait reduit PARTOUT des qu'un seul virage serre genait (2,6 km : 40 a 60 m de montee au total). Maintenant
+    // la pente se tire troncon par troncon (montee, palier, descente de 80 a 280 m, 5 a 16 % selon la difficulte, la
+    // hauteur ramenee vers 0 au-dela de +- Hlim), limitee LA ou un virage l'exige (rayon mini en pente du paveur), lissee
+    // (pente qui change sur ~40 m), puis corrigee pour que le tour se referme. Tirage a part
+    { const hr = mulberry((c.seed ^ 0x7E11A5) >>> 0);
+      // 2026-11-16, retour utilisateur « montees et descentes superieures a l'actuel » : pentes et hauteur maxi relevees
+      // (normale 7-14 % / +-45 m -> 14-21 % / +-85 m), pente maxi 60 -> 75 % du paveur, troncons plus longs, moins de plats
+      const G = { F: [0.08, 0.14, 50], N: [0.14, 0.21, 85], D: [0.16, 0.21, 110] }[c.diff], Hlim = G[2] * IN;
+      // pente maxi par point : 75 % du maxi du paveur, et compatible avec le virage le plus serre a +- 20 m
+      const gmax = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        let r = Infinity; for (let k = -5; k <= 5; k++) r = Math.min(r, rad[(i + k + n) % n]);
+        gmax[i] = Math.max(0, Math.min(0.75 * SLOPE_MAX, Number.isFinite(r) ? 0.9 * (r / R_MIN - 1) / R_SLOPE * SLOPE_MAX : 1));
       }
-      if (lack > 0) h = h.map((v, k) => v + cross.prof[k] / crossRise * lack);
+      let g = new Float64Array(n), z = 0;
+      for (let i = 0; i < n;) {
+        const len = Math.round((110 + hr() * 260) * IN / STEP), mag = G[0] + hr() * (G[1] - G[0]);
+        // plus on est haut (ou bas), plus on a de chances de revenir ; un troncon sur 10 a plat
+        const up = hr() < 0.5 - 0.45 * Math.max(-1, Math.min(1, z / Hlim));
+        const gs = hr() < 0.1 ? 0 : up ? mag : -mag;
+        for (let k = 0; k < len && i < n; k++, i++) { g[i] = gs; z += gs * STEP; }
+      }
+      const gRaw = opts.reliefOnly ? g.slice() : null;
+      const clip = () => { for (let i = 0; i < n; i++) g[i] = Math.max(-gmax[i], Math.min(gmax[i], g[i])); };
+      const smooth = () => { const W2 = 5, o = new Float64Array(n);
+        for (let i = 0; i < n; i++) { let t = 0; for (let k = -W2; k <= W2; k++) t += g[(i + k + n) % n]; o[i] = t / (2 * W2 + 1); }
+        g = o; };
+      for (let it = 0; it < 12; it++) {
+        clip(); smooth(); smooth(); clip();
+        // fermeture : le reste de denivele reparti la ou la pente a de la marge
+        const res = g.reduce((a, v) => a + v, 0); if (Math.abs(res * STEP) < 0.2 * IN) break;
+        const room = Array.from(g, (v, i) => Math.max(0, res > 0 ? gmax[i] + v : gmax[i] - v)), tot = room.reduce((a, v) => a + v, 0) || 1;
+        for (let i = 0; i < n; i++) g[i] -= res * room[i] / tot;
+      }
+      const res = g.reduce((a, v) => a + v, 0) / n; for (let i = 0; i < n; i++) g[i] -= res;   // reste minime
+      h = new Array(n); h[0] = 0;
+      for (let i = 1; i < n; i++) h[i] = h[i - 1] + g[i - 1] * STEP;
+      const mid = (Math.max(...h) + Math.min(...h)) / 2; h = h.map(v => v - mid);
+      if (opts.reliefOnly) return { h, g0: opts.reliefOnly === 2 ? gRaw : null };   // essais (?crtest) seulement
     }
+    if (cross) {                                                   // pont du huit, au moins 12 m au-dessus de l'autre passage
+      // 2026-11-16 : palier a hauteur fixe (top), rampes allongees jusqu'a ~9 % de moyenne. Avant : la hauteur manquante
+      // s'ajoutait aux rampes d'origine (62 % de pente mesures avec le relief plus fort)
+      const far = Math.ceil(3 * W / STEP), lim = W + 10 * IN, dI = k => Math.min(Math.abs(k - cross.i), n - Math.abs(k - cross.i));
+      let hLow = -Infinity;
+      for (let a = 0; a < n; a++) if (dI(a) <= crossFlat) for (let b = 0; b < n; b++) {
+        const di = Math.min(Math.abs(a - b), n - Math.abs(a - b));
+        if (di > far && Math.hypot(P[a][0] - P[b][0], P[a][1] - P[b][1]) < lim) hLow = Math.max(hLow, h[b]);
+      }
+      const top = Math.max(h[cross.i] + crossRise, hLow + 12 * IN), maxR = Math.floor(n / 4) - crossFlat - 10, h0 = h.slice();
+      for (const sd of [1, -1]) {
+        let Lr = crossRamp;
+        for (let t = 0; t < 6; t++) Lr = Math.min(maxR, Math.max(crossRamp, Math.ceil(Math.abs(top - h0[(cross.i + sd * (crossFlat + Lr) + 2 * n) % n]) / 0.09 / STEP)));
+        // pente reelle de la rampe (relief dessous compris) : rampe encore allongee tant qu'elle depasse 75 % du maxi
+        const rampMax = L2 => { let m = 0, prev = top;
+          for (let d = crossFlat + 1; d <= crossFlat + L2 + 1; d++) { const k = (cross.i + sd * d + 2 * n) % n, w = sstep(0, 1, (d - crossFlat) / L2), v = top * (1 - w) + h0[k] * w;
+            m = Math.max(m, Math.abs(v - prev)); prev = v; } return m / STEP; };
+        for (let t = 0; t < 12 && Lr < maxR && rampMax(Lr) > 0.75 * SLOPE_MAX; t++) Lr = Math.min(maxR, Math.ceil(Lr * 1.25));
+        for (let d = 0; d <= crossFlat + Lr; d++) {
+          const k = (cross.i + sd * d + 2 * n) % n, w = d <= crossFlat ? 0 : sstep(0, 1, (d - crossFlat) / Lr);
+          h[k] = top * (1 - w) + h0[k] * w;
+          if (d > crossFlat + crossRamp) busy[k] = 1;              // rampe allongee : pas de piece dessus
+        }
+      }
+    }
+    const gentle = (i0, len, lim) => { for (let k = 0; k < len; k++) { const i = (i0 + k) % h.length;
+      if (Math.abs(h[(i + 1) % h.length] - h[i]) > lim * STEP) return false; } return true; };
+    // pas de portion assez plate : la route est ramenee a une pente reguliere sous la piece (raccords sur 50 m), si les
+    // pentes et virages restent compatibles ; h modifie, true si reussi
+    const level = (i0, len, lim) => {
+      const N = h.length, R2 = radOf(P), F = 12, h0 = h[(i0 % N)], h1 = h[(i0 + len) % N], h2 = h.slice();
+      for (let k = -F; k <= len + F; k++) {
+        const i = (i0 + k + N) % N, t = Math.max(0, Math.min(1, k / len)), w = k < 0 ? sstep(0, 1, (k + F) / F) : k > len ? sstep(0, 1, (len + F - k) / F) : 1;
+        h2[i] = h[i] * (1 - w) + (h0 + (h1 - h0) * t) * w;
+      }
+      for (let k = -F - 1; k <= len + F + 1; k++) {
+        const i = (i0 + k + N) % N, sl = Math.abs(h2[(i + 1) % N] - h2[i]) / STEP;
+        if (sl > 0.75 * SLOPE_MAX || (Number.isFinite(R2[i]) && R2[i] < rMinAt(sl))) return false;
+        if (k >= 0 && k < len && sl > lim) return false;
+      }
+      h = h2; return true;
+    };
     // 2b. bosses : 2 ou 3 bosses de 1,5 a 3 m (pente <= 22 %) sur une ligne droite
     for (let j = 0; j < want.bump; j++) {
-      const Hb = (1.5 + rnd() * 1.5) * IN, m = Math.round(Math.max(40 * IN, Math.PI * Hb / 0.22) / STEP), nb = 2 + Math.floor(rnd() * 2);
-      const runs = freeRuns(m * nb + 10); if (!runs.length) break;
+      // la bosse s'ajoute a la pente de la route (2026-11-14) : route a 10 % au plus, bosse a 16 % au plus (22 avant)
+      const Hb = (1.5 + rnd() * 1.5) * IN, m = Math.round(Math.max(40 * IN, Math.PI * Hb / 0.16) / STEP), nb = 2 + Math.floor(rnd() * 2);
+      let runs = freeRuns(m * nb + 10).filter(r0 => gentle(r0, m * nb + 10, 0.1));
+      if (!runs.length) { const r0 = shuffled(freeRuns(m * nb + 34).map(r => r + 12)).slice(0, 12).find(r => level(r, m * nb + 10, 0.1)); if (r0 !== undefined) runs = [r0]; }
+      if (!runs.length) break;
       const i0 = runs[Math.floor(rnd() * runs.length)] + 5;
       for (let k = 0; k < m * nb; k++) h[(i0 + k) % n] += Hb * (1 - Math.cos(2 * Math.PI * (k % m) / m)) / 2;
       for (let k = i0 - 5; k < i0 + m * nb + 5; k++) busy[(k + n) % n] = 1;
@@ -3199,8 +3485,12 @@ export function initCreator(ctx) {
       // son talus recouvrait la route du dessous), au plus ce palier
       const hold = Math.ceil(Math.sqrt((Rc + W + 10 * IN) ** 2 - Rc ** 2) / STEP) + 2;
       // entree droite sur 120 m ; la redescente qui suit peut tourner, mais sans autre piece
-      const runs = freeRuns(30).filter(r0 => r0 + hold + nd + 30 < n && !busy.slice(r0, r0 + hold + nd + 30).some(Boolean));
+      // redescente a ~15 % au plus ajoutee a la pente : portion presque plate d'abord, sinon route ramenee a plat
+      const runs0 = freeRuns(30).filter(r0 => r0 > 12 && r0 + hold + nd + 42 < n && !busy.slice(r0, r0 + hold + nd + 30).some(Boolean));
+      const flat0 = runs0.filter(r0 => gentle(r0, hold + nd + 30, 0.12)), runs = flat0.length ? flat0 : runs0;
       for (const r0 of shuffled(runs).slice(0, 15)) {
+        const hSave = h;
+        if (!flat0.length && !level(r0, hold + nd + 30, 0.12)) continue;
         const kk = r0 + 15, a = P[kk - 1], b = P[kk + 1], l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, tx = (b[0] - a[0]) / l, ty = (b[1] - a[1]) / l;
         for (const sd of area > 0 ? [-1, 1] : [1, -1]) {           // +1 : centre a gauche (boucle trigo : exterieur = droite)
           const C = [P[kk][0] - ty * sd * Rc, P[kk][1] + tx * sd * Rc];
@@ -3217,9 +3507,16 @@ export function initCreator(ctx) {
           if (!ok) continue;
           const hk = h[kk];
           const P2 = [...P.slice(0, kk + 1), ...circ, ...P.slice(kk + 1)];
+          // sortie : EXACTEMENT au sommet de la boucle (hk + rise) pendant le palier, puis rejoint le relief. Avant
+          // (2026-11-14, retour utilisateur T915 « conflit entre la route et la barriere ») elle suivait la pente du
+          // relief + rise : relief en descente sous la sortie -> sortie qui redescendait pendant que la boucle montait,
+          // 12 m seulement au-dessus de la route d'en dessous, bord et barriere poses dessus
           const h2 = [...h.slice(0, kk + 1), ...circ.map((_, q) => hk + rise * (q + 1) / m),
-               ...h.slice(kk + 1).map((v, i) => v + rise * (1 - sstep(0, 1, (i + 1 - hold) / nd)))];
-          if (overlaps(P2, h2)) continue;                         // pas assez haut au-dessus d'un autre passage
+               ...h.slice(kk + 1).map((v, i) => { const w = sstep(0, 1, (i + 1 - hold) / nd); return (hk + rise) * (1 - w) + v * w; })];
+          let steep = false;                                      // redescente trop raide (relief qui descend aussi)
+          for (let q = kk + m; q < kk + m + hold + nd + 2 && q + 1 < h2.length && !steep; q++)
+            if (Math.abs(h2[q + 1] - h2[q]) > 0.75 * SLOPE_MAX * STEP) steep = true;
+          if (steep || overlaps(P2, h2)) continue;                // pas assez haut au-dessus d'un autre passage
           P = P2; h = h2;
           const nb = new Uint8Array(P.length), e = kk + hold + nd + 5;
           nb.set(busy.slice(0, kk + 1), 0); nb.fill(1, kk - 15, e + m); nb.set(busy.slice(e), e + m - 1);
@@ -3227,6 +3524,7 @@ export function initCreator(ctx) {
           break;
         }
         if (done) break;
+        h = hSave;                                                 // route ramenee a plat pour rien : remise
       }
       if (done) break;
       }
@@ -3297,8 +3595,33 @@ export function initCreator(ctx) {
     // cote du virage (+ a gauche) : produit vectoriel des deux troncons
     const side = Q.map((p, i) => { const a = Q[(i - 1 + n) % n], b = Q[(i + 1) % n];
       return Math.sign((p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0])); });
+    // 4b. largeur variable (2026-11-14, demande utilisateur « changements de taille de route en 50 et 90 m ») : troncons
+    // de 150 a 400 m, largeur tiree entre 50 et 90 m, passage de l'une a l'autre sur ~60 m. Limitee dans les virages
+    // serres (rayon >= 0,7 x largeur, comme le trace) et pres d'un autre passage (centres >= demi-largeurs + 10 m : chaque
+    // largeur <= distance - 10 m). Depart (60 m de chaque cote) a la largeur de la difficulte. Tirage a part
+    const wd = new Float64Array(n).fill(W);
+    { const wr3 = mulberry((c.seed ^ 0x51DE5) >>> 0), cap = new Float64Array(n), far = Math.ceil(3 * 90 * IN / STEP);
+      for (let i = 0; i < n; i++) {
+        let r = Infinity; for (let k = -6; k <= 6; k++) r = Math.min(r, R[(i + k + n) % n]);
+        let d = Infinity;
+        for (let j = 0; j < n; j++) { const di = Math.min(Math.abs(i - j), n - Math.abs(i - j)); if (di > far) d = Math.min(d, Math.hypot(Q[i][0] - Q[j][0], Q[i][1] - Q[j][1])); }
+        cap[i] = Math.min(r / 0.7, d - 10 * IN);
+      }
+      const tw = new Float64Array(n);
+      for (let i = 0; i < n;) { const len = Math.round((150 + wr3() * 250) * IN / STEP), v = (50 + wr3() * 40) * IN;
+        for (let k = 0; k < len && i < n; k++, i++) tw[i] = v; }
+      for (let k = -15; k <= 15; k++) tw[(k + n) % n] = W;
+      let w = Array.from(tw, (v, i) => Math.min(v, cap[i]));
+      for (let pass = 0; pass < 3; pass++) {                      // lissage (~60 m), puis limites a nouveau
+        const o = w.map((_, i) => { let t = 0; for (let k = -7; k <= 7; k++) t += w[(i + k + n) % n]; return t / 15; });
+        w = o.map((v, i) => Math.min(v, cap[i]));
+      }
+      for (let i = 0; i < n; i++) wd[i] = Math.round(Math.max(Math.min(50 * IN, W), w[i]));
+      for (let k = -15; k <= 15; k++) wd[(k + n) % n] = W; }
     // 5. virages releves (normale / difficile) : bord interieur a hauteur, bord exterieur releve, montee limitee a 15 %
-    const u = Q.map((_, i) => bankDeg && R[i] < 150 * IN ? side[i] * W * Math.sin(bankDeg * Math.PI / 180 * Math.min(1, (150 * IN - R[i]) / (100 * IN))) : 0);
+    // 2026-11-14, retour utilisateur « manque de virages releves » : releve des 230 m de rayon (150 avant), complet a
+    // 120 m (50 avant) ; angles 8 / 13 / 18 degres (0 / 10 / 16 avant)
+    const u = Q.map((_, i) => bankDeg && R[i] < 230 * IN ? side[i] * wd[i] * Math.sin(bankDeg * Math.PI / 180 * Math.min(1, (230 * IN - R[i]) / (110 * IN))) : 0);
     const dmax = BANK_EDGE_SLOPE * STEP;
     for (let pass = 0; pass < 2; pass++) {
       for (let i = 0; i < 2 * n; i++) { const a = u[(i - 1 + n) % n], k = i % n; u[k] = Math.max(a - dmax, Math.min(a + dmax, u[k])); }
@@ -3322,20 +3645,108 @@ export function initCreator(ctx) {
     S.props = []; S.waters = []; S.waterSel = -1;
     setWidth(W);
     S.points = Q.map((p, i) => {
-      const q = [p[0], p[1], S.groundZ + H[i], W, gap[i]];
+      const q = [p[0], p[1], S.groundZ + H[i], wd[i], gap[i]];
       const up = Math.round(Math.abs(us[i]));
-      if (up > 0) q.push(W / 2, W / 2, us[i] > 0 ? 0 : up, us[i] > 0 ? up : 0);
+      if (up > 0) q.push(wd[i] / 2, wd[i] / 2, us[i] > 0 ? 0 : up, us[i] > 0 ? up : 0);
       return q;
     });
     // passage au-dessus d'un autre (spirale) : pont, sans talus (le sol suit la route du dessous), 20 m de marge
-    { const far = Math.ceil(3 * W / STEP), lim = W + 20 * IN, top = new Uint8Array(n);
+    { const far = Math.ceil(3 * W / STEP), top = new Uint8Array(n);
       for (let i = 0; i < n; i++) for (let j = i + far; j < n; j++) {
         if (n - (j - i) < far) break;
-        if (Math.hypot(Q[i][0] - Q[j][0], Q[i][1] - Q[j][1]) < lim) top[H[i] > H[j] ? i : j] = 1;
+        if (Math.hypot(Q[i][0] - Q[j][0], Q[i][1] - Q[j][1]) < (wd[i] + wd[j]) / 2 + 20 * IN) top[H[i] > H[j] ? i : j] = 1;
       }
       for (let i = 0; i < n; i++) if (top[i]) for (let k = -3; k <= 3; k++) setNoTalus(S.points[(i + k + n) % n], true);
       for (let i = 0; i < n; i++) if (air[ord(i)]) setNoTalus(S.points[i], true); }      // routes en l'air (2e)
     S.closed = true; S.back = 0;
+    // 6b. caisses et boosters (2026-11-16, demande utilisateur) : poses dans l'Edition a la generation (onGenerate) ; ici
+    // seulement leurs emplacements. Booster avant chaque saut (avant le tremplin, centre, large) et en sortie de virage serre
+    // sur les lignes droites (decale d'un cote, alterne). Les rangees de caisses (placement automatique de l'Edition)
+    // evitent les sauts et les boosters. Tirage a part : le trace du code ne change pas
+    S.items = null;
+    if (opts.items) {
+      const br = mulberry((c.seed ^ 0xB0057) >>> 0), at = i => (i + n) % n;
+      const yawAt = i => Math.atan2(Q[at(i + 2)][1] - Q[at(i - 2)][1], Q[at(i + 2)][0] - Q[at(i - 2)][0]);
+      // point a `off` po a gauche du trace (negatif : a droite), a la hauteur de la route (bord releve compris : bord gauche
+      // releve de hl, droit de hr, comme placeFromPoints)
+      const pos = (i, off) => { const a = yawAt(i), q = S.points[at(i)], t = Math.max(-1, Math.min(1, off / (wd[at(i)] / 2)));
+        const hl = q[7] || 0, hr = q[8] || 0;
+        return [Q[at(i)][0] - Math.sin(a) * off, Q[at(i)][1] + Math.cos(a) * off, S.groundZ + H[at(i)] + (hl * (1 + t) + hr * (1 - t)) / 2]; };
+      // inclinaison [rx, ry] qui pose a plat sur la route (comme « Poser au sol » de l'Edition, groundTilt : R = Rz Ry Rx) :
+      // pente dans le sens de la course (sur 16 m) et pente laterale (bord releve), 35 degres au plus
+      const tiltAt = (i, off) => {
+        const d = Math.hypot(Q[at(i + 2)][0] - Q[at(i - 2)][0], Q[at(i + 2)][1] - Q[at(i - 2)][1]) || 1;
+        const s = (pos(i + 2, off)[2] - pos(i - 2, off)[2]) / d, h = Math.min(150, wd[at(i)] / 4);
+        const g = (pos(i, off + h)[2] - pos(i, off - h)[2]) / (2 * h), L = Math.hypot(s, g, 1);
+        const rx = Math.asin(Math.max(-1, Math.min(1, g / L))), ry = Math.atan2(-s / L, 1 / L);
+        return Math.max(Math.abs(rx), Math.abs(ry)) > 35 * Math.PI / 180 ? [0, 0] : [+rx.toFixed(4), +ry.toFixed(4)]; };
+      const boosts = [], avoid = [];
+      const jumps = [...gap.keys()].filter(i => gap[i] && !gap[at(i - 1)]);
+      for (const g of jumps) {
+        avoid.push([...Q[at(g + 2)].slice(0, 2), 55 * IN]);
+        const i = g - 14;                                           // ~55 m avant le trou : avant le tremplin (30 m)
+        boosts.push({ i: at(i), pos: pos(i, 0), yaw: yawAt(i), tilt: tiltAt(i, 0), dims: [800, Math.round(Math.min(45 * IN, wd[at(i)] * 0.6)), 1000], jump: 1 });
+      }
+      // lignes droites en sortie de virage : 80 m devant sans virage serre, sans piece, sans saut, peu releve
+      const want = { F: 2, N: 3, D: 3 }[c.diff] + { C: 0, M: 0, L: 1, X: 2 }[c.len];
+      // 2 passes : rayon >= 140 m sur ~70 m devant, puis >= 90 m (traces sinueux : « bloc », ondulations). Pieces
+      // acceptees (canyon, remblai droits ; spirales et chicanes ont un rayon plus petit), bord releve de 6 % au plus
+      const okAt = (i, rmin) => { if (i < 0.1 * n || i > 0.92 * n) return false;
+        for (let k = -2; k <= 16; k++) { const j = at(i + k); if (R[j] < rmin || Math.abs(us[j]) > 0.06 * wd[j]) return false; }
+        for (let k = -6; k <= 30; k++) if (gap[at(i + k)]) return false;
+        return true; };
+      const exitOf = i => { let r = Infinity; for (let k = -20; k <= -3; k++) r = Math.min(r, R[at(i + k)]); return r < 110 * IN; };
+      const minGap = Math.max(30, Math.floor(n / (want + 2)));
+      let side = br() < 0.5 ? 1 : -1;
+      for (const rmin of [140 * IN, 90 * IN]) {
+        let cand = [];
+        for (let i = 0; i < n; i++) if (okAt(i, rmin)) cand.push(i);
+        for (let k = cand.length - 1; k > 0; k--) { const j = Math.floor(br() * (k + 1)); [cand[k], cand[j]] = [cand[j], cand[k]]; }
+        cand = cand.filter(i => exitOf(i)).concat(cand.filter(i => !exitOf(i)));    // sorties de virage d'abord
+        for (const i of cand) {
+          if (boosts.filter(b => !b.jump).length >= want) break;
+          if (boosts.some(b => Math.min(Math.abs(b.i - i), n - Math.abs(b.i - i)) < minGap)) continue;
+          const off = side * wd[i] * (0.12 + br() * 0.13); side = -side;
+          boosts.push({ i, pos: pos(i, off), yaw: yawAt(i), tilt: tiltAt(i, off), dims: [800, 1000, 1000] });
+        }
+      }
+      for (const b of boosts) avoid.push([b.pos[0], b.pos[1], 30 * IN]);
+      // caisses (2026-11-16, 2e retour : « les caisses par rangees (bonus ?) », caisses de fruits gardees, ni TNT ni Nitro) :
+      // calculees ici (apercu = resultat) comme le placement automatique de l'Edition : rangees de 4 caisses « ? » en
+      // travers de la route (14,6 m d'ecart, resserre si la route est etroite), reparties sur le tour apres la grille ;
+      // caisses de fruits entre les rangees ; lignes de 5 fruits Wumpa. Hors des sauts et des boosters
+      const crates = [], SP = 14.6 * IN, PER = 4;
+      const free = (i, reach) => avoid.every(([x, y, r]) => Math.hypot(Q[at(i)][0] - x, Q[at(i)][1] - y) > r + reach);
+      const clearIdx = (i, reach) => { for (let d = 0; d < 40; d++) for (const j of d ? [i + d, i - d] : [i]) if (j > 0.1 * n && j < 0.97 * n && free(j, reach)) return j; return -1; };
+      const span = (lo, hi, k, m) => Math.round(n * (lo + (hi - lo) * (k + 0.5) / m));
+      // nombre de rangees selon la longueur reelle de la route (2026-11-16) : une tous les 740 m environ (550 puis 630
+      // jugees trop nombreuses sur les grandes maps, -15 % le 2026-11-16), 3 au moins, 11 au plus
+      // -> 1,8 km : 3 ; 2,6 km : 4 ; 3,4 km : 5 ; 4,2 km : 6 ; 5,5 km : 7
+      const L = Math.max(3, Math.min(11, Math.round(Ltot / IN / 740)));
+      for (let k = 0; k < L; k++) {
+        const g = Math.max(SP * 0.45, Math.min(SP, (wd[span(0.12, 0.96, k, L)] - 2 * 4 * IN) / (PER - 1)));
+        const i = clearIdx(span(0.12, 0.96, k, L), g * (PER - 1) / 2);
+        if (i < 0) continue;
+        for (let j = 0; j < PER; j++) crates.push({ kind: 'question', pos: pos(i, (j - (PER - 1) / 2) * g), yaw: yawAt(i), tilt: tiltAt(i, (j - (PER - 1) / 2) * g) });
+        avoid.push([Q[at(i)][0], Q[at(i)][1], g * (PER - 1) / 2 + 6 * IN]);
+      }
+      for (let k = 0; k < 2; k++) {                                   // caisses de fruits, a gauche puis a droite
+        const i = clearIdx(Math.round(n * (0.12 + 0.84 * (k + 1) / 3)), SP * 0.5);
+        const off = (k ? -1 : 1) * Math.min(SP, wd[i] / 2 - 4 * IN) * 0.5;
+        if (i >= 0) crates.push({ kind: 'fruit', pos: pos(i, off), yaw: yawAt(i), tilt: tiltAt(i, off) });
+      }
+      const WL = { F: 2, N: 3, D: 4 }[c.diff];                          // lignes de 5 fruits (4 m d'ecart)
+      for (let k = 0; k < WL; k++) {
+        let i = Math.round(n * (0.12 + 0.84 * (k + 0.66) / WL)), tries = 0;
+        while (tries++ < 40 && ![0, 1, 2, 3, 4].every(j => free(i + j, SP * 0.33))) i++;
+        if (tries > 40) continue;
+        const off = (k % 2 ? -1 : 1) * Math.min(SP, wd[at(i)] / 2 - 4 * IN) * 0.33;
+        for (let j = 0; j < 5; j++) crates.push({ kind: 'wumpa', pos: pos(i + j, off) });
+      }
+      for (const b of boosts) delete b.i;
+      S.items = { v: 2, boosts, crates };
+    }
+    renderItems();
     S.start = { pos: [Q[0][0], Q[0][1]], yaw: Math.atan2(Q[1][1] - Q[0][1], Q[1][0] - Q[0][0]) };
     $('crbar').value = c.diff === 'F' ? 'all' : 'curves';
     setMarks(opts.marks ? { edges: true, curbs: true, center: false } : {});
@@ -3354,11 +3765,13 @@ export function initCreator(ctx) {
       aiPreset(['balanced', 'nature', 'wild', 'clear'][Math.floor(rnd() * 4)]);
       $('craiamp').value = String({ F: 15, N: 30, D: 50 }[c.diff]);
       // decor fourni et varie : densite maxi, petits decors x2,2, familles des themes proches, gros decors de fond
-      aiDecor((c.seed * 2654435761) >>> 0, { density: 3, small: 2.2, variety: true, big: true, borrow: Math.max(1, +$('craiborrow').value) });
+      aiDecor((c.seed * 2654435761) >>> 0, { density: 3, small: 2.2, variety: true, big: true, borrow: Math.max(1, +$('craiborrow').value),
+                                                    farHills: { F: 55, N: 65, D: 75 }[c.diff] });
       for (const [id, v] of Object.entries(keep)) { if ($(id).type === 'checkbox') $(id).checked = v; else $(id).value = v; }
       aiSaveOptions(); aiShowValues();
     } else { refreshTerrainMesh(); rebuild(); renderProps(); renderWater(); }
     S.rndCode = rndCode(c.kit, c.len, c.diff, c.seed, c.mask);
+    renderItems();                                                 // caisses / boosters reposes sur la route finale
     saveDraft();
     return { shape: shapeUsed, length: Math.round(Ltot / IN), jumps: nJumps ? [...gap].filter((g, i) => g && !gap[(i - 1 + n) % n]).length : 0, size, pieces };
   }
@@ -3369,49 +3782,88 @@ export function initCreator(ctx) {
     // l'avait change dans les Reglages)
     const kitNow = Math.max(0, kits.findIndex(([k]) => k === $('crkit').value));
     const cur = { ...(parseRndCode(S.rndCode) || { len: 'M', diff: 'N', seed: (Math.random() * 36 ** 6) >>> 0 }), kit: kitNow };
+    // fenetre refaite le 2026-11-17 (« bouton mal fait, repense-le ») : choix visuels d'abord (theme en tuiles, longueur et
+    // difficulte en boutons, pieces et options en pastilles), le code en bas (copier / coller / nouveau tirage)
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:30;display:flex;align-items:center;justify-content:center;padding:16px';
-    const sel = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
-    ov.innerHTML = `<div class="card" style="max-width:440px;width:100%;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px">
-      <div style="margin-bottom:6px"><b>🎲 Piste aléatoire</b></div>
-      <div class="note" style="font-size:12px;margin-bottom:10px">Tout est créé d'après le code : tracé, relief, peinture, décor, eau. Le même code redonne toujours la même piste : partage-le ! Remplace la route et le terrain actuels (Ctrl+Z pour revenir).</div>
-      <label style="display:block;margin-bottom:8px">Code<div style="display:flex;gap:4px;margin-top:2px">
-        <input id="rdcode" type="text" maxlength="14" style="${sel};flex:1;font-family:monospace;font-size:15px;letter-spacing:1px">
-        <button id="rdnew" title="Nouveau code au hasard">🎲</button></div></label>
-      <div id="rdbad" style="color:var(--err,#e55);font-size:12px;margin:-4px 0 6px" hidden>Code invalide (exemple : 3MN-K7Q2ZP)</div>
-      <label style="display:block;margin-bottom:6px">Thème<select id="rdkit" style="${sel}">${kits.map(([k, l], i) => `<option value="${i}">${l}</option>`).join('')}</select></label>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-        <label>Longueur<select id="rdlen" style="${sel}"><option value="C">Courte (≈ 1,8 km)</option><option value="M">Moyenne (≈ 2,6 km)</option><option value="L">Longue (≈ 3,4 km)</option><option value="X">Très longue (≈ 4,2 km)</option></select></label>
-        <label>Difficulté<select id="rddiff" style="${sel}"><option value="F">Facile</option><option value="N">Normale</option><option value="D">Difficile</option></select></label></div>
-      <div style="margin-bottom:8px">Pièces de route
-        <div style="display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:3px">${RND_PIECES.map(([, b, l]) =>
-          `<label style="display:flex;gap:4px;align-items:center"><input type="checkbox" class="rdpc" data-b="${b}"> ${l}</label>`).join('')}</div>
-        <div class="note" style="font-size:11px;margin-top:2px">Cochée : au moins une sur la piste (si la place le permet). Décochée : aucune.</div></div>
-      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="rddecor" checked> Relief, décor et eau automatiques</label>
-      <label style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><input type="checkbox" id="rdmarks" checked> Marquage au sol</label>
-      <div style="display:flex;justify-content:flex-end;gap:6px"><button id="rdno">Annuler</button><button id="rdyes" class="primary">🎲 Créer la piste</button></div></div>`;
+    const info = S.info || {};
+    const rgb = c => `rgb(${(c || [0.5, 0.5, 0.5]).map(v => Math.round(v * 255)).join(',')})`;
+    const tile = ([k, l], i) => { const m = info.materials?.[k] || [];
+      const short = (window.CTR_I18N?.t(l) || l).replace(/\s*\(.*\)\s*$/, '');   // nom traduit, sans la piste du jeu entre parentheses
+      return `<button class="rdtile" data-i="${i}" title="${l}" style="background:linear-gradient(135deg,${rgb(m[0]?.color)} 0 55%,${rgb(m[m.length - 1]?.color)} 55%)"><span data-noi18n>${short}</span></button>`; };
+    const seg = (id, items) => `<div class="rdseg" id="${id}">${items.map(([v, l, s]) => `<button data-v="${v}">${l}${s ? `<small>${s}</small>` : ''}</button>`).join('')}</div>`;
+    const chip = (cls, data, l, title = '') => `<button class="rdchip ${cls}" ${data}${title ? ` title="${title}"` : ''}>${l}</button>`;
+    ov.innerHTML = `<style>
+      #rdbox{max-width:560px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+      #rdbox h4{margin:12px 0 6px;font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+      #rdbox .rdtiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;max-height:190px;overflow:auto;padding:2px}
+      #rdbox .rdtile{position:relative;height:52px;border-radius:7px;border:2px solid transparent;padding:0;overflow:hidden;cursor:pointer}
+      #rdbox .rdtile span{position:absolute;inset:auto 0 0 0;padding:3px 5px;font-size:11px;line-height:1.15;background:#000a;color:#fff;text-align:left}
+      #rdbox .rdtile.on{border-color:var(--accent,#f5a623);box-shadow:0 0 0 2px #0008 inset}
+      #rdbox .rdseg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:0}
+      #rdbox .rdseg button{border-radius:0;padding:6px 4px;line-height:1.2}
+      #rdbox .rdseg button small{display:block;font-size:10px;color:var(--muted)}
+      #rdbox .rdseg button:first-child{border-radius:7px 0 0 7px}#rdbox .rdseg button:last-child{border-radius:0 7px 7px 0}
+      #rdbox .rdseg button.on,#rdbox .rdchip.on{background:var(--accent,#f5a623);color:#111;border-color:transparent}
+      #rdbox .rdseg button.on small{color:#333}
+      #rdbox .rdchips{display:flex;flex-wrap:wrap;gap:5px}
+      #rdbox .rdchip{border-radius:999px;padding:4px 10px;font-size:12px}
+      #rdbox .rdcode{display:flex;gap:6px;align-items:center;background:#0003;border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:12px}
+      #rdbox .rdcode input{flex:1;min-width:0;background:transparent;border:0;color:var(--text);font-family:monospace;font-size:16px;letter-spacing:1px}
+    </style>
+    <div id="rdbox">
+      <div style="display:flex;align-items:center;gap:8px"><b style="font-size:15px">🎲 Piste aléatoire</b></div>
+      <div class="note" style="font-size:12px;margin-top:4px">Tout est créé d'après le code : tracé, relief, peinture, décor, eau. Le même code redonne toujours la même piste : partage-le !</div>
+      <h4>Thème</h4><div class="rdtiles">${kits.map(tile).join('')}</div>
+      <div style="display:grid;grid-template-columns:3fr 2fr;gap:10px">
+        <div><h4>Longueur</h4>${seg('rdlen', [['C', 'Courte', '≈ 1,8 km'], ['M', 'Moyenne', '≈ 2,6 km'], ['L', 'Longue', '≈ 3,4 km'], ['X', 'Très longue', '≈ 4,2 km']])}</div>
+        <div><h4>Difficulté</h4>${seg('rddiff', [['F', 'Facile'], ['N', 'Normale'], ['D', 'Difficile']])}</div></div>
+      <h4>Pièces de route</h4>
+      <div class="rdchips">${RND_PIECES.map(([, b, l]) => chip('rdpc', `data-b="${b}"`, l)).join('')}</div>
+      <div class="note" style="font-size:11px;margin-top:3px">Cochée : au moins une sur la piste (si la place le permet). Décochée : aucune.</div>
+      <h4>Avec</h4>
+      <div class="rdchips">${chip('rdopt on', 'data-o="decor"', 'Relief, décor et eau automatiques')}${chip('rdopt on', 'data-o="marks"', 'Marquage au sol')}${chip('rdopt on', 'data-o="items"', 'Caisses et boosters',
+        'Visibles tout de suite dans l\'aperçu, posés à « Générer la piste » : rangées de caisses « ? », caisses de fruits, lignes de fruits Wumpa, et boosters avant les sauts et en sortie de virage. Rien n\'est posé si la piste a déjà des caisses ou des boosters.')}</div>
+      <div class="rdcode"><span style="font-size:12px;color:var(--muted)">Code</span><input id="rdcode" type="text" maxlength="14" spellcheck="false">
+        <button id="rdnew" title="Nouveau code au hasard">🎲 Autre</button><button id="rdcopy" title="Copier le code (pour le partager)">Copier</button></div>
+      <div id="rdbad" style="color:var(--err,#e55);font-size:12px;margin-top:4px" hidden>Code invalide (exemple : 3MN-K7Q2ZP)</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:14px">
+        <span class="note" style="font-size:11px;flex:1">Remplace la route et le terrain actuels (Ctrl+Z pour revenir).</span>
+        <button id="rdno">Annuler</button><button id="rdyes" class="primary">🎲 Créer la piste</button></div></div>`;
     document.body.appendChild(ov);
     const q = s => ov.querySelector(s);
     const boxes = [...ov.querySelectorAll('.rdpc')];
-    const showPieces = c => { const m = c.mask ?? RND_MASK_DEF[c.diff]; boxes.forEach(b => { b.checked = (m & +b.dataset.b) !== 0; }); };
-    const show = c => { q('#rdcode').value = rndCode(c.kit, c.len, c.diff, c.seed, c.mask); q('#rdkit').value = String(c.kit % kits.length);
-                        q('#rdlen').value = c.len; q('#rddiff').value = c.diff; q('#rdbad').hidden = true; showPieces(c); };
+    const showPieces = c => { const m = c.mask ?? RND_MASK_DEF[c.diff]; boxes.forEach(b => b.classList.toggle('on', (m & +b.dataset.b) !== 0)); };
+    const show = c => { q('#rdcode').value = rndCode(c.kit, c.len, c.diff, c.seed, c.mask);
+                        ov.querySelectorAll('.rdtile').forEach(t => t.classList.toggle('on', +t.dataset.i === c.kit % kits.length));
+                        ov.querySelectorAll('#rdlen button').forEach(b => b.classList.toggle('on', b.dataset.v === c.len));
+                        ov.querySelectorAll('#rddiff button').forEach(b => b.classList.toggle('on', b.dataset.v === c.diff));
+                        q('#rdbad').hidden = true; showPieces(c); };
     let c = { ...cur, kit: cur.kit % kits.length };
     show(c);
-    for (const id of ['#rdkit', '#rdlen', '#rddiff']) q(id).onchange = () => { c = { ...c, kit: +q('#rdkit').value, len: q('#rdlen').value, diff: q('#rddiff').value }; show(c); };
+    q('.rdtile.on')?.scrollIntoView({ block: 'nearest' });
+    ov.querySelectorAll('.rdtile').forEach(t => t.onclick = () => { c = { ...c, kit: +t.dataset.i }; show(c); });
+    ov.querySelectorAll('#rdlen button').forEach(b => b.onclick = () => { c = { ...c, len: b.dataset.v }; show(c); });
+    ov.querySelectorAll('#rddiff button').forEach(b => b.onclick = () => { c = { ...c, diff: b.dataset.v, mask: undefined }; show(c); });
     // pieces : masque garde seulement s'il differe de celui de la difficulte (code court sinon)
-    boxes.forEach(b => b.onchange = () => {
-      const m = boxes.reduce((a, x) => a | (x.checked ? +x.dataset.b : 0), 0);
+    boxes.forEach(b => b.onclick = () => {
+      b.classList.toggle('on');
+      const m = boxes.reduce((a, x) => a | (x.classList.contains('on') ? +x.dataset.b : 0), 0);
       c = { ...c, mask: m === RND_MASK_DEF[c.diff] ? undefined : m }; show(c);
     });
+    ov.querySelectorAll('.rdopt').forEach(b => b.onclick = () => b.classList.toggle('on'));
     q('#rdnew').onclick = () => { c = { ...c, seed: (Math.random() * 36 ** 6) >>> 0 }; show(c); };
+    q('#rdcopy').onclick = async () => { try { await navigator.clipboard.writeText(q('#rdcode').value); status('Code copié : ' + q('#rdcode').value, 'ok'); }
+                                         catch (e) { q('#rdcode').select(); status('Sélectionne le code puis Ctrl+C pour le copier'); } };
     q('#rdcode').oninput = () => { const p = parseRndCode(q('#rdcode').value); q('#rdbad').hidden = !!p;
-      if (p) { c = { ...p, kit: p.kit % kits.length }; q('#rdkit').value = String(c.kit); q('#rdlen').value = c.len; q('#rddiff').value = c.diff; showPieces(c); } };
+      if (p) { c = { ...p, kit: p.kit % kits.length }; const v = q('#rdcode').value; show(c); q('#rdcode').value = v; } };
     q('#rdno').onclick = () => ov.remove();
+    ov.addEventListener('keydown', e => { if (e.key === 'Escape') ov.remove(); });
     q('#rdyes').onclick = async () => {
       const p = parseRndCode(q('#rdcode').value);
       if (!p) { q('#rdbad').hidden = false; return; }
-      const opts = { decor: q('#rddecor').checked, marks: q('#rdmarks').checked };
+      const on = k => !!q(`.rdopt[data-o="${k}"]`)?.classList.contains('on');
+      const opts = { decor: on('decor'), marks: on('marks'), items: on('items') };
       ov.remove();
       if (histTimer) histCommit();
       let r;
@@ -3510,12 +3962,15 @@ export function initCreator(ctx) {
       // vue de haut, en biais, centree sur le paveur
       orbit.target.copy(S.pos); camera.position.set(S.pos.x - 120 * IN, S.pos.y - 160 * IN, S.pos.z + 220 * IN);
       camera.up.set(0, 0, 1); camera.lookAt(S.pos); orbit.update();
-      status(m === 'edges' ? 'Bords : clique sur un bord de la route, puis tire la flèche rouge (largeur) ou bleue (relevé)'
+    }
+    // message de l'outil a CHAQUE changement (2026-11-15 : il n'etait mis qu'en quittant Route, et restait sur « Bords… »
+    // en passant a Pont, Relief, Peinture ou Decor)
+    if (m !== was) status(m === 'route' ? 'Route : conduis le paveur (↑ avancer, ← → tourner, R / F monter / descendre, Entrée : fermer la boucle)'
+           : m === 'edges' ? 'Bords : clique sur un bord de la route, puis tire la flèche rouge (largeur) ou bleue (relevé)'
            : m === 'bridge' ? 'Pont : clique sur la route là où elle croise une autre route (clic droit : tourner la vue)'
            : m === 'props' ? 'Décor : clic gauche maintenu pour semer ou effacer des objets (clic droit : tourner la vue)'
            : m === 'paint' ? 'Peinture : clic gauche maintenu pour peindre le sol (clic droit : tourner la vue)'
                            : 'Relief : clic gauche maintenu pour sculpter (clic droit : tourner la vue)');
-    }
   }
   function restoreButtons() {
     if (S.savedButtons) { orbit.mouseButtons = S.savedButtons; S.savedButtons = null; }
@@ -3641,7 +4096,7 @@ export function initCreator(ctx) {
   if (ptc) {
     ptc.setSpace('local'); group.add(ptc.getHelper ? ptc.getHelper() : ptc);
     ptc.addEventListener('dragging-changed', e => { orbit.enabled = !e.value; e.value ? propDragStart() : propDragEnd(); });
-    ptc.addEventListener('objectChange', propDrag);
+    ptc.addEventListener('objectChange', () => propDrag());
   }
   S.propSelP = null; S.propEdit = false;
   function setPropGizmo(m) {
@@ -3651,6 +4106,9 @@ export function initCreator(ctx) {
     panel.querySelectorAll('[data-ptm]').forEach(b => b.classList.toggle('primary', b.dataset.ptm === m));
   }
   function selectProp(p) {
+    S.propMany = []; manyBoxes?.clear(); manyStart = null;
+    if ($('crpefields')) $('crpefields').style.display = '';
+    const scb = panel.querySelector('[data-ptm="scale"]'); if (scb) scb.disabled = false;
     S.propSelP = p || null;
     if (!p) { ptc?.detach(); selHold.visible = false; $('crpeset').style.display = 'none';
               $('crpeinfo').textContent = 'Clique sur un objet (posé à la main ou par le décor automatique) pour le modifier.'; return; }
@@ -3675,20 +4133,26 @@ export function initCreator(ctx) {
     put('crpeyaw', Math.round((((p.yaw * 180 / Math.PI) % 360) + 360) % 360));
     put('crperx', Math.round((p.rx || 0) * 180 / Math.PI)); put('crpery', Math.round((p.ry || 0) * 180 / Math.PI)); put('crpes', +p.s.toFixed(2)); put('crpedz', +((p.dz || 0) / IN).toFixed(1));
     const w = $('crpewarn');
-    w.hidden = !off;
-    if (off) w.textContent = st.deg > STEEP_MAX ? 'Sur une pente trop forte : il ne sera pas posé.'
+    const touch = !off && p.ed && propConflict(p);          // place a la main contre la route : pose quand meme
+    w.hidden = !off && !touch;
+    if (touch) w.textContent = 'Il touche la route (ou un pont) : posé quand même, car placé à la main. Vérifie qu’il ne gêne pas les karts.';
+    else if (off) w.textContent = st.deg > STEEP_MAX ? 'Sur une pente trop forte : il ne sera pas posé.'
       : !inTerrain(p) ? 'Hors du terrain : il ne sera pas posé.' : 'Il touche la route (ou un pont) : il ne sera pas posé. Pose-le sur la route ou plus loin.';
   }
   // l'objet a change : pose recalculee (sol, route dessous), objet « a la main », vue
   function propChanged(p) {
-    delete p.ai;
+    delete p.ai; p.ed = 1;                                   // place a la main : toujours pose (voir renderProps)
     if (roadUnder(p) !== null) p.road = 1; else delete p.road;
     seats.delete(p); renderProps();
   }
-  function propDragStart() { const p = S.propSelP; if (p) S.propDrag = { z: propZ(p), dz: p.dz || 0, s: p.s }; }
-  function propDrag() {
+  function propDragStart() {
+    if (manyActive()) { manyBegin(); return; }
+    const p = S.propSelP; if (p) S.propDrag = { z: propZ(p), dz: p.dz || 0, s: p.s };
+  }
+  // mode : celui des poignees de la Creation, ou celles de l'Edition (objet de la base manipule depuis l'Edition, extDrag)
+  function propDrag(m = ptc?.getMode()) {
+    if (manyActive()) { manyDrag(); return; }
     const p = S.propSelP, b = S.propDrag; if (!p || !b) return;
-    const m = ptc.getMode();
     if (m === 'translate') {
       p.x = Math.round(propProxy.position.x); p.y = Math.round(propProxy.position.y);
       p.dz = Math.round(b.dz + propProxy.position.z - b.z); if (Math.abs(p.dz) < 1) delete p.dz;
@@ -3700,11 +4164,74 @@ export function initCreator(ctx) {
     else {
       // taille uniforme : l'axe tire le plus donne le facteur
       const sc = propProxy.scale, f = [sc.x, sc.y, sc.z].reduce((a, v) => Math.abs(v / b.s - 1) > Math.abs(a - 1) ? v / b.s : a, 1);
-      p.s = +Math.max(0.05, Math.min(20, b.s * f)).toFixed(2); sc.setScalar(p.s);
+      p.s = +Math.max(0.05, Math.min(100, b.s * f)).toFixed(2); sc.setScalar(p.s);
     }
     propChanged(p);
   }
-  function propDragEnd() { S.propDrag = null; syncPropSel(); saveDraft(); }
+  function propDragEnd() {
+    if (manyActive()) { manyStart = null; drawMany(); saveDraft(); return; }
+    S.propDrag = null; syncPropSel(); saveDraft();
+  }
+  // ---- plusieurs objets dans Modifier (2026-11-18, demande utilisateur) : Maj / Ctrl+clic, poignee sur le groupe
+  // (deplacer, tourner autour du centre), Dupliquer : les copies deviennent la selection, a deplacer tout de suite ----
+  S.propMany = [];
+  var manyBoxes = new THREE.Group(); group.add(manyBoxes);      // var : selectProp peut servir avant cette ligne
+  var propPivot = new THREE.Object3D(); group.add(propPivot);
+  var manyStart = null;
+  function manyActive() { return S.propMany?.length > 1; }
+  function boxFor(p) {                                       // boite jaune d'un objet (meme calcul que syncPropSel)
+    const st = seatOf(p), d = dimOf(p), mdl = propModel(p.k, p.t, p.m % (kindOf(p)?.n || 1));
+    const h = new THREE.Object3D(), b = new THREE.LineSegments(selBox.geometry, selBox.material);
+    h.rotation.order = 'ZYX'; b.renderOrder = 20; h.add(b);
+    h.position.set(p.x, p.y, propZ(p)); h.rotation.set(st.rx + (p.rx || 0), st.ry + (p.ry || 0), p.yaw); h.scale.setScalar(p.s);
+    if (mdl) { const g = mdl.g; g.boundingBox || g.computeBoundingBox(); g.boundingBox.getCenter(b.position); g.boundingBox.getSize(b.scale); }
+    else { b.position.set(0, 0, (d.zmin + d.zmax) / 2 * IN); b.scale.set(1.4 * d.r * IN, 1.4 * d.r * IN, Math.max(IN, (d.zmax - d.zmin) * IN)); }
+    b.scale.max(new THREE.Vector3(IN / 2, IN / 2, IN / 2));
+    return h;
+  }
+  function drawMany() {
+    S.propMany = S.propMany.filter(p => S.props.includes(p));
+    manyBoxes.clear();
+    for (const p of S.propMany.slice(0, 400)) manyBoxes.add(boxFor(p));
+    $('crpeinfo').innerHTML = `<b>${S.propMany.length} objets sélectionnés</b> · Maj+clic pour en ajouter / retirer`;
+  }
+  function selectMany(list) {
+    list = [...new Set(list)].filter(p => S.props.includes(p));
+    if (list.length < 2) { selectProp(list[0] || null); return; }
+    S.propSelP = null; S.propDrag = null; selHold.visible = false;
+    S.propMany = list; manyStart = null;
+    const c = new THREE.Vector3();
+    for (const p of list) c.add(new THREE.Vector3(p.x, p.y, propZ(p)));
+    propPivot.position.copy(c.divideScalar(list.length)); propPivot.rotation.set(0, 0, 0); propPivot.scale.set(1, 1, 1);
+    propPivot.updateMatrixWorld();
+    $('crpeset').style.display = 'block'; $('crpefields').style.display = 'none'; $('crpewarn').hidden = true;
+    panel.querySelector('[data-ptm="scale"]').disabled = true;
+    ptc?.attach(propPivot);
+    setPropGizmo(ptc?.getMode() === 'rotate' ? 'rotate' : 'translate');
+    drawMany();
+  }
+  function manyBegin() {
+    propPivot.updateMatrixWorld();
+    manyStart = { M0: propPivot.matrixWorld.clone().invert(),
+                  items: S.propMany.map(p => ({ p, x: p.x, y: p.y, z: propZ(p), dz: p.dz || 0, yaw: p.yaw })) };
+  }
+  const _mv = new THREE.Vector3(), _mq = new THREE.Quaternion(), _me = new THREE.Euler(0, 0, 0, 'ZYX');
+  function manyDrag() {
+    if (!manyStart) manyBegin();
+    propPivot.updateMatrixWorld();
+    const D = propPivot.matrixWorld.clone().multiply(manyStart.M0);
+    _mq.setFromRotationMatrix(D); _me.setFromQuaternion(_mq, 'ZYX');
+    for (const b of manyStart.items) {
+      _mv.set(b.x, b.y, b.z).applyMatrix4(D);
+      b.p.x = Math.round(_mv.x); b.p.y = Math.round(_mv.y);
+      b.p.dz = Math.round(b.dz + _mv.z - b.z); if (Math.abs(b.p.dz) < 1) delete b.p.dz;
+      b.p.yaw = +(b.yaw + _me.z).toFixed(3);
+      delete b.p.ai; b.p.ed = 1;
+      if (roadUnder(b.p) !== null) b.p.road = 1; else delete b.p.road;
+      seats.delete(b.p);
+    }
+    renderProps();
+  }
   function propTyped() {
     const p = S.propSelP; if (!p) return;
     const yaw = +$('crpeyaw').value, s = +$('crpes').value, dz = +$('crpedz').value;
@@ -3713,17 +4240,31 @@ export function initCreator(ctx) {
       const v = +$('crpe' + k).value;
       if (Number.isFinite(v)) { const a = +(Math.max(-180, Math.min(180, v)) * Math.PI / 180).toFixed(3); if (a) p[k] = a; else delete p[k]; }
     }
-    if (Number.isFinite(s) && s > 0) p.s = +Math.max(0.05, Math.min(20, s)).toFixed(2);
+    if (Number.isFinite(s) && s > 0) p.s = +Math.max(0.05, Math.min(100, s)).toFixed(2);
     if (Number.isFinite(dz)) { p.dz = Math.round(dz * IN); if (!p.dz) delete p.dz; }
     propChanged(p); syncPropSel(); saveDraft();
   }
   function propDelete() {
+    if (manyActive()) {
+      const gone = new Set(S.propMany), n = gone.size;
+      S.props = S.props.filter(q => !gone.has(q)); selectProp(null); renderProps(); saveDraft();
+      status(`${n} objets supprimés (Ctrl+Z pour annuler)`); return;
+    }
     const p = S.propSelP; if (!p) return;
     S.props = S.props.filter(q => q !== p); selectProp(null); renderProps(); saveDraft(); status('Objet supprimé (Ctrl+Z pour annuler)');
   }
   function propDuplicate() {
+    if (manyActive()) {
+      // tout le groupe, decale d'un bloc (la plus grande emprise) : les copies deviennent la selection
+      const step = Math.max(4 * IN, ...S.propMany.map(p => 1.2 * dimOf(p).r * IN * p.s));
+      const copies = S.propMany.map(p => { const q = { ...p, x: Math.round(p.x + step), y: p.y }; delete q.u; return q; });
+      for (const q of copies) { S.props.push(q); propChanged(q); }
+      selectMany(copies); saveDraft();
+      status(`${copies.length} objets dupliqués : les copies sont sélectionnées, déplace-les avec la poignée`); return;
+    }
     const p = S.propSelP; if (!p) return;
     const step = Math.max(2 * IN, 1.2 * dimOf(p).r * IN * p.s), q = { ...p, x: Math.round(p.x + step * Math.cos(p.yaw)), y: Math.round(p.y + step * Math.sin(p.yaw)) };
+    delete q.u;                                              // nouvel objet de la recette (comme extDuplicate)
     S.props.push(q); propChanged(q); selectProp(q); saveDraft(); status('Objet dupliqué : la copie est sélectionnée');
   }
   // clic : objet sous la souris (instance touchee), sinon le plus proche du point du sol clique
@@ -3742,17 +4283,22 @@ export function initCreator(ctx) {
       if (g) { let bd = Infinity;
         for (const q of S.props) { const d = Math.hypot(q.x - g.x, q.y - g.y); if (d < Math.max(2 * IN, 0.6 * dimOf(q).r * IN * q.s) && d < bd) { bd = d; p = q; } } }
     }
-    if (!p) { selectProp(null); return; }                     // a cote : la vue tourne
-    selectProp(p);
+    const add = e.shiftKey || e.ctrlKey || e.metaKey;
+    if (!p) { if (!add) selectProp(null); return; }           // a cote : la vue tourne
+    if (add) {                                                // Maj / Ctrl+clic : ajoute ou retire de la selection
+      const cur = manyActive() ? [...S.propMany] : S.propSelP ? [S.propSelP] : [];
+      const i = cur.indexOf(p); if (i >= 0) cur.splice(i, 1); else cur.push(p);
+      selectMany(cur);
+    } else selectProp(p);
     e.preventDefault(); e.stopImmediatePropagation();
   }
   addEventListener('keydown', e => {
-    if (!S.active || !S.propSelP || S.mode !== 'props' || typing(e) || e.altKey) return;
+    if (!S.active || !(S.propSelP || manyActive()) || S.mode !== 'props' || typing(e) || e.altKey) return;
     const k = e.key.toLowerCase();
     if (e.ctrlKey || e.metaKey) { if (k !== 'd') return; propDuplicate(); }
     else if (k === 'w' || k === 'z') setPropGizmo('translate');
     else if (k === 'e') setPropGizmo('rotate');
-    else if (k === 'r') setPropGizmo('scale');
+    else if (k === 'r') { if (!manyActive()) setPropGizmo('scale'); }
     else if (e.key === 'Delete') propDelete();
     else if (e.key === 'Escape') selectProp(null);
     else return;
@@ -4041,7 +4587,10 @@ export function initCreator(ctx) {
   };
   panel.querySelectorAll('[data-ptm]').forEach(b => b.onclick = () => setPropGizmo(b.dataset.ptm));
   $('crpeyaw').onchange = $('crperx').onchange = $('crpery').onchange = $('crpes').onchange = $('crpedz').onchange = propTyped;
-  $('crpeground').onclick = () => { const p = S.propSelP; if (!p) return; delete p.dz; propChanged(p); syncPropSel(); saveDraft(); };
+  $('crpeground').onclick = () => {
+    if (manyActive()) { for (const p of S.propMany) { delete p.dz; propChanged(p); } selectMany([...S.propMany]); saveDraft(); return; }
+    const p = S.propSelP; if (!p) return; delete p.dz; propChanged(p); syncPropSel(); saveDraft();
+  };
   $('crpedup').onclick = propDuplicate;
   $('crpedel').onclick = propDelete;
   $('crpauto').onclick = sowAlongRoad;
@@ -4134,21 +4683,49 @@ export function initCreator(ctx) {
     for (let j = 0; j < T.n; j += step) for (let i = 0; i < T.n; i += step) { nt++; if (isFar(T.x0 + i * T.cell, T.y0 + j * T.cell)) nf++; }
     return { share: nf / nt, props: S.props.filter(p => isFar(p.x, p.y)).length };
   }
+  // « Appliquer le décor » (B4, 2026-11-14) : seul le decor seme a change depuis la derniere generation de cette piste ->
+  // objets reposes en quelques secondes sur le sol deja genere, au lieu de tout regenerer. true : traite (ou annule)
+  const buildReq = (track, extra = {}) => ({ track, points: S.points, closed: S.closed, ground_z: S.groundZ, kit: $('crkit').value,
+                                              barriers: $('crbar').value, marks: S.marks, signs: S.signs, props: S.props, waters: S.waters,
+                                              terrain: packFull(S.terrain), ...extra });
+  async function fastApply() {
+    let r;
+    try { r = await api('/api/creator_props_apply', buildReq(getTrack(), { props: [], dry: true })); } catch (e) { return false; }
+    if (!r?.ok) return false;
+    const c = await choose('Depuis la dernière génération de cette piste, seul le décor a changé.\n\nL\'appliquer tout de suite '
+      + '(quelques secondes) ? Le sol, la route et l\'eau ne bougent pas.', ['⚡ Appliquer le décor', 'Tout regénérer']);
+    if (c === 1) return false;
+    if (c < 0) return true;
+    $('crgo').disabled = true;
+    try {
+      // modifications de l'Edition pas encore enregistrees (objets deplaces, parcours, caisses...) : enregistrees
+      // d'abord, sinon la piste relue apres l'application les effacait (2026-11-19)
+      if (ctx.beforeGenerate && !(await ctx.beforeGenerate())) return true;
+      const sent = S.props.slice();
+      status('Décor de la Création appliqué à la piste…');
+      const a = await api('/api/creator_props_apply', buildReq(getTrack(), { props: sent }));
+      if (!a.ok) { status(`Décor non appliqué : ${a.reason}. Utilise « Tout regénérer ».`, 'err'); return true; }
+      (a.uids || []).forEach((u, i) => { if (u && sent[i]) sent[i].u = u; });
+      writeDraft();
+      S.genDirty = false; genMark();
+      await ctx.onPropsApplied?.(a);
+      status(a.report.filter(Boolean).join(' · '), 'ok');
+    } catch (e) { status('Erreur : ' + e.message, 'err'); }
+    finally { $('crgo').disabled = false; }
+    return true;
+  }
   $('crgo').onclick = async () => {
+    if (await fastApply()) return;
     // ou generer : piste selectionnee ou nouvelle piste (nom, categorie), choix explicite avant tout le reste
     const target = await chooseTarget();
     if (!target) return;
-    // repartir de zero : aussi les ajouts faits dans Edition (imports, bibliotheque, copies) et toute la scene de
-    // course ; sinon ils restent avec la piste generee. Nouvelle piste : rien a garder (caisses de Crash Cove retirees)
-    let wipe = true;
-    if (!target.isNew) {
-      const c = await choose('Générer la piste ? Le sol et le décor d\'origine sont retirés, la création précédente est remplacée, '
-        + 'puis le parcours et les IA sont créés et enregistrés (≈ 1 à 3 min).\n\nSupprimer aussi la map en cours dans Édition pour '
-        + 'repartir de zéro ? Tes imports, objets de la bibliothèque et copies, ainsi que la scène de course (caisses, boosters, '
-        + 'zones de chute, téléporteurs, embranchements).', ['🧹 Repartir de zéro', 'Garder la map en cours']);
-      if (c < 0) return;
-      wipe = c === 0;
-    }
+    // ajouts faits dans Edition (imports, bibliotheque, copies, caisses, boosters) toujours gardes et reposes sur le
+    // nouveau sol (server creator_reseat, 2026-11-14 : plus de choix « Repartir de zéro / Garder »). Pour tout retirer :
+    // Edition > Nouvelle map. Nouvelle piste : rien a garder (caisses de Crash Cove retirees)
+    const wipe = !!target.isNew;
+    if (!target.isNew && !(await ask('Générer la piste ? Le sol et le décor d\'origine sont retirés, la création précédente est remplacée, '
+        + 'puis le parcours et les IA sont créés et enregistrés (≈ 1 à 3 min).\n\nTes ajouts faits dans Édition (objets, imports, copies, '
+        + 'caisses, boosters) sont gardés et reposés sur le nouveau sol.'))) return;
     // beaucoup de carte loin de la route : le jeu la charge pour rien. Retrait a la generation seulement, le brouillon reste complet
     let trim = false;
     const far = farFromRoad();
@@ -4161,12 +4738,19 @@ export function initCreator(ctx) {
     }
     $('crgo').disabled = true;
     try {
+      // modifications de l'Edition pas encore enregistrees : enregistrees avant (sinon perdues, 2026-11-19).
+      // Nouvelle piste : elles concernent l'ancienne, enregistrees aussi (rien n'est jete sans le dire)
+      if (ctx.beforeGenerate && !(await ctx.beforeGenerate())) return;
       const dest = target.isNew ? await createTarget(target) : getTrack();
       status('Génération de la piste…');
-      const r = await api('/api/create_build', { track: dest, points: S.points, closed: S.closed, ground_z: S.groundZ,
-                                                  kit: $('crkit').value, barriers: $('crbar').value, marks: S.marks, signs: S.signs, props: S.props, waters: S.waters,
-                                                  terrain: { ...packFull(S.terrain), ...(trim ? { trim_m: FAR_TRIM_M } : {}) }, wipe });
-      await onGenerate({ ...r, wipe, track: dest });
+      const sent = S.props.slice();
+      const r = await api('/api/create_build', buildReq(dest, { props: sent, wipe,
+                                                               terrain: { ...packFull(S.terrain), ...(trim ? { trim_m: FAR_TRIM_M } : {}) } }));
+      // identifiant de chaque objet du decor : ses retouches dans Edition reviennent dans ce brouillon (applyPatch)
+      (r.uids || []).forEach((u, i) => { if (u && sent[i]) sent[i].u = u; });
+      writeDraft();
+      S.genDirty = false; genMark();
+      await onGenerate({ ...r, wipe, track: dest, items: S.items });
     } catch (e) { status('Erreur : ' + e.message, 'err'); }
     finally { rebuild(); }
   };
@@ -4174,20 +4758,30 @@ export function initCreator(ctx) {
   // une seule ouverture a la fois : le serveur repond en quelques secondes ; une 2e ouverture memorisait la vue deja
   // masquee, que la fermeture remettait ensuite (apercu toujours affiche, splines cachees)
   async function open() {
+    // chargement en arriere-plan en cours (loadQuiet) : attendu, puis ouverture (avant : ouverture ignoree)
+    while (S.opening && S.loadP) { try { await S.loadP; } catch (e) { /* sans importance */ } }
     if (S.active || S.opening) return;
     S.opening = true;
     try { await openNow(); } finally { S.opening = false; }
   }
-  async function openNow() {
+  // donnees de la base de la piste (brouillon, sinon derniere generation) -> S et maillages de l'apercu ; sans rien afficher :
+  // aussi appele a l'ouverture d'une piste (loadQuiet), pour l'apercu de la base dans l'Edition (2026-11-14)
+  async function loadBase() {
+    S.loadedTrack = null;
+    // piste figee au debut (2026-11-15) : son nom etait relu apres les attentes ; un changement de piste pendant le
+    // chargement etiquetait la base de l'ANCIENNE piste avec le nom de la nouvelle -> outils de base ouverts sur une base
+    // vide (ou celle d'une autre piste), jamais rechargee
+    const trk = getTrack();
+    if (S.baseTrack !== trk) { S.editN = 0; S.baseTrack = trk; }   // modifications comptees par piste
     await loadKart();
     const st = getStart();
     S.start = { pos: st.pos, yaw: st.yaw }; S.groundZ = st.groundZ;
     far.position.set(st.pos[0], st.pos[1], S.groundZ - 60);
     let info = { saved: null, kits: { sable: 'Plage de sable (Crash Cove)' } };
-    try { info = await (await fetch('/api/creator?track=' + encodeURIComponent(getTrack()))).json(); } catch (e) { /* sans importance */ }
+    try { info = await (await fetch('/api/creator?track=' + encodeURIComponent(trk))).json(); } catch (e) { /* sans importance */ }
     $('crkit').innerHTML = (info.order || Object.keys(info.kits)).map(k => [k, info.kits[k]]).map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
     let draft = null;
-    try { draft = JSON.parse(localStorage.getItem(draftKey()) || 'null'); } catch (e) { /* sans importance */ }
+    try { draft = JSON.parse(localStorage.getItem('ctr_creator_' + trk) || 'null'); } catch (e) { /* sans importance */ }
     // copie du brouillon sur le serveur (« Enregistrer ») : prise si ce navigateur n'en a pas, ou une plus ancienne
     if (info.draft?.points && (!draft || (info.draft.at || 0) > (draft.at || 0))) draft = info.draft;
     // brouillon sans route mais avec son kart (place ou route supprimee) : il l'emporte sur la derniere piste generee
@@ -4214,23 +4808,34 @@ export function initCreator(ctx) {
     // est pose sur le terrain : valeur enregistree si elle colle a ce point (20 m pres, relief sculpte), sinon deduite
     if (src?.points?.length > 1) {
       const p0 = src.points[0], fromTrace = p0[2] - sample(S.terrain.h, p0[0], p0[1]);
-      S.groundZ = Number.isFinite(src.ground_z) && Math.abs(src.ground_z - fromTrace) < 20 * IN ? src.ground_z : fromTrace;
+      // valeur enregistree jugee sur TOUTE la route (mediane), pas sur son 1er point : piste aleatoire T915 (2026-11-14), depart
+      // sur un remblai 34 m au-dessus du relief -> sol remonte de 34 m a chaque reouverture, puis a la generation
+      const offs = src.points.filter((_, k) => k % 4 === 0).map(p => p[2] - sample(S.terrain.h, p[0], p[1])).sort((a, b) => a - b);
+      const med = offs[offs.length >> 1];
+      S.groundZ = Number.isFinite(src.ground_z) && Math.abs(src.ground_z - med) < 40 * IN ? src.ground_z : fromTrace;
+      // meme route que la derniere generation : sa hauteur de base fait foi (brouillon deja decale par l'ancienne regle)
+      const g = info.saved, same = (a, b) => a && b && a.length === b.length && [0, 1, a.length >> 1, a.length - 1].every(k => String(a[k]) === String(b[k]));
+      if (Number.isFinite(g?.ground_z) && same(g.points, src.points)) S.groundZ = g.ground_z;
       far.position.z = S.groundZ - 60;
     } else if (Number.isFinite(src?.ground_z)) { S.groundZ = src.ground_z; far.position.z = S.groundZ - 60; }
     $('crsize').value = String(S.terrain.size);
     $('crbar').value = src?.barriers || 'curves';
     setMarks(src?.marks); setSigns(src?.signs);
     S.rndCode = typeof src?.rnd === 'string' ? src.rnd : '';      // code de la piste aleatoire (propose a la reouverture)
+    S.items = src?.items && Array.isArray(src.items.boosts) ? src.items : null;   // caisses / boosters a poser (piste aleatoire)
     setBlend(Number.isFinite(src?.terrain?.blend) ? src.terrain.blend : BLEND_DEF);
     setFade(Number.isFinite(src?.terrain?.fade) ? src.terrain.fade : FADE_DEF);
     S.info = info;
     if (src?.kit && info.kits[src.kit]) $('crkit').value = src.kit;
     // anciens brouillons : objets et choix sans theme = theme du brouillon
     const k0 = src?.kit && info.kits[src.kit] ? src.kit : 'sable';
-    S.sel = new Set((Array.isArray(src?.sel) ? src.sel : []).map(s => s.split('|').length === 2 ? k0 + '|' + s : s));
+    S.sel = new Set((Array.isArray(src?.sel) ? src.sel : []).map(s => s.split('|').length === 2 ? k0 + '|' + s : s)
+      // choix du pinceau d'avant le reclassement du decor (2026-11-17) : meme modele dans sa nouvelle famille
+      .map(s => { if (src?.cat === CAT_VERSION) return s; const [k, t, m] = s.split('|'), lst = info.remap?.[k]?.[t];
+                  const r = lst?.length ? lst[(+m || 0) % lst.length] : null; return r ? `${k}|${r[0]}|${r[1]}` : s; }));
     $('crpfar').value = String(src?.far || 60); $('crpfarv').textContent = $('crpfar').value;
     applyKit();
-    S.props = (Array.isArray(src?.props) ? src.props : []).map(p => p.k ? p : { ...p, k: k0 });
+    S.props = (Array.isArray(src?.props) ? src.props : []).map(p => migrateProp(p.k ? p : { ...p, k: k0 }, info));
     S.waters = Array.isArray(src?.waters) ? src.waters.filter(w => (Number.isFinite(w?.x) && Number.isFinite(w?.y)) || (w?.paint && Array.isArray(w.v) && Number.isFinite(w.level))) : [];
     for (const w of S.waters) if (!w.paint && [0.3, 1].some(d => Math.abs((w.dz ?? WATER_DZ) + d * IN) < 0.01)) w.dz = WATER_DZ;   // anciens defauts 30 cm / 1 m -> 5 m
     S.waterSel = -1;
@@ -4239,11 +4844,58 @@ export function initCreator(ctx) {
       placeFromPoints();
     } else { setWidth(W_DEF); resetPaver(); }
     refreshTerrainMesh();
+    renderItems();                                           // apres la route : caisses / boosters reposes dessus
+    // base de cette piste chargee (apercu dans l'Edition, « Générer la piste » depuis l'Edition) ; differe-t-elle de la
+    // derniere generation ? (verification du serveur ; une modification faite entre-temps l'emporte). hasBase : une route
+    // existe (sinon pas d'apercu : piste du jeu jamais creee, nouvelle map vide)
+    S.loadedTrack = trk;                                   // piste changee entre-temps : rechargee (loadQuiet / openNow)
+    histReset();                                           // historique de la base : repart de cette piste
+    S.genSnap = null;                                      // etat de la derniere generation (genAgain) : inconnu ici
+    S.hasBase = (src?.points?.length > 1) || (info.saved?.points?.length > 1);
+    S.generated = info.saved?.points?.length > 1;              // une generation existe (sinon : map importee possible)
+    const n0 = S.editN || 0;
+    S.genDirty = !(info.saved?.points?.length > 1);
+    if (!S.genDirty) (async () => {
+      let dirty = true;
+      try {
+        const r = await api('/api/creator_props_apply', buildReq(trk, { props: [], dry: true }));
+        dirty = !r?.ok || JSON.stringify(S.props) !== JSON.stringify((info.saved.props || []).map(p => p.k ? p : { ...p, k: info.saved.kit || 'sable' }));
+      } catch (e) { /* inconnu : signale comme a generer */ }
+      if ((S.editN || 0) === n0) { S.genDirty = dirty; if (!dirty) S.genSnap = histSnap(); }
+      ctx.onBaseState?.();
+    })();
+    return info;
+  }
+  // objet seme avant le reclassement du decor (2026-11-17) : famille et numero de l'ancien catalogue -> meme modele dans le
+  // nouveau (table du serveur, track_creator.remap_table) ; marque c = version du catalogue (deja converti : inchange)
+  function migrateProp(p, info) {
+    const v = info?.cat || CAT_VERSION;
+    if (!p || p.c === v) return p;
+    const lst = info?.remap?.[p.k]?.[p.t], r = lst?.length ? lst[(+p.m || 0) % lst.length] : null;
+    return r ? { ...p, t: r[0], m: r[1], c: v } : { ...p, c: v };
+  }
+  async function openNow() {
+    // base deja en memoire pour cette piste (chargee en arriere-plan, ou Creation deja ouverte) : gardee telle quelle, pas
+    // relue du brouillon (une ecriture ratee faisait revenir l'ancienne base, 2026-11-14)
+    if (S.loadedTrack !== getTrack()) await loadBase();
     $('crr').textContent = Math.round(S.radius / IN); $('crs').textContent = Math.round(S.strength * 100) + ' %';
     S.savedVis = scene.children.map(c => [c, c.visible]);
     scene.children.forEach(c => { if (c !== group && !c.isLight) c.visible = false; });
+    // ajouts faits dans Edition (objets, caisses, boosters) visibles aussi ici (case « Ajouts d'Édition », retenue)
+    try { $('crghost').checked = localStorage.getItem(GHOST_KEY) !== '0'; } catch (e) { /* sans importance */ }
+    $('crghost').onchange = () => {
+      try { localStorage.setItem(GHOST_KEY, $('crghost').checked ? '1' : '0'); } catch (e) { /* sans importance */ }
+      ctx.showEdition?.($('crghost').checked);
+    };
+    ctx.showEdition?.($('crghost').checked);
     // barre de droite : seul le panneau de creation (titre et selection de l'editeur masques)
-    if (ctx.details) S.hostVis = [...ctx.details.children].filter(c => c !== panel).map(c => { const h = c.hidden; c.hidden = true; return [c, h]; });
+    // (l'en-tete unique de l'inspecteur reste : il affiche l'outil de base en cours)
+    // 2026-11-18 (« panneau de droite vide » apres des allers-retours Decor / Deplacer) : un element deja cache PAR LA
+    // CREATION (dataset.crHidden) garde son etat d'origine (visible) au lieu d'etre note « cache » et remis cache a la fermeture
+    if (ctx.details) S.hostVis = [...ctx.details.children].filter(c => c !== panel && c.id !== 'inshd').map(c => {
+      const h = c.dataset.crHidden ? c.dataset.crHidden === 'h' : c.hidden;
+      c.dataset.crHidden = h ? 'h' : 'v'; c.hidden = true; return [c, h];
+    });
     // profondeur plus precise : dans la Creation, rien n'est regarde a moins de 2,5 m (scintillement au loin : -70 %)
     S.savedNear = camera.near; camera.near = 100; camera.updateProjectionMatrix();
     try { $('crq').value = localStorage.getItem(Q_KEY) || 'auto'; } catch (e) { /* sans importance */ }
@@ -4255,20 +4907,181 @@ export function initCreator(ctx) {
       Q.sum = Q.n = 0; setQuality(qMode() === 'auto' ? 0 : +qMode());
       S.propsDirty = true;                                   // detail des objets : suit le reglage
     };
-    group.visible = true; panel.hidden = false; S.active = true; S.last = 0;
+    groundParts(true); if (S.waterGroup) S.waterGroup.visible = true;      // cases d'Affichage de l'Edition sans effet ici
+    group.visible = true; propGroup.visible = true; panel.hidden = false; topbar.hidden = false; S.active = true; S.last = 0;
     setTool(S.tool); setPaint(S.paint); setMode('route');
-    rebuild(); renderProps(); histReset();
+    rebuild(); renderProps();
+    if (S.histTrack !== S.loadedTrack) histReset(); else histButtons();   // etapes faites depuis l'Edition gardees
     status('Création : conduis le paveur (↑ avancer, ← → tourner, R / F monter / descendre) — onglet Terrain pour sculpter le sol');
   }
+  // ouverture d'une piste dans l'editeur : base chargee sans ouvrir la Creation (apercu dans l'Edition si elle n'est pas generee)
+  async function loadQuiet() {
+    if (S.active || S.opening || S.loadedTrack === getTrack()) return;
+    S.opening = true;
+    S.loadP = (async () => { await loadBase(); rebuild(); renderProps(); if (!S.active) group.visible = false; })();
+    try { await S.loadP; }
+    catch (e) { console.warn('base non chargee', e); }
+    finally { S.opening = false; S.loadP = null; }
+    if (!S.active && S.loadedTrack !== getTrack()) return loadQuiet();     // piste changee pendant le chargement
+  }
+  // apercu de la base dans l'Edition, Creation fermee (2026-11-14) : sol, route, decor seme et eau de la Creation, sans paveur
+  // ni poignees ; meshes de sol pour poser les caisses / objets dessus (index.html groundZ)
+  // withProps : decor seme de l'apercu aussi (sinon celui de la piste generee, selectionnable, s'affiche a sa place)
+  function preview(on, withProps = true) {
+    if (S.active) return;
+    group.visible = !!on && S.loadedTrack === getTrack();
+    const pv = S.pv || {};                                    // cases d'Affichage de l'Edition (previewParts)
+    propGroup.visible = !!withProps && pv.props !== false;
+    if (S.waterGroup) S.waterGroup.visible = pv.water !== false;
+    groundParts(pv.ground !== false);
+    for (const o of [paver, brush, ghost, edgeHandle, edgeLine, bridgeLine, bridgeMark, selHold]) o.visible = false;
+  }
+  // Edition : objet du decor de l'apercu sous le rayon (plus proche que maxDist) -> son rang dans S.props, sinon -1
+  function previewPropAt(r, maxDist = Infinity) {
+    if (!group.visible || !propGroup.visible) return -1;
+    for (const h of r.intersectObject(propGroup, true)) {
+      if (h.distance > maxDist) break;
+      const L = h.object.userData.props;
+      if (h.object.visible && L && h.instanceId != null && L[h.instanceId]) return S.props.indexOf(L[h.instanceId]);
+    }
+    return -1;
+  }
+  // objet du decor de la base manipule avec les outils de l'EDITION (2026-11-14) : boite jaune + proxy sur lequel l'Edition
+  // accroche ses poignees ; memes regles que l'outil Modifier (pose au sol, decalage de hauteur, objet « a la main »)
+  function extSelect(i) {
+    const p = S.props[i]; if (!p) return null;
+    S.propSelP = p; S.propDrag = null; syncPropSel();
+    propProxy.position.set(p.x, p.y, propZ(p)); propProxy.rotation.set(p.rx || 0, p.ry || 0, p.yaw); propProxy.scale.setScalar(p.s);
+    return propProxy;
+  }
+  function extDeselect() { S.propSelP = null; S.propDrag = null; selHold.visible = false; }
+  // retouche d'un objet de la base faite depuis l'Edition : etape d'annulation (histCommit) et l'Edition prevenue (sa pile
+  // d'annulation melange ses etapes et celles-ci, dans l'ordre)
+  function extEdited() { if (!S.active) S.extPending = true; }
+  function extInfo() {
+    const p = S.propSelP; if (!p) return null;
+    const k = kindOf(p);
+    return { name: k?.names?.[p.m % (k?.n || 1)] || p.t, label: k?.label || p.t, x: p.x, y: p.y, z: propZ(p), yaw: p.yaw, s: p.s,
+             off: !!seatOf(p).off, index: S.props.indexOf(p) };
+  }
+  function extDelete() {
+    const p = S.propSelP; if (!p) return;
+    S.props.splice(S.props.indexOf(p), 1); extDeselect(); renderProps(); saveDraft(); extEdited();
+  }
+  function extDuplicate() {
+    const p = S.propSelP; if (!p) return -1;
+    const step = Math.max(2 * IN, 1.2 * dimOf(p).r * IN * p.s);
+    const q = { ...p, x: Math.round(p.x + step * Math.cos(p.yaw)), y: Math.round(p.y + step * Math.sin(p.yaw)) };
+    delete q.u;                                              // nouvel objet de la recette
+    S.props.push(q); propChanged(q); saveDraft(); extEdited();
+    return S.props.length - 1;
+  }
+  // valeurs tapees dans l'Edition : position (pouces), cap (radians), taille
+  function extSet(v) {
+    const p = S.propSelP; if (!p) return;
+    if (Number.isFinite(v.x)) p.x = Math.round(v.x);
+    if (Number.isFinite(v.y)) p.y = Math.round(v.y);
+    if (Number.isFinite(v.yaw)) p.yaw = +v.yaw.toFixed(3);
+    if (Number.isFinite(v.s)) p.s = +Math.max(0.05, Math.min(100, v.s)).toFixed(2);
+    propChanged(p); syncPropSel(); saveDraft(); extEdited();
+    propProxy.position.set(p.x, p.y, propZ(p)); propProxy.rotation.set(p.rx || 0, p.ry || 0, p.yaw); propProxy.scale.setScalar(p.s);
+  }
+  // plusieurs objets de la base (outil Cadre de l'Edition, 2026-11-14) : test(x, y, z) -> dans le cadre ; geste applique par
+  // une matrice (pivot de l'Edition) depuis la pose de depart ; deplacer / tourner autour du centre / supprimer
+  function propsInRect(test) {
+    if (!group.visible || !propGroup.visible) return [];
+    const out = [];
+    S.props.forEach((p, i) => { if (kindOf(p) && !propHidden.has(p) && !seatOf(p).off && test(p.x, p.y, propZ(p))) out.push(i); });
+    return out;
+  }
+  // H / Maj+H de l'Edition sur les objets de la base : caches / tous reaffiches (rien ne change a la generation)
+  function extHide(indices) {
+    let n = 0;
+    for (const i of indices) { const p = S.props[i]; if (p && !propHidden.has(p)) { propHidden.add(p); n++; } }
+    if (n) { extDeselect(); S.multi = null; renderProps(); }
+    return n;
+  }
+  function extUnhideAll() {
+    for (const p of [...propHidden]) if (!S.props.includes(p)) propHidden.delete(p);
+    const n = propHidden.size;
+    if (n) { propHidden.clear(); renderProps(); }
+    return n;
+  }
+  function extMultiStart(indices) {
+    S.multi = indices.map(i => S.props[i]).filter(Boolean).map(p => ({ p, x: p.x, y: p.y, z: propZ(p), dz: p.dz || 0, yaw: p.yaw }));
+    selHold.visible = false; S.propSelP = null;
+    return S.multi.length;
+  }
+  const _v = new THREE.Vector3(), _q = new THREE.Quaternion(), _e = new THREE.Euler(0, 0, 0, 'ZYX');
+  function extMultiApply(D) {
+    if (!S.multi?.length) return;
+    _q.setFromRotationMatrix(D); _e.setFromQuaternion(_q, 'ZYX');
+    for (const b of S.multi) {
+      _v.set(b.x, b.y, b.z).applyMatrix4(D);
+      b.p.x = Math.round(_v.x); b.p.y = Math.round(_v.y);
+      b.p.dz = Math.round(b.dz + _v.z - b.z); if (Math.abs(b.p.dz) < 1) delete b.p.dz;
+      b.p.yaw = +(b.yaw + _e.z).toFixed(3);
+      delete b.p.ai; b.p.ed = 1;
+      if (roadUnder(b.p) !== null) b.p.road = 1; else delete b.p.road;
+      seats.delete(b.p);
+    }
+    renderProps();
+  }
+  function extMultiEnd() { if (S.multi?.length) { saveDraft(); extEdited(); } }
+  function extMultiMarks() { return (S.multi || []).map(b => ({ x: b.p.x, y: b.p.y, z: propZ(b.p), r: Math.max(IN, dimOf(b.p).r * IN * b.p.s * 0.8) })); }
+  function extMultiDelete() {
+    const set = new Set((S.multi || []).map(b => b.p)); if (!set.size) return 0;
+    S.props = S.props.filter(p => !set.has(p)); S.multi = null; renderProps(); saveDraft(); extEdited();
+    return set.size;
+  }
+  function extMultiClear() { S.multi = null; }
+  // « Poser au sol » (Edition) : objet(s) de la base remis sur le sol (decalage de hauteur retire)
+  function extDrop() {
+    const list = S.multi?.length ? S.multi.map(b => b.p) : S.propSelP ? [S.propSelP] : [];
+    for (const p of list) { delete p.dz; delete p.ai; seats.delete(p); }
+    if (!list.length) return 0;
+    renderProps(); if (S.propSelP) syncPropSel(); saveDraft(); extEdited();
+    if (S.propSelP) { const p = S.propSelP; propProxy.position.set(p.x, p.y, propZ(p)); }
+    return list.length;
+  }
+  // Creation ouverte (brouillon relu : meme ordre des objets) : outil Decor > Modifier sur cet objet
+  function editProp(i) {
+    const p = S.props[i]; if (!p || !S.active) return;
+    setMode('props'); setPropTab('man'); setPropTool('edit'); selectProp(p);
+  }
+  // sol, route et bords de l'apercu masques / remis (etat d'avant garde : voutes, marquage desactive restent caches)
+  function groundParts(show) {
+    for (const o of [terrainMesh, road, banks, edgeL, edgeR, center, startMark, startLine, roofMesh, markWhite, markCurb]) {
+      if (!o) continue;
+      if (!show && o.visible) { o.visible = false; o.userData.pvHidden = true; }
+      else if (show && o.userData.pvHidden) { o.visible = true; delete o.userData.pvHidden; }
+    }
+  }
+  function previewParts(o) { S.pv = { ...(S.pv || {}), ...o }; }
+  // liste de l'onglet Scene (Edition) : objets du decor de la base montres (rang, nom du modele, famille, position)
+  function sceneList() {
+    const out = [];
+    S.props.forEach((p, i) => {
+      const k = kindOf(p); if (!k || seatOf(p).off || propHidden.has(p)) return;
+      out.push({ i, name: k.names?.[p.m % (k.n || 1)] || p.t, label: k.label || p.t, x: p.x, y: p.y, z: propZ(p) });
+    });
+    return out;
+  }
+  // une base existe : chargee avec une route, ou commencee pendant la session (route, relief, decor : toute modification)
+  const baseExists = () => !!S.hasBase || S.points?.length > 1 || (S.editN || 0) > 0;
+  const surfaces = () => [terrainMesh, road];
   function close() {
     if (!S.active) return;
     if (draftTimer) writeDraft();
     ctx.setRenderScale?.(1);                                 // l'editeur garde sa pleine resolution
     if (S.savedNear) { camera.near = S.savedNear; camera.updateProjectionMatrix(); }
     selectProp(null);                                        // poignees de l'outil Modifier detachees (sinon actives dans l'editeur)
-    S.active = false; S.keys.clear(); S.brushing = false; panel.hidden = true; group.visible = false; orbit.enabled = true;    restoreButtons();
-    for (const [c, h] of S.hostVis || []) c.hidden = h;
+    S.active = false; S.keys.clear(); S.brushing = false; panel.hidden = true; topbar.hidden = true; group.visible = false; orbit.enabled = true;    restoreButtons();
+    for (const [c, h] of S.hostVis || []) { c.hidden = h; delete c.dataset.crHidden; }
+    // filet : tout element encore marque comme cache par la Creation est remis dans son etat d'origine
+    for (const c of ctx.details ? ctx.details.children : []) if (c.dataset.crHidden) { c.hidden = c.dataset.crHidden === 'h'; delete c.dataset.crHidden; }
     S.hostVis = null;
+    ctx.showEdition?.(null);                                 // objets du decor : affichage d'avant la Creation
     for (const [c, v] of S.savedVis || []) c.visible = v;
     S.savedVis = null;
   }
@@ -4282,6 +5095,8 @@ export function initCreator(ctx) {
     // s'affichait, meme apres « Actualiser ») ; seuls les objets apparus depuis sont notes
     scene.children.forEach(c => { if (c === group || c.isLight) return; if (!saved.has(c)) saved.set(c, c.visible); c.visible = false; });
     S.savedVis = [...saved];
+    ctx.showEdition?.(null);                                 // decor relu : objets neufs, ajouts d'Edition remontres
+    ctx.showEdition?.($('crghost').checked);
   }
   // « Enregistrer » dans la Creation : brouillon du navigateur + copie sur le serveur (autre navigateur, autre PC)
   async function saveNow() {
@@ -4292,5 +5107,49 @@ export function initCreator(ctx) {
       return true;
     } catch (e) { return false; }
   }
-  return { open, close, tick, rehide, undo, redo, saveNow, get active() { return S.active; } };
+  // retouches faites dans Edition sur le decor genere (deplacer, tourner, taille, copier, supprimer) : reportees dans le
+  // brouillon du navigateur, la prochaine generation les garde (meme calcul que server.py patch_props)
+  function applyPatch(patch) {
+    if (!patch?.length) return;
+    const fix = props => {
+      props = props.slice();
+      for (const op of patch) {
+        if (op.add) { props.push(op.add); continue; }
+        const u = op.del || op.set?.u, i = props.findIndex(p => p?.u === u);
+        if (i < 0) continue;                                  // retire depuis dans la Creation : sa suppression l'emporte
+        if (op.del) props.splice(i, 1); else props[i] = { ...op.set };
+      }
+      return props;
+    };
+    if (S.active) { S.props = fix(S.props); S.propsDirty = true; writeDraft(); return; }
+    try {
+      const d = JSON.parse(localStorage.getItem(draftKey()) || 'null');
+      if (d && Array.isArray(d.props)) { d.props = fix(d.props); d.at = Date.now(); localStorage.setItem(draftKey(), JSON.stringify(d)); }
+    } catch (e) { /* sans importance */ }
+    if (S.props) S.props = fix(S.props);
+  }
+  // caisses / boosters prevus par la piste aleatoire retires de la base (2026-11-19 : ils restaient dans l'apercu apres
+  // le placement automatique de l'Edition, et revenaient a chaque generation tant que l'Edition n'avait plus de caisse).
+  // kind : 'crates' | 'boosts' | 'all' (poses dans l'Edition a la generation : plus rien a poser ensuite)
+  function dropItems(kind = 'all') {
+    if (S.loadedTrack !== getTrack() || !S.items) return false;
+    if (kind === 'all') S.items = null;
+    else if (S.items[kind]?.length) S.items = { ...S.items, [kind]: [] };
+    else return false;
+    renderItems(); writeDraft();
+    return true;
+  }
+  return { open, close, tick, rehide, undo, redo, saveNow, applyPatch, preview, dropItems, surfaces, loadQuiet, previewPropAt, editProp,
+           extSelect, extDeselect, extInfo, extDelete, extDuplicate, extSet,
+           get generated() { return S.loadedTrack === getTrack() && !!S.generated; },
+           get hasRoute() { return S.loadedTrack === getTrack() && S.points?.length > 1; },
+           get lengthM() { return S.loadedTrack === getTrack() && S.points?.length > 1 ? Math.round(length() / IN) : 0; },
+           previewParts, sceneList, propsInRect, extDrop, extHide, extUnhideAll, get hiddenBase() { return propHidden.size; }, extMultiStart, extMultiApply, extMultiEnd, extMultiMarks, extMultiDelete, extMultiClear,
+           extDragStart: () => propDragStart(), extDrag: m => propDrag(m), extDragEnd: () => { propDragEnd(); extEdited(); }, histTimes, openRandom: () => openRandomDialog(),
+           get hasBase() { return S.loadedTrack === getTrack() && baseExists(); },
+           generate: () => { if (!$('crgo').disabled) $('crgo').onclick(); },
+           get busy() { return $('crgo').disabled; },
+           get loaded() { return S.loadedTrack === getTrack(); },
+           get genDirty() { return S.loadedTrack === getTrack() && baseExists() && !!S.genDirty; },
+           get active() { return S.active; } };
 }

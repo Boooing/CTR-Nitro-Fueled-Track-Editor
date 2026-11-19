@@ -26,6 +26,17 @@ INCLUDE = re.compile(r'^models/(levels|props)/', re.I)
 # morceaux de piste (terrain, sections de route, paysage lointain, ombres, collision) : pas des objets a poser
 EXCLUDE = re.compile(r'terrain|section|vista|shadow|collision|navmesh|_lod\d|proxy|occluder|blocker|skybox|skydome'
                      r'|^models/effects/|^models/vfx/|^models/levelassets/basic/|_ground\d*$|_road\d*$', re.I)
+# categorie « Rampes » (2026-11-18, demande utilisateur) : rampes, tremplins, half-pipes et bosses du jeu, par le nom
+# (« Rampage Ruins » n'est pas une rampe ; panneaux, details et murs ecartes). 22 modeles de 13 pistes.
+RAMP = re.compile(r'ramp(?!age)|jump|halfpipe|kicker|tremplin|_bumpy', re.I)
+NOT_RAMP = re.compile(r'sign|details|wall', re.I)
+
+
+def kind_of(name):
+    """Categorie d'objet transversale (en plus du dossier) : 'ramp' ou ''."""
+    return 'ramp' if RAMP.search(name) and not NOT_RAMP.search(name) else ''
+
+
 DEPS = {'materials': ('material_instances', 'materialinstances/'), 'textures': ('texture', 'textures/'),
         'models': ('model', 'models/')}
 
@@ -91,8 +102,9 @@ def catalog(archives):
             continue                                     # modele introuvable : ignore
         home = _home(p, set(lst))
         pak = home or lst[0]
-        out.append({'model': logical, 'pak': pak, 'track': nice(pak), 'name': os.path.basename(logical)[:-4],
-                    'group': group_of(logical)})
+        name = os.path.basename(logical)[:-4]
+        out.append({'model': logical, 'pak': pak, 'track': nice(pak), 'name': name, 'group': group_of(logical),
+                    'kind': kind_of(name)})
     out.sort(key=lambda m: (m['group'].lower(), m['name'].lower()))
     return out
 

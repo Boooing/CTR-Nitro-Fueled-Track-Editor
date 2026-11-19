@@ -27,7 +27,10 @@ VENV_PY = os.path.join(ROOT, '.build_venv', 'Scripts', 'python.exe')
 BUILD = os.path.join(ROOT, '.build')
 NAME = 'CTR Track Editor'
 APP_DIR = os.path.join(ROOT, 'CTR', 'exe')
-ICON_SRC = os.path.join(ROOT, 'crash-team-racing-nitro-fueled_j4g2.jpg')
+# icone : logo de l'editeur choisi par l'utilisateur (2026-11-14, PNG a fond transparent) a la racine du projet ;
+# sinon l'ancien logo du jeu (fond blanc rendu transparent par make_icon) ; sinon drapeau a damier dessine
+ICON_SRC = next((p for p in (os.path.join(ROOT, 'ctrnfte_logo.png'), os.path.join(ROOT, 'crash-team-racing-nitro-fueled_j4g2.jpg'))
+                 if os.path.exists(p)), os.path.join(ROOT, 'ctrnfte_logo.png'))
 
 
 def make_icon(path):

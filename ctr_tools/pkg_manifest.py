@@ -26,6 +26,25 @@ def entries(data):
     return [(z.string(z.u64(base + i * ENTRY)), z.string(z.u64(base + i * ENTRY + 8))) for i in range(count)]
 
 
+def set_entries(data, rows):
+    """Remplace toute la liste par rows [(type, chemin)] (ordre garde) ; retourne les octets. Sert a retirer des
+    entrees (modele de map vide allege, 2026-11-16) : vecteur neuf, l'ancien abandonne comme dans add_entries."""
+    z = IgzFile(data)
+    vec = _chunk(z)
+    count, old = z.u32(vec), z.deref(vec + 0x10)
+    for i in range(count * 2):
+        z._mark('RSTT', old + i * 8, False)
+    base = z.alloc(max(1, len(rows)) * ENTRY, 16)
+    for i, (typ, path) in enumerate(rows):
+        z.set_string_ref(base + i * ENTRY, typ)
+        z.set_string_ref(base + i * ENTRY + 8, path)
+    struct.pack_into('<I', *z._loc(vec), len(rows))
+    flags = z.u32(vec + 0x0C)
+    struct.pack_into('<II', *z._loc(vec + 0x08), len(rows) * ENTRY, flags)
+    z.set_ptr(vec + 0x10, base)
+    return z.to_bytes()
+
+
 def add_entries(data, new):
     """Ajoute les paires (type, chemin) absentes ; chacune après la dernière entrée de même type.
 

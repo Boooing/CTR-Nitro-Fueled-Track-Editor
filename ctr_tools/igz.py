@@ -15,6 +15,7 @@ import bisect
 import collections
 import json
 import os
+import contextlib
 import struct
 
 MAGIC = 0x49475A01   # octets 01 5A 47 49
@@ -334,11 +335,26 @@ class IgzFile:
         et l'ancienne table des noms dans le fichier (~24 o par racine), d'ou l'interet de grouper."""
         if not pairs:
             return
+        if getattr(self, '_deferred_roots', None) is not None:    # defer_roots : une seule reecriture a la fin
+            self._deferred_roots.extend(pairs)
+            return
         roots = self.object_list(self.root_offset)
         self.set_list(self.root_offset, roots + [o for o, _ in pairs])
         entries = self._name_entries()
         entries += [(n, fnv1a_lower(n)) for _, n in pairs]
         self._write_names(entries)
+
+    @contextlib.contextmanager
+    def defer_roots(self):
+        """Regroupe les add_roots du bloc en UNE reecriture a la sortie (2026-11-18 : meteo, 240 entites copiees = 240
+        reecritures de la liste racine et de la table des noms, 7 s sur 13). Dans le bloc, les nouvelles racines ne
+        sont PAS encore visibles par root_objects()."""
+        self._deferred_roots = []
+        try:
+            yield
+        finally:
+            pend, self._deferred_roots = self._deferred_roots, None
+            self.add_roots(pend)
 
     def remove_roots(self, objs):
         """Retire des objets de la liste racine (et leurs noms). Ils restent dans le fichier, non references."""

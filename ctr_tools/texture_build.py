@@ -10,6 +10,7 @@ Pour rester au plus pres des fichiers du jeu, on CLONE une texture existante de 
 on ne remplace que les pixels (et le nom interne) ; idem pour le materiau (on n'y change que des textures).
 """
 import io
+import os
 import struct
 
 import numpy as np
@@ -185,16 +186,9 @@ def drop_top_level(data):
     return z.to_bytes()
 
 
-def build_color_texture(template, image_bytes, internal_name):
-    """Texture couleur BC1 depuis une image (PNG/JPG...) : clone de `template` (texture BC1 du jeu), image
-    redimensionnee a sa taille, mipmaps recalcules. Haut de l'image = premiere ligne (convention DirectX, comme
-    les UV ecrits par model_build)."""
+def encode_levels(image_bytes, w, h, levels, alpha):
+    """Pixels de la texture (tous les niveaux, BC1 ou BC3 tuiles) d'une image redimensionnee en w x h."""
     from PIL import Image
-    info = texture_info(template)
-    if info['bytes_per_block'] not in (8, 16):
-        raise ValueError('le gabarit de texture doit etre en BC1 (opaque) ou BC3 (transparence)')
-    alpha = info['bytes_per_block'] == 16                     # gabarit BC3 : canal alpha garde (decoupe)
-    w, h, levels = info['width'], info['height'], info['levels']
     src = Image.open(io.BytesIO(image_bytes)).convert('RGBA' if alpha else 'RGB')
     if alpha:
         # couleur des pixels transparents = couleur moyenne des pixels voisins opaques (pas de liseré sombre / blanc
@@ -205,6 +199,55 @@ def build_color_texture(template, image_bytes, internal_name):
         lw, lh = max(4, w >> i), max(4, h >> i)
         px = np.asarray(src.resize((lw, lh), Image.LANCZOS), np.uint8)
         out += tile_blocks(bc3_encode(px) if alpha else bc1_encode(px))
+    return out
+
+
+# encodage en parallele (2026-11-18) : import d'un dossier OBJ, toutes ses images encodees d'avance sur plusieurs
+# processus ; build_color_texture reprend le resultat (_PRE) au lieu de reencoder. Sortie identique.
+_PRE = {}
+PARALLEL_MIN = 3                 # en dessous : pas de processus (leur demarrage couterait plus que le gain)
+
+
+def _pre_key(image_bytes, w, h, levels, alpha):
+    import hashlib
+    return (hashlib.md5(image_bytes).hexdigest(), w, h, levels, bool(alpha))
+
+
+def _encode_job(job):
+    image_bytes, w, h, levels, alpha = job
+    return encode_levels(image_bytes, w, h, levels, alpha)
+
+
+def pre_encode(jobs):
+    """jobs = [(octets image, w, h, niveaux, alpha)] -> encodes d'avance (en parallele si assez nombreux). Toute erreur :
+    rien n'est garde, chaque texture sera encodee normalement ensuite."""
+    jobs = list({_pre_key(*j): j for j in jobs}.items())
+    if len(jobs) < PARALLEL_MIN:
+        return 0
+    try:
+        import concurrent.futures
+        import multiprocessing
+        workers = max(1, min(8, (os.cpu_count() or 2) - 1, len(jobs)))
+        with concurrent.futures.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context('spawn')) as ex:
+            for (key, _), out in zip(jobs, ex.map(_encode_job, [j for _, j in jobs])):
+                _PRE[key] = out
+        return len(jobs)
+    except Exception:  # noqa: BLE001 - parallele impossible : encodage normal, texture par texture
+        _PRE.clear()
+        return 0
+
+
+def build_color_texture(template, image_bytes, internal_name):
+    """Texture couleur BC1 depuis une image (PNG/JPG...) : clone de `template` (texture BC1 du jeu), image
+    redimensionnee a sa taille, mipmaps recalcules. Haut de l'image = premiere ligne (convention DirectX, comme
+    les UV ecrits par model_build)."""
+    from PIL import Image
+    info = texture_info(template)
+    if info['bytes_per_block'] not in (8, 16):
+        raise ValueError('le gabarit de texture doit etre en BC1 (opaque) ou BC3 (transparence)')
+    alpha = info['bytes_per_block'] == 16                     # gabarit BC3 : canal alpha garde (decoupe)
+    w, h, levels = info['width'], info['height'], info['levels']
+    out = _PRE.pop(_pre_key(image_bytes, w, h, levels, alpha), None) or encode_levels(image_bytes, w, h, levels, alpha)
     if len(out) != info['size']:
         raise ValueError(f'taille de texture inattendue ({len(out)} au lieu de {info["size"]})')
     z = IgzFile(template)

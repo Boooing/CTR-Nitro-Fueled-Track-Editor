@@ -434,8 +434,9 @@ def _ordinals(archives, pak_name, names):
     return out
 
 
-def clone_pak(archives, src, new, pak_name, out_path, extra=None, progress=None):
-    """Ecrit la copie renommee d'une archive de piste. Retourne des statistiques."""
+def clone_pak(archives, src, new, pak_name, out_path, extra=None, progress=None, compact=False):
+    """Ecrit la copie renommee d'une archive de piste. Retourne des statistiques. compact : ordinaux renumerotes
+    sans trou (une partie des fichiers de l'archive d'origine manque : modele de map vide)."""
     ren = Renamer(src, new)
     if extra is None:
         srcs = {}
@@ -467,6 +468,10 @@ def clone_pak(archives, src, new, pak_name, out_path, extra=None, progress=None)
     local_extra = sorted({os.path.basename(n).rsplit('.', 1)[0] for n in names if n.lower().startswith('maps/')
                           and ren.rx.search(n.encode('latin1'))})
     ords = _ordinals(archives, pak_name, names)
+    if compact:                                   # fichiers retires (modele allege) : ordinaux 0..n-1 sans trou, ordre garde
+        used = sorted({o for o in ords.values() if o < 0xFFFFFF})
+        rank = {o: i for i, o in enumerate(used)}
+        ords = {n: rank.get(o, o) for n, o in ords.items()}
     files, st = [], {'files': 0, 'renamed': 0, 'rewritten': 0, 'text': 0, 'exid': 0, 'local': 0, 'tables': 0,
                      'shared': 0, 'kept_originals': 0}
     # Fichiers PARTAGES : nom sans l'identifiant mais contenu qui le cite (bibliotheque de materiaux
@@ -613,10 +618,11 @@ def chunks_igx_set(game_dir, pak_files):
     return True
 
 
-def create(archives, src, n=None, display=None, out_dir=None, progress=None, overwrite=False):
+def create(archives, src, n=None, display=None, out_dir=None, progress=None, overwrite=False, files=None):
     """Cree la piste (archives .pak renommees) ; retourne (identifiant, [archives ecrites], stats).
     out_dir : dossier de sortie (essai) ; par defaut le dossier des archives du jeu (nouveaux fichiers seulement).
-    overwrite : refait les archives d'une piste deja creee par nous (numero n)."""
+    overwrite : refait les archives d'une piste deja creee par nous (numero n).
+    files : {nom logique: (archive, entree, verrou)} a la place des fichiers de la piste source (modele de map vide)."""
     out_dir = out_dir or archives
     taken = {f.lower() for f in pak_tool.listdir(archives)} | {f.lower() for f in pak_tool.listdir(out_dir)}
     if n is None:
@@ -626,7 +632,7 @@ def create(archives, src, n=None, display=None, out_dir=None, progress=None, ove
         raise RuntimeError(f'{new} existe deja')
     ren = Renamer(src, new)
     written, stats = [], {}
-    jobs = [(new.lower() + '.pak', src.lower() + '.pak', source_files(archives, src))]
+    jobs = [(new.lower() + '.pak', src.lower() + '.pak', files if files is not None else source_files(archives, src))]
     jobs += [(ren.name(fp).lower(), fp, None) for fp in flyby_paks(archives, src)]
     for dst, pak, extra in jobs:
         out = os.path.join(out_dir, dst)
@@ -634,7 +640,8 @@ def create(archives, src, n=None, display=None, out_dir=None, progress=None, ove
             if overwrite and os.path.exists(f):
                 os.remove(f)                     # installation de l'editeur sur l'ancienne copie : caduque
         stats[dst] = clone_pak(archives, src, new, pak, out + '.tmp', extra=extra,
-                               progress=progress if extra is not None else None)
+                               progress=progress if extra is not None else None,
+                               compact=files is not None and extra is files)
         try:
             os.replace(out + '.tmp', out)
         except PermissionError:

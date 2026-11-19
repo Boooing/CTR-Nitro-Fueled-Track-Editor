@@ -33,6 +33,19 @@ MIN_SECONDS, MAX_SECONDS = 10, 20 * 60
 FLAGS = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
 
 
+def ffmpeg_env():
+    """Environnement de ffmpeg : celui du systeme. Exe Linux (PyInstaller / AppImage) : LD_LIBRARY_PATH pointe vers
+    les bibliotheques de l'editeur ; le ffmpeg du systeme les chargerait a la place des siennes (plantage ou
+    « symbol lookup error ») -> valeur d'origine remise (LD_LIBRARY_PATH_ORIG), comme pour zenity et le navigateur."""
+    env = dict(os.environ)
+    if os.name != 'nt' and getattr(sys, 'frozen', False):
+        orig = env.pop('LD_LIBRARY_PATH_ORIG', None)
+        env.pop('LD_LIBRARY_PATH', None)
+        if orig:
+            env['LD_LIBRARY_PATH'] = orig
+    return env
+
+
 # Musique continue au dernier tour : le changement de morceau est decide par un script commun a toutes les pistes
 # (vsc/common/Race/common_Race_Music_Manager.igz) : son reglage FINAL_LAP_SETTINGS joue le jingle (_stinger1) et bascule
 # du flux normal au flux du dernier tour (_flipStreams). La piste recoit sa copie, sous un nom de meme longueur, ou ce
@@ -100,7 +113,10 @@ def ffmpeg_in(folder):
 def check_ffmpeg(exe):
     """Le programme se lance et sait encoder en MP3 (libmp3lame, seul encodeur utilise) ; ValueError sinon."""
     try:
-        r = subprocess.run([exe, '-hide_banner', '-encoders'], capture_output=True, timeout=30)
+        r = subprocess.run([exe, '-hide_banner', '-encoders'], capture_output=True, timeout=30, creationflags=FLAGS,
+                           env=ffmpeg_env())
+    except PermissionError as e:                         # Linux : fichier copie sans le droit d'execution
+        raise ValueError(f'ffmpeg n’est pas exécutable : rends-le exécutable (chmod +x "{exe}")') from e
     except (OSError, subprocess.SubprocessError) as e:
         raise ValueError(f'ffmpeg ne se lance pas : {e}') from e
     if r.returncode != 0:
@@ -111,10 +127,13 @@ def check_ffmpeg(exe):
 
 
 def find_ffmpeg():
-    """Choisi par l'utilisateur, sinon a cote de l'exe, sinon dans le PATH de l'ordinateur ; None si introuvable."""
+    """Choisi par l'utilisateur, sinon a cote de l'exe (Linux AppImage : a cote du fichier .AppImage), sinon dans le
+    PATH de l'ordinateur ; None si introuvable."""
     if FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
         return FFMPEG_PATH
     here = [os.path.dirname(sys.executable)] if getattr(sys, 'frozen', False) else []
+    if os.environ.get('APPIMAGE'):                       # AppImage : l'exe est dans l'image montee (lecture seule) ;
+        here.insert(0, os.path.dirname(os.path.abspath(os.environ['APPIMAGE'])))   # « a cote » = a cote du .AppImage
     for d in here + [getattr(sys, '_MEIPASS', '')]:
         for name in ('ffmpeg.exe', 'ffmpeg'):
             p = os.path.join(d, name) if d else ''
@@ -217,7 +236,7 @@ def decode(path, tempo=1.0, normalize=True):
         filters.append('loudnorm=I=-16:TP=-1.5:LRA=11')
     filters.append(f'aresample={RATE}')
     r = subprocess.run([_ffmpeg(), '-v', 'error', '-nostdin', '-i', path, '-vn', '-af', ','.join(filters), '-ac', '2', '-ar', str(RATE),
-                        '-f', 'f32le', '-'], capture_output=True, creationflags=FLAGS)
+                        '-f', 'f32le', '-'], capture_output=True, creationflags=FLAGS, env=ffmpeg_env())
     if r.returncode or not r.stdout:
         msg = r.stderr.decode('utf-8', 'replace').strip().splitlines()
         raise ValueError('fichier audio illisible' + (f' ({msg[-1][:160]})' if msg else ''))
@@ -229,7 +248,7 @@ def _encode(pcm):
     raw = (np.clip(pcm, -1, 1) * 32767).astype('<i2').tobytes()
     r = subprocess.run([_ffmpeg(), '-v', 'error', '-nostdin', '-f', 's16le', '-ar', str(RATE), '-ac', '2', '-i', '-', '-c:a', 'libmp3lame',
                         '-b:a', '128k', '-abr', '0', '-joint_stereo', '1', '-reservoir', '0', '-write_xing', '0', '-id3v2_version', '0',
-                        '-f', 'mp3', '-'], input=raw, capture_output=True, creationflags=FLAGS)
+                        '-f', 'mp3', '-'], input=raw, capture_output=True, creationflags=FLAGS, env=ffmpeg_env())
     if r.returncode:
         raise RuntimeError('encodage MP3 impossible : ' + r.stderr.decode('utf-8', 'replace')[-200:])
     d, o, out = r.stdout, 0, []

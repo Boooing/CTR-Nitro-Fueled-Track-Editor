@@ -239,11 +239,59 @@ def set_pose(z, ent, pos, yaw=0.0, scale=1.0, rx=0.0, ry=0.0):
     struct.pack_into('<I', *z._loc(ent + 0x38), z.u32(ent + 0x38) | 1)
     tr = z.deref(ent + 0x30)
     if tr is None:
-        return
+        if not (rx or ry or yaw or abs(float(scale) - 1.0) > 1e-6):
+            return
+        # entite sans igEntityTransform (bancs de poissons, araignee... : animation en coordonnees de leur piste) : la
+        # rotation et l'echelle de l'editeur etaient perdues (2026-11-18). Transformation creee comme celles du jeu :
+        # orientation (+0x10, quaternion identite), matrice (+0x20, identite), Euler (+0x60), echelles, _isDirty.
+        tr = z.new_object('igEntityTransform')
+        struct.pack_into('<4f', *z._loc(tr + 0x10), 0.0, 0.0, 0.0, 1.0)
+        struct.pack_into('<16f', *z._loc(tr + 0x20), 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+        struct.pack_into('<f', *z._loc(tr + 0x6C), 1.0)
+        z.set_ptr(ent + 0x30, tr)
     struct.pack_into('<3f', *z._loc(tr + 0x60), float(rx), float(ry), float(yaw))
     g = z.f32(tr + 0x6C) or 1.0
     struct.pack_into('<3f', *z._loc(tr + 0x70), *([float(scale) / g] * 3))
     struct.pack_into('<I', *z._loc(tr + 0x7C), 1)                       # _isDirty
+
+
+# script common_Delay_Animation (108 objets du catalogue) : parametres dans _dynamicFieldMemory du CVscComponentData,
+# +0x0 delai, +0x4 boucle, +0x8 fondu, +0xC VITESSE = 3e argument de CAnimationNodes::playAnimationSimple (releve
+# 2026-11-18 sur le script). Le singe d'Oxide Station est a 0,01 : il flotte au ralenti dans sa piste, fige ailleurs.
+DELAY_SCRIPT_SUFFIX = '_CommonDelayAnimation'
+SPEED_OFF = 0x0C
+SLOW_SPEED = 0.1                 # en dessous : vitesse remise a 1 par defaut a la pose (objet qui parait fige)
+
+
+def _delay_component(z, ent, name=None):
+    """CVscComponentData du script common_Delay_Animation de l'entite (nom racine '<entite>_entityData_componentData
+    _CommonDelayAnimation'), ou None."""
+    names = {n: o for n, o in z.root_objects()}
+    if name is None:
+        name = next((n for n, o in names.items() if o == ent), None)
+    o = names.get(f'{name}_entityData_componentData{DELAY_SCRIPT_SUFFIX}') if name else None
+    return o if o is not None and z.objects.get(o) == 'CVscComponentData' else None
+
+
+def anim_speed(z, ent):
+    """Vitesse de l'animation (script common_Delay_Animation) ou None si l'objet n'a pas ce script."""
+    import struct
+    c = _delay_component(z, ent)
+    mem = z.deref(c + 0x10) if c is not None else None
+    if mem is None:
+        return None
+    v = struct.unpack_from('<f', *z._loc(mem + SPEED_OFF))[0]
+    return v if 0.0 < v < 100.0 else None
+
+
+def set_anim_speed(z, ent, name, speed):
+    import struct
+    c = _delay_component(z, ent, name)
+    mem = z.deref(c + 0x10) if c is not None else None
+    if mem is not None:
+        struct.pack_into('<f', *z._loc(mem + SPEED_OFF), float(speed))
+        return True
+    return False
 
 
 def reuse_scripts(tdep, declared):
@@ -283,6 +331,8 @@ def inject(z, items, read, archives, track_pak, declared=None):
             continue
         new = z.import_entity(src, ent, f'{PREFIX}{i:03d}', old_name=it['entity'])
         set_pose(z, new, it['pos'], it.get('yaw', 0.0), it.get('scale', 1.0), it.get('rx', 0.0), it.get('ry', 0.0))
+        if it.get('speed') is not None and not set_anim_speed(z, new, f'{PREFIX}{i:03d}', it['speed']):
+            report.append(f"{it['entity']} : vitesse d'animation non modifiable (pas de script common_Delay_Animation)")
         tdep, follow = reuse_scripts(entity_tdep(src, ent), declared)
         z.add_tdep(tdep)
         e, c, missing = install_files(archives, follow, track_pak, it['pak'])

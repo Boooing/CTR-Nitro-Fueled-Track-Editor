@@ -153,10 +153,11 @@ def inject(z, preset, density, paths, read, archives, track_pak):
             report.append(f'effet introuvable : {effect} ({pak})')
             continue
         old = dict((o, nm) for nm, o in src.root_objects()).get(ent)
-        for p in pos:
-            new = z.import_entity(src, ent, f'{PREFIX}{n:04d}', old_name=old)
-            _set_position(z, new, p)
-            n += 1
+        with z.defer_roots():                       # une reecriture de la liste racine pour tout l'effet
+            for p in pos:
+                new = z.import_entity(src, ent, f'{PREFIX}{n:04d}', old_name=old)
+                _set_position(z, new, p)
+                n += 1
         z.add_tdep([pair])
         e, c, missing = animated.install_files(archives, [pair], track_pak, pak)
         entries += [x for x in e if x not in entries]

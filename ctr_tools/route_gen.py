@@ -25,33 +25,52 @@ MAX_EXTENT = 3000 * 39.37      # po : au-dela, la map a ete importee trop grande
 
 
 def rasterize(tris, cell=CELL):
-    """Masque booleen de la route vue de dessus + hauteur max par pixel, origine et taille de cellule."""
+    """Masque booleen de la route vue de dessus + hauteur max par pixel, origine et taille de cellule.
+    Triangles traites par paquets de meme taille de boite (K x K pixels) au lieu d'un par un : memes calculs pixel
+    par pixel, ~10 fois plus rapide sur une grande route."""
     T = np.asarray(tris, np.float64)
     lo = T[:, :, :2].min((0, 1)) - 4 * cell
     hi = T[:, :, :2].max((0, 1)) + 4 * cell
     W, H = (np.ceil((hi - lo) / cell).astype(int) + 1)
     mask = np.zeros((H, W), bool)
     zmap = np.full((H, W), -np.inf)
-    for t in T:
-        a, b, c = t[:, :2]
-        x0, y0 = np.floor((t[:, :2].min(0) - lo) / cell).astype(int)
-        x1, y1 = np.ceil((t[:, :2].max(0) - lo) / cell).astype(int)
-        gx, gy = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
-        px, py = lo[0] + (gx + 0.5) * cell, lo[1] + (gy + 0.5) * cell
-        v0, v1 = b - a, c - a
-        den = v0[0] * v1[1] - v1[0] * v0[1]
-        if abs(den) < 1e-9:
-            continue
-        qx, qy = px - a[0], py - a[1]
-        u = (qx * v1[1] - v1[0] * qy) / den
-        v = (v0[0] * qy - qx * v0[1]) / den
-        ins = (u >= -0.02) & (v >= -0.02) & (u + v <= 1.02)
-        if not ins.any():
-            continue
-        z = t[0, 2] + u * (t[1, 2] - t[0, 2]) + v * (t[2, 2] - t[0, 2])
-        yy, xx = gy[ins], gx[ins]
-        mask[yy, xx] = True
-        zmap[yy, xx] = np.maximum(zmap[yy, xx], z[ins])
+    if not len(T):
+        return mask, zmap, lo, cell
+    a, b, c = T[:, 0, :2], T[:, 1, :2], T[:, 2, :2]
+    x0, y0 = np.floor((T[:, :, :2].min(1) - lo) / cell).astype(int).T
+    x1, y1 = np.ceil((T[:, :, :2].max(1) - lo) / cell).astype(int).T
+    v0, v1 = b - a, c - a
+    den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+    keep = np.abs(den) >= 1e-9
+    side = np.maximum(x1 - x0, y1 - y0) + 1
+    K = np.ones(len(T), int)
+    while (K < side).any():
+        K = np.where(K < side, K * 2, K)
+    for k in np.unique(K[keep]):
+        ids = np.nonzero(keep & (K == k))[0]
+        r = np.arange(k)
+        step = max(1, 250_000 // (k * k))                 # ~250 000 pixels par paquet : ~30 Mo au plus (PC modeste)
+        for s0 in range(0, len(ids), step):
+            I = ids[s0:s0 + step]
+            gx = x0[I, None, None] + r[None, None, :]
+            gy = y0[I, None, None] + r[None, :, None]
+            valid = (gx <= x1[I, None, None]) & (gy <= y1[I, None, None])
+            px, py = lo[0] + (gx + 0.5) * cell, lo[1] + (gy + 0.5) * cell
+            ax, ay = a[I, 0, None, None], a[I, 1, None, None]
+            v0x, v0y = v0[I, 0, None, None], v0[I, 1, None, None]
+            v1x, v1y = v1[I, 0, None, None], v1[I, 1, None, None]
+            dn = den[I, None, None]
+            qx, qy = px - ax, py - ay
+            u = (qx * v1y - v1x * qy) / dn
+            v = (v0x * qy - qx * v0y) / dn
+            ins = valid & (u >= -0.02) & (v >= -0.02) & (u + v <= 1.02)
+            if not ins.any():
+                continue
+            tz = T[I, :, 2]
+            z = tz[:, 0, None, None] + u * (tz[:, 1, None, None] - tz[:, 0, None, None]) + v * (tz[:, 2, None, None] - tz[:, 0, None, None])
+            yy, xx = np.broadcast_to(gy, ins.shape)[ins], np.broadcast_to(gx, ins.shape)[ins]
+            mask[yy, xx] = True
+            np.maximum.at(zmap, (yy, xx), z[ins])
     return mask, zmap, lo, cell
 
 

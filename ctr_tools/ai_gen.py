@@ -48,22 +48,44 @@ class GroundQuery:
                     vals.append(p.value)
         return cls(tris, vals)
 
+    def _cell(self, key):
+        """Donnees d'une cellule de la grille calculees une fois (memes formules que avant, au lieu de les refaire
+        a chaque appel : at / heights sont appeles des centaines de milliers de fois)."""
+        c = self._cells.get(key) if hasattr(self, '_cells') else None
+        if c is None:
+            idx = self.grid.get(key)
+            if idx is None:
+                return None
+            if not hasattr(self, '_cells'):
+                self._cells = {}
+            t = self.t[idx]
+            a, b, cc = t[:, 0], t[:, 1], t[:, 2]
+            v0, v1 = b[:, :2] - a[:, :2], cc[:, :2] - a[:, :2]
+            den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+            ok = np.abs(den) > 1e-9
+            den = np.where(ok, den, 1.0)
+            c = self._cells[key] = (idx, a[:, 0].copy(), a[:, 1].copy(), a[:, 2].copy(), v0[:, 0].copy(), v0[:, 1].copy(),
+                                    v1[:, 0].copy(), v1[:, 1].copy(), den, ok, b[:, 2] - a[:, 2], cc[:, 2] - a[:, 2])
+        return c
+
+    def _uvz(self, x, y):
+        c = self._cell((math.floor(x / CELL), math.floor(y / CELL)))
+        if c is None:
+            return None
+        idx, ax, ay, az, v0x, v0y, v1x, v1y, den, ok, dbz, dcz = c
+        px, py = x - ax, y - ay
+        u = (px * v1y - v1x * py) / den
+        v = (v0x * py - px * v0y) / den
+        inside = ok & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6)
+        return idx, inside, az, u, v, dbz, dcz
+
     def heights(self, x, y):
         """Hauteurs de tous les niveaux de sol sous (x, y), du plus haut au plus bas."""
-        idx = self.grid.get((math.floor(x / CELL), math.floor(y / CELL)))
-        if idx is None:
+        r = self._uvz(x, y)
+        if r is None:
             return []
-        t = self.t[idx]
-        a, b, c = t[:, 0], t[:, 1], t[:, 2]
-        v0, v1 = b[:, :2] - a[:, :2], c[:, :2] - a[:, :2]
-        p = np.array([x, y]) - a[:, :2]
-        den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
-        ok = np.abs(den) > 1e-9
-        den = np.where(ok, den, 1.0)
-        u = (p[:, 0] * v1[:, 1] - v1[:, 0] * p[:, 1]) / den
-        v = (v0[:, 0] * p[:, 1] - p[:, 0] * v0[:, 1]) / den
-        inside = ok & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6)
-        z = a[:, 2] + u * (b[:, 2] - a[:, 2]) + v * (c[:, 2] - a[:, 2])
+        idx, inside, az, u, v, dbz, dcz = r
+        z = az + u * dbz + v * dcz
         return sorted((float(h) for h in z[inside]), reverse=True)
 
     def top(self, x, y, z_ref, above=300.0):
@@ -73,22 +95,13 @@ class GroundQuery:
 
     def at(self, x, y, z_hint=None, window=400.0):
         """(z, surface) du sol sous (x, y) ; parmi plusieurs niveaux (pont), le plus proche de z_hint."""
-        idx = self.grid.get((math.floor(x / CELL), math.floor(y / CELL)))
-        if idx is None:
+        r = self._uvz(x, y)
+        if r is None:
             return None
-        t = self.t[idx]
-        a, b, c = t[:, 0], t[:, 1], t[:, 2]
-        v0, v1 = b[:, :2] - a[:, :2], c[:, :2] - a[:, :2]
-        p = np.array([x, y]) - a[:, :2]
-        den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
-        ok = np.abs(den) > 1e-9
-        den = np.where(ok, den, 1.0)
-        u = (p[:, 0] * v1[:, 1] - v1[:, 0] * p[:, 1]) / den
-        v = (v0[:, 0] * p[:, 1] - p[:, 0] * v0[:, 1]) / den
-        inside = ok & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6)
+        idx, inside, az, u, v, dbz, dcz = r
         if not inside.any():
             return None
-        z = a[:, 2] + u * (b[:, 2] - a[:, 2]) + v * (c[:, 2] - a[:, 2])
+        z = az + u * dbz + v * dcz
         cand = np.nonzero(inside)[0]
         if z_hint is None:
             k = cand[np.argmax(z[cand])]
@@ -210,7 +223,7 @@ def road_width(ground, p, side, z, road):
 
 
 def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, sample=300.0, point_spacing=2500.0,
-                   lift=80.0, keep_air=False, road_ground=None):
+                   lift=80.0, keep_air=False, road_ground=None, spread=0.7):
     """Voies IA le long de `reference`. Retourne {'lanes', 'widths', 'road_surfaces'}.
     keep_air : la hauteur de la reference est gardee quand elle passe au-dessus du sol (sauts) : z = max(sol + lift,
     hauteur de la reference).
@@ -272,7 +285,9 @@ def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, 
     turn = _smooth(_smooth(turn, max(1, int(round(1200 / sample)))), 3)
     lanes = []
     for j in range(n):
-        base = -1 + 2 * (j + 0.5) / n                   # -1 (gauche) .. +1 (droite)
+        # -1 (gauche) .. +1 (droite), resserre par spread (2026-11-18, « splines IA trop dispersees ») : part de la largeur
+        # utile occupee par les voies (1 = toute la largeur comme avant, 0,7 par defaut : voies groupees vers le milieu)
+        base = (-1 + 2 * (j + 0.5) / n) * max(0.05, min(1.0, spread))
         waves = [(rnd.uniform(0.5, 1.0), rnd.uniform(1.0, 4.0), rnd.uniform(0, 2 * math.pi)) for _ in range(3)]
         want, lo, hi, s_acc = [], [], [], 0.0
         for i, p in enumerate(samples):
@@ -280,7 +295,7 @@ def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, 
                 s_acc += ds[i - 1]
             u = s_acc / total
             noise = sum(a * math.sin(2 * math.pi * f * u + ph) for a, f, ph in waves) / 2.5
-            frac = max(-1.0, min(1.0, base + randomness * 0.6 * noise))
+            frac = max(-1.0, min(1.0, base + randomness * 0.6 * noise * max(0.05, min(1.0, spread))))
             # frac > 0 : vers la droite (-normale) ; marge laissee aux bords (pourcentage ET distance minimale)
             side = rights[i] if frac > 0 else lefts[i]
             mag = min(abs(frac) * side * (1 - margin), max(0.0, side - CLEARANCE))
@@ -365,33 +380,53 @@ COVER_LO, COVER_HI = 60.0, 1500.0    # po : dessus 1,5 a 38 m au-dessus de la ro
 INSIDE_R = 1000.0                    # po : interieur = face raide touchee dans les 4 directions a moins de ~25 m
 
 
+def _seg_data(ground):
+    """Donnees de segment_blocked calculees une fois par sol (le sol ne change pas) : aretes e1 / e2 de chaque
+    triangle, faces raides, et grille reduite aux faces raides (la route et les pentes douces, l'essentiel des
+    triangles, ne sont jamais testees avec steep)."""
+    d = getattr(ground, '_segd', None)
+    if d is None:
+        T = ground.t
+        e1, e2 = T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]
+        nr = np.cross(e1, e2)
+        steep = np.abs(nr[:, 2]) < 0.5 * np.linalg.norm(nr, axis=1)
+        sgrid = {}
+        for c, idx in ground.grid.items():
+            k = idx[steep[idx]]
+            if len(k):
+                sgrid[c] = k
+        d = ground._segd = (np.ascontiguousarray(T[:, 0]), e1, e2, sgrid)
+    return d
+
+
 def segment_blocked(ground, a, b, steep=False):
     """Le segment a -> b (3D) traverse-t-il un triangle du sol ? (Moller-Trumbore sur les triangles des cellules de
     la grille traversees.) steep : seulement les faces raides (pente > ~60 deg : pas un tremplin ni la route)."""
-    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    ax, ay, az = float(a[0]), float(a[1]), float(a[2])
+    dx, dy, dz = float(b[0]) - ax, float(b[1]) - ay, float(b[2]) - az
+    t0, E1, E2, sgrid = _seg_data(ground)
+    grid = sgrid if steep else ground.grid
     cells = set()
-    n = max(1, int(math.ceil(np.linalg.norm(b[:2] - a[:2]) / (CELL / 2))))
+    n = max(1, int(math.ceil(math.hypot(dx, dy) / (CELL / 2))))
     for k in range(n + 1):
-        p = a + (b - a) * (k / n)
-        cells.add((math.floor(p[0] / CELL), math.floor(p[1] / CELL)))
-    idx = [ground.grid[c] for c in cells if c in ground.grid]
+        f = k / n
+        cells.add((math.floor((ax + dx * f) / CELL), math.floor((ay + dy * f) / CELL)))
+    idx = [grid[c] for c in cells if c in grid]
     if not idx:
         return False
-    T = ground.t[np.unique(np.concatenate(idx))]
-    d = b - a
-    e1, e2 = T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]
-    h = np.cross(np.broadcast_to(d, e2.shape), e2)
-    det = np.einsum('ij,ij->i', e1, h)
+    sel = idx[0] if len(idx) == 1 else np.unique(np.concatenate(idx))
+    e1, e2, p0 = E1[sel], E2[sel], t0[sel]
+    e1x, e1y, e1z = e1[:, 0], e1[:, 1], e1[:, 2]
+    e2x, e2y, e2z = e2[:, 0], e2[:, 1], e2[:, 2]
+    hx, hy, hz = dy * e2z - dz * e2y, dz * e2x - dx * e2z, dx * e2y - dy * e2x      # h = d x e2
+    det = e1x * hx + e1y * hy + e1z * hz
     ok = np.abs(det) > 1e-9
-    if steep:
-        nr = np.cross(e1, e2)
-        ok &= np.abs(nr[:, 2]) < 0.5 * np.linalg.norm(nr, axis=1)
     inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
-    s = a - T[:, 0]
-    u = np.einsum('ij,ij->i', s, h) * inv
-    q = np.cross(s, e1)
-    v = (q @ d) * inv
-    t = np.einsum('ij,ij->i', e2, q) * inv
+    sx, sy, sz = ax - p0[:, 0], ay - p0[:, 1], az - p0[:, 2]
+    u = (sx * hx + sy * hy + sz * hz) * inv
+    qx, qy, qz = sy * e1z - sz * e1y, sz * e1x - sx * e1z, sx * e1y - sy * e1x      # q = s x e1
+    v = (qx * dx + qy * dy + qz * dz) * inv
+    t = (e2x * qx + e2y * qy + e2z * qz) * inv
     return bool((ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t >= 0) & (t <= 1)).any())
 
 

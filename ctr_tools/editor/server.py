@@ -23,7 +23,9 @@ API :
 La base d'une sauvegarde est la derniere version sauvee (si elle existe), sinon l'original le plus recent
 (update2 > update > archive de la piste, lu a travers une eventuelle installation de mod).
 """
+import base64
 import collections
+import filecmp
 import gzip
 import io
 import json
@@ -243,7 +245,11 @@ def load_track(track):
             'transitions': transitions, 'forks': rs['fork_checkers'], 'player_starts': rs['player_starts'],
             'starting_splines': starting, 'start_grid': grid, 'player_start': player_start, 'crates': crates,
             'teleporters': teleporters_of(track, ed), 'portals': portals_of(track, ed), 'flyby': flyby_info(track), 'original_start': original_start(track),
-            'collision': load_collision(track), 'fall_zones': read_fall_zones(track), 'cam_zones': read_cam_zones(track)}
+            'collision': load_collision(track), 'fall_zones': read_fall_zones(track), 'cam_zones': read_cam_zones(track),
+            'grav_zones': read_grav_zones(track),
+            # parcours deja cree depuis la route (« Créer le parcours » / generation : route memorisee) : une map
+            # importee sans parcours doit d'abord le creer (2026-11-16)
+            'course_done': os.path.exists(road_source_path(track))}
 
 
 # -- zones de chute (CEntity + CTriggerVolumeBoxComponentData + CRespawnTriggerComponentData du _Design) -----------
@@ -459,6 +465,106 @@ def _has_cam_entities(track):
     except KeyError:
         return False
     return any(n and n.startswith(CAM_PREFIX) for n, _ in dz.root_objects())
+
+
+# -- zones de gravite (2026-11-16) : basse (ou forte) gravite dans une boite, comme le passage en apesanteur d'Oxide Station.
+# Entite « AntiGravZone001 » de son _Design copiee dans le _Design de la piste : boite de declenchement + script
+# AntiGravZone_OxideStation (entree d'un kart : CKartNodes::setGravityMultiplier_VSC(kart, valeur) ; sortie : remise a la
+# normale - Oxide Station enchaine 0,32 / 0,55 puis 1,5 a 4,5 et rien ne remet 1 : la sortie le fait). Valeur = parametre du
+# script, propre a chaque zone (float de _dynamicFieldMemory du CVscComponentData). Script copie dans l'archive de la piste
+# a l'installation (il n'est que dans celle d'Oxide Station).
+GRAV_DONOR = ('t154_oxide_station.pak', 'maps/Octane/T154_Oxide_Station/T154_Oxide_Station_Design.igz', 'AntiGravZone001')
+GRAV_PREFIX = 'EdGravZone_'
+GRAV_TDEP = ('AntiGravZone_OxideStation', 'vsc:/Octane/T154_Oxide_Station/AntiGravZone_OxideStation.igz')
+GRAV_SCRIPT = 'vsc/octane/t154_oxide_station/antigravzone_oxidestation.igz'
+GRAV_RANGE = (0.05, 5.0)      # multiplicateur de gravite (Oxide Station : 0,32 a 4,5)
+
+
+def _grav_value_offset(z, ent):
+    """Adresse du float « gravite » (parametre du script) de l'entite, ou None."""
+    for c in _components_of(z, ent, 'CVscComponentData'):
+        mem = z.dump_object(c).get('_dynamicFieldMemory')
+        if isinstance(mem, dict) and '@mem' in mem:
+            return int(mem['@mem'], 16)
+    return None
+
+
+def read_grav_zones(track):
+    """[{name, pos, dims, gravity}] des zones de gravite ajoutees par l'editeur (pas celles ecartees sous la carte)."""
+    try:
+        dz = IgzFile(base_file(track, start_finish.design_file(track))[0])
+    except KeyError:
+        return []
+    out = []
+    for name, ent in dz.root_objects():
+        if not name or not name.startswith(GRAV_PREFIX) or dz.objects.get(ent) not in DESIGN_ENTITY_TYPES:
+            continue
+        boxes = _components_of(dz, ent, 'CTriggerVolumeBoxComponentData')
+        pos = [round(v, 1) for v in dz.vec3(ent + 0x20)]
+        if not boxes or pos[2] < FAR_BELOW / 2:
+            continue
+        g = _grav_value_offset(dz, ent)
+        out.append({'name': name, 'pos': pos, 'dims': [round(v, 1) for v in dz.vec3(dz.find_field(boxes[0], '_dimensions')[0])],
+                    'gravity': round(dz.f32(g), 3) if g is not None else 0.5})
+    return out
+
+
+def write_grav_zones(track, zones):
+    """Zones de gravite de l'editeur : [{name (absent : nouvelle), pos, dims, gravity, deleted}] -> _Design enregistre."""
+    logical = start_finish.design_file(track)
+    dz = IgzFile(base_file(track, logical)[0])
+    roots = {n: o for n, o in dz.root_objects() if n}
+    used = {int(n[len(GRAV_PREFIX):]) for n in roots if n.startswith(GRAV_PREFIX) and n[len(GRAV_PREFIX):].isdigit()}
+    donor = None
+    added = moved = removed = 0
+    for z in zones:
+        ent = roots.get(z.get('name')) if z.get('name') else None
+        if ent is None:
+            if z.get('deleted'):
+                continue
+            if donor is None:
+                src = IgzFile(pak_tool.read_latest(ARCHIVES, GRAV_DONOR[1], GRAV_DONOR[0])[0])
+                donor = (src, dict(src.root_objects())[GRAV_DONOR[2]])
+            k = 1
+            while k in used:
+                k += 1
+            used.add(k)
+            ent = dz.import_entity(donor[0], donor[1], f'{GRAV_PREFIX}{k:03d}', old_name=GRAV_DONOR[2])
+            box = _components_of(dz, ent, 'CTriggerVolumeBoxComponentData')[0]
+            dz.set_field(box, '_offset', [0.0, 0.0, 0.0])
+            dz.set_field(box, '_rotation', [0.0, 0.0, 0.0])
+            added += 1
+        else:
+            if z.get('deleted'):
+                p = list(dz.vec3(ent + 0x20))
+                struct.pack_into('<3f', *dz._loc(ent + 0x20), p[0], p[1], FAR_BELOW)
+                removed += 1
+                continue
+            moved += 1
+        box = _components_of(dz, ent, 'CTriggerVolumeBoxComponentData')[0]
+        struct.pack_into('<3f', *dz._loc(ent + 0x20), *[float(c) for c in z['pos']])
+        dz.set_field(box, '_dimensions', [max(CAM_MIN, float(c)) for c in z['dims']])
+        g = _grav_value_offset(dz, ent)
+        if g is None:
+            raise ValueError(f'{ent:#x} : paramètre de gravité introuvable dans le script copié')
+        struct.pack_into('<f', *dz._loc(g), min(GRAV_RANGE[1], max(GRAV_RANGE[0], float(z.get('gravity', 0.5)))))
+    if added:
+        dz.add_tdep([GRAV_TDEP])
+    open(saved_path(logical), 'wb').write(dz.to_bytes())
+    return [f'zones de gravité : {added} ajoutée(s), {moved} placée(s)' + (f', {removed} supprimée(s)' if removed else '')]
+
+
+def grav_install_files(track):
+    """(entrees du manifeste, {fichier: archive source}) si le _Design a des entites zone de gravite (aussi supprimees :
+    descendues sous la carte, elles visent toujours le script)."""
+    try:
+        dz = IgzFile(base_file(track, start_finish.design_file(track))[0])
+    except KeyError:
+        return [], {}
+    if not any(n and n.startswith(GRAV_PREFIX) for n, _ in dz.root_objects()):
+        return [], {}
+    copies = {} if library.available(ARCHIVES, GRAV_SCRIPT, track_pak(track)) else {GRAV_SCRIPT: GRAV_DONOR[0]}
+    return [('vsc', GRAV_SCRIPT)], copies
 
 
 def cam_install_files(track):
@@ -917,7 +1023,7 @@ def route_layout(req):
     kz = min(kz_saved, world_killz(track, original=True))
     if len(tris) and float(np.median(tris[:, :, 2])) < kz:
         raise ValueError(f'la route est a z = {float(np.median(tris[:, :, 2])):.0f}, sous le plancher de chute du monde '
-                         f'({kz:.0f}) : les karts y seraient « tombes ». Remonte la map (mode Decor), ou refais « Chutes '
+                         f'({kz:.0f}) : les karts y seraient « tombes ». Remonte la map (Édition › Toute la map › Déplacer toute la map), ou refais « Chutes '
                          f'et reapparitions » apres avoir cree le parcours.')
     heading = float(req.get('heading', 0)) + (math.pi if req.get('reverse') else 0.0)
     start = req['start']
@@ -955,7 +1061,7 @@ def route_layout(req):
             except ValueError:
                 continue
         if not found:
-            raise ValueError(f'{e} — la selection ne forme pas un circuit ferme : en mode Decor, selectionne la ROUTE '
+            raise ValueError(f'{e} — la selection ne forme pas un circuit ferme : dans la vue 3D, selectionne la ROUTE '
                              f'importee (objet dont le nom contient « Road »), pas la ligne de depart ou le decor') from None
         what = ', '.join(o['name'] for o in src.get('objects', [])) or 'les surfaces du sol'
         src, tris, loop = found
@@ -1162,7 +1268,11 @@ def old_route_moves(track):
     ({nom: {pos, yaw}}), embranchements du RaceSystem ({nom: pos})."""
     dz = base_file(track, start_finish.design_file(track))[0]
     zd = IgzFile(dz)
-    trig = [n for n, o in zd.root_objects() if zd.objects.get(o) in ('CEntity', 'CGameEntity', 'igEntity')]
+    # sauf les ajouts de l'Edition (boosters, zones de gravite / camera) : poses par l'utilisateur, ils restent a leur place
+    # (2026-11-17 : chaque generation les ecartait sous la carte, les boosters reposes etaient remplaces par ceux du hasard)
+    own = (powerup.BOOST_OWN, GRAV_PREFIX, CAM_PREFIX)
+    trig = [n for n, o in zd.root_objects() if zd.objects.get(o) in ('CEntity', 'CGameEntity', 'igEntity')
+            and not (n or '').startswith(own)]
     design_moves = {n: {'pos': p['pos'][:2] + [FAR_BELOW], 'yaw': p['yaw']}
                     for n, p in start_finish.read_entity_poses(dz, trig).items()}
     rs = RaceSystem(base_file(track, race_file(track))[0], file_ns=race_ns(track)).decode()
@@ -1317,7 +1427,8 @@ def route_objects(track):
 
 def gen_ai_splines(req):
     """Voies IA generees le long d'un trace d'apres le sol (collision enregistree, donc decor importe compris) :
-    req = {track, reference: [[x,y,z]...], lanes, randomness (0..1), margin (0..0.9), seed, spacing}.
+    req = {track, reference: [[x,y,z]...], lanes, randomness (0..1), margin (0..0.9), seed, spacing, spread (0,05..1 : part
+    de la largeur occupee par les voies, 0,7 par defaut)}.
     Largeur de la route : mesuree sur les objets de route memorises s'il y en a (road_ground)."""
     progress.step('lecture du sol', 0.05)
     ground, road = ground_for(req['track']), road_ground(req['track'])
@@ -1325,7 +1436,8 @@ def gen_ai_splines(req):
     r = ai_gen.generate_lanes(ground, req['reference'], n=max(1, min(12, int(req.get('lanes', 5)))),
                               randomness=float(req.get('randomness', 0.5)), margin=float(req.get('margin', 0.15)),
                               seed=int(req.get('seed', 1)), point_spacing=float(req.get('spacing', 2500)),
-                              keep_air=bool(req.get('keep_air')), road_ground=road)
+                              keep_air=bool(req.get('keep_air')), road_ground=road,
+                              spread=float(req.get('spread', 0.7)))
     w = [a + b for a, b in r['widths']]
     r['width_summary'] = {'min': round(min(w)), 'median': round(float(np.median(w))), 'max': round(max(w))}
     r['widths'] = [[round(a), round(b)] for a, b in r['widths']]
@@ -1341,7 +1453,8 @@ def crates_auto(req):
                                  skip=float(req.get('skip', 0.12)), fruit=max(0, min(30, int(req.get('fruit', 0)))),
                                  tnt=max(0, min(30, int(req.get('tnt', 0)))), nitro=max(0, min(30, int(req.get('nitro', 0)))),
                                  wumpa_lines=max(0, min(30, int(req.get('wumpa_lines', 0)))),
-                                 wumpa_per_line=max(1, min(12, int(req.get('wumpa_per_line', 5)))))
+                                 wumpa_per_line=max(1, min(12, int(req.get('wumpa_per_line', 5)))),
+                                 avoid=[a[:3] for a in (req.get('avoid') or [])[:200] if len(a) >= 3])
     return {'crates': out, 'report': rep}
 
 
@@ -1477,13 +1590,17 @@ def crates_supported(track):
     return crate_file(track) is not None
 
 
-def write_crates_file(track, want):
+def write_crates_file(track, want, measure=True):
     """Fichier des caisses reconstruit (caisses, boosters, TNT / Nitro / fruits), caisses inclinees comme la pente du
     sol : _Power_Up depuis l'original ; _Design depuis le fichier enregistre, seules ses caisses changent. Boosters
     toujours dans le _Design (enregistre ici quand le fichier des caisses est le _Power_Up) : c'est la que le jeu
-    range les siens, et ils agissent alors aussi en contre-la-montre. -> (IgzFile du fichier des caisses, rapport)."""
+    range les siens, et ils agissent alors aussi en contre-la-montre. -> (IgzFile du fichier des caisses, rapport).
+    measure=False (generation de la piste, 2026-11-17) : caisses posees ou deplacees laissees a plat, sans lire le sol
+    (la collision, invalidee par la generation, etait recalculee pour rien : ~23 s sur une grande map) ;
+    l'enregistrement de la course qui suit les incline sur le sol a jour (crates_tilt_outdated)."""
     if not crates_supported(track):
         raise ValueError(f'{track} : fichier des caisses introuvable (ni _Power_Up ni _Design)')
+    height = _crate_height_at(track) if measure else None
     read = lambda p, pak: pak_tool.read_latest(ARCHIVES, p, pak)[0]
     boosts = [c for c in want if c['kind'] == 'boost']
     # plaques modeles : classique (Sewer Speedway) et / ou super turbo (Polar Pass), seulement celles utilisees
@@ -1494,10 +1611,10 @@ def write_crates_file(track, want):
     orig = read(logical, track_pak(track))
     if crates_in_design(track):
         keep = {(c['name'], tuple(c['pos'])) for c in powerup.read_crates(orig, True)}
-        z, msg, _ = powerup.write_crates(base_file(track, logical)[0], want, donor, extras, _crate_height_at(track),
+        z, msg, _ = powerup.write_crates(base_file(track, logical)[0], want, donor, extras, height,
                                          crates_only=True, keep_tilt=keep, ns=ns(logical))
         return z, msg
-    z, msg, _ = powerup.write_crates(orig, [c for c in want if c['kind'] != 'boost'], None, extras, _crate_height_at(track))
+    z, msg, _ = powerup.write_crates(orig, [c for c in want if c['kind'] != 'boost'], None, extras, height)
     if boosts or design_boosts(track):
         design = start_finish.design_file(track)
         dz, more = powerup.write_boosts(base_file(track, design)[0], boosts, donor, ns(design))
@@ -1848,6 +1965,8 @@ def save_track(req):
         report += write_fall_zones(track, req['fall_zones'])
     if req.get('cam_zones') is not None:                  # zones camera (parois roulables) ajoutees / modifiees
         report += write_cam_zones(track, req['cam_zones'])
+    if req.get('grav_zones') is not None:                 # zones de gravite (2026-11-16)
+        report += write_grav_zones(track, req['grav_zones'])
     if req.get('player_start'):
         logical = start_finish.main_map_file(track)
         data = base_file(track, logical)[0]
@@ -2002,9 +2121,15 @@ def load_decor(track):
     for logical in art_files(track):
         data, src = base_file(track, logical)
         objs = DecorFile(data).objects()
+        orig = original_ids(track, logical)
         for o in objs:                                   # modeles importes : texture, surface, transparence
             info = reg.get(model_logical_path(o['model']))
             lk = links.get(logical, {}).get(str(o['id']))
+            # ajoute dans Edition (ni d'origine, ni genere par la Creation : sol / route importes, decor seme) : montre
+            # aussi dans la vue de la Creation (B3)
+            o['csown'] = isinstance(lk, dict) and lk.get('tag') == 'creator'      # decor seme par la Creation (genere)
+            o['added'] = (o['id'] not in orig and not (isinstance(lk, dict) and lk.get('tag') == 'creator')
+                          and not (info and str(info.get('import') or '').startswith(os.path.splitext(track_creator.OBJ_NAME)[0] + ' —')))
             if info:
                 o['custom_material'] = labels.get(info.get('material'), 'roche du gabarit')
                 o['surface'] = lk.get('surface', 'auto') if isinstance(lk, dict) else 'auto'
@@ -2445,8 +2570,8 @@ def sky_report(track):
                                      f"({os.path.basename(lf)})", 'sky'))
         if not name:
             if newmap_settings(track).get('strip_art'):
-                out.append(('attention', 'cette piste n\'a pas de ciel (son fond était un décor, retiré par « Nouvelle map ») : '
-                                         'grosses traînées en jeu → mode Décor › Ambiance › Ciel', 'sky'))
+                out.append(('attention', 'cette piste n\'a pas de ciel (son fond était un décor, retiré quand la map a été vidée) : '
+                                         'grosses traînées en jeu → Habillage › Ambiance et météo (ciel)', 'sky'))
             return out
         model = 'sky/' + name.replace('\\', '/').strip('/').lower() + '.igz'
         entries, copies = sky_install_files(track)
@@ -2498,7 +2623,7 @@ def sky_report(track):
             if absent:
                 bits.append(f"{len(absent)} absent(s) des archives lues en course ({', '.join(map(short, absent[:3]))})")
             out.append(('erreur', f"le ciel « {name} » ne s'affichera pas en jeu : " + ' ; '.join(bits)
-                                  + ' → mode Décor › Ambiance › Ciel', 'sky'))
+                                  + ' → Habillage › Ambiance et météo (ciel)', 'sky'))
         else:
             out.append(('ok', f"ciel « {name} » prévu : modèle, {n_mat} matériau(x) et {n_tex} texture(s) déclarés au "
                               f"manifeste et présents dans les archives lues en course"
@@ -2666,14 +2791,14 @@ def apply_newmap(req):
         report.append(f'{os.path.basename(art)[len(track) + 1:-4]} : {n0} -> {n1} objets'
                       + (f' dont {len(remove[art])} ajout(s) supprime(s)' if remove[art] else ''))
     if s['strip_ground'] or s['strip_art']:              # map videe : boosters de l'ancien sol retires (apres les
-        msg = remove_boosters(track)                     # fichiers de decor : leurs ids d'ajouts sont remappes)
+        msg = remove_boosters(track, measure=not req.get('no_measure'))   # (fichiers de decor : ids remappes)
         if msg:
             report.append(msg)
     report.append(defer_collision(track))
     return {'report': report, 'settings': s, 'remaining': remaining_elements(track)}
 
 
-def remove_boosters(track):
+def remove_boosters(track, measure=True):
     """Boosters ajoutes par l'editeur (zones du _Design, ou d'un ancien _Power_Up) et leurs plaques au sol retires :
     « Nouvelle map », generation de l'onglet Creation (le sol change, ils restaient poses sur l'ancien). Caisses et
     boosters du jeu inchanges. -> rapport ou None."""
@@ -2683,7 +2808,7 @@ def remove_boosters(track):
     n = sum(c['kind'] == 'boost' for c in cur)
     if n:
         logical = crate_file(track)
-        z, _ = write_crates_file(track, [c for c in cur if c['kind'] != 'boost'])
+        z, _ = write_crates_file(track, [c for c in cur if c['kind'] != 'boost'], measure=measure)
         safe_compact(track, logical, z)
         z.save(saved_path(logical))
     vis = sync_boost_visuals(track, [])
@@ -2696,6 +2821,7 @@ def write_art(track, logical, df, restore_originals=False):
     laissaient des blocs abandonnes (anciennes listes racine, ~500 Ko par objet ajoute) : le fichier reste ainsi
     a la taille de l'original + les objets ajoutes. Les ids des objets ajoutes changent : liens remappes.
     Retourne {ancien id: nouvel id}."""
+    refresh_blank_track(track, logical)              # piste faite avec le 1er modele de map vide : archive refaite
     links = load_links(track)
     fl = links.get(logical, {})
     orig = DecorFile(pak_tool.read_latest(ARCHIVES, logical, track_pak(track))[0])
@@ -2782,8 +2908,24 @@ def model_preview_binary(track, file_name):
         _preview_cache[logical] = (struct.pack('<III', len(P), len(I), 0) + P.tobytes() + np.zeros((len(P), 2), '<f4').tobytes()
                                    + I.tobytes() + struct.pack('<I', 2) + b'[]')
     if logical not in _preview_cache:
+        # cache disque par contenu (2026-11-18) : 585 modeles de T922 = ~3 s a chaque demarrage du serveur sinon
+        import hashlib
         try:
-            pv = preview.model_preview(model_bytes(track, logical), lambda lg: preview_read(track, lg))
+            data = model_bytes(track, logical)
+            # modeles importes : materiaux modifiables a cote d'un modele inchange -> pas de cache disque
+            disk = None if logical.lower().startswith(f'models/{CUSTOM_DIR.lower()}/') else                 os.path.join(OUT_DIR, 'cache', 'models', f'{hashlib.md5(data).hexdigest()}_v{PREVIEW_CACHE_VERSION}.bin')
+        except Exception:  # noqa: BLE001 - modele introuvable : traite plus bas (apercu vide)
+            data, disk = None, None
+        if disk and os.path.exists(disk):
+            try:
+                _preview_cache[logical] = open(disk, 'rb').read()
+                return _preview_cache[logical]
+            except OSError:
+                pass
+        try:
+            if data is None:
+                raise KeyError(logical)
+            pv = preview.model_preview(data, lambda lg: preview_read(track, lg))
         except Exception:  # noqa: BLE001 - modele illisible : vide
             traceback.print_exc()
             pv = {'positions': np.zeros((0, 3), np.float32), 'uvs': np.zeros((0, 2), np.float32),
@@ -2794,7 +2936,18 @@ def model_preview_binary(track, file_name):
         js = json.dumps([{'ns': ns, 'decal': decal} for ns, decal in texs]).encode()
         _preview_cache[logical] = (head + pv['positions'].astype('<f4').tobytes() + pv['uvs'].astype('<f4').tobytes()
                                    + pv['indices'].astype('<u4').tobytes() + groups + struct.pack('<I', len(js)) + js)
+        if disk and len(pv['positions']):
+            try:
+                os.makedirs(os.path.dirname(disk), exist_ok=True)
+                tmp = disk + '.tmp'
+                open(tmp, 'wb').write(_preview_cache[logical])
+                os.replace(tmp, disk)
+            except OSError:
+                pass
     return _preview_cache[logical]
+
+
+PREVIEW_CACHE_VERSION = 2      # change -> apercus disque refaits (2 : pieces des modeles, preview.model_transforms)
 
 
 def texture_png(track, ns, max_size=256):
@@ -2825,7 +2978,7 @@ def save_decor(req):
     deleted: [id]}}, ops: [modifications du clic droit gardees en attente : {op: 'surface', objects, surface} |
     {op: 'invisible', model, invisible}]}. Les ids sont ceux de la version chargee (sauvee ou originale) ; la
     collision n'est recalculee qu'une fois, a la fin."""
-    track, report = req['track'], []
+    track, report, creator_patch = req['track'], [], []
     os.makedirs(OUT_DIR, exist_ok=True)
     if req.get('lights') is not None:                # lumieres ajoutees (lampadaires...) : fichier _Lighting
         report.append('lumières : ' + write_lights(track, req['lights']))
@@ -2845,11 +2998,23 @@ def save_decor(req):
         names = {o['id']: o['name'] for o in df.objects()}
         links = load_links(track)
         file_links = links.setdefault(logical, {})
+        def cr_link(sid):
+            lk = file_links.get(str(sid))
+            return lk if isinstance(lk, dict) and lk.get('u') and lk.get('gen') and isinstance(lk.get('prop'), dict) else None
         for sid, m in ed.get('moves', {}).items():
             # objet sans transformation (position seule) : rotation / echelle neutres envoyees quand meme (pack de
             # maps : decor d'origine deplace par « Deplacer / Changer l'echelle de toute la map ») -> ignorees
             has_tr = df.igz.deref(int(sid) + 0x30) is not None
             df.set_transform(int(sid), m.get('pos'), m.get('euler') if has_tr else None, m.get('scale') if has_tr else None)
+            lk = cr_link(sid)
+            if lk and m.get('pos'):            # objet du decor de la Creation : retouche reportee dans la recette
+                g = lk['gen']
+                pos, eu, sc = m['pos'], m.get('euler') or g['euler'], m.get('scale') or [g['s']] * 3
+                if max(abs(float(a) - float(b)) for a, b in zip(list(pos) + list(eu) + list(sc),
+                                                               list(g['pos']) + list(g['euler']) + [g['s']] * 3)) > 1e-3:
+                    p = _creator_prop_from(lk, pos, eu, sc)
+                    creator_patch.append({'set': p})
+                    lk.update({'prop': p, 'gen': {'pos': list(pos), 'euler': list(eu), 's': float(sc[0])}})
         specs, used = [], set(df.names.values())
         for d in ed.get('duplicates', []):
             src = int(d['src'])
@@ -2860,14 +3025,29 @@ def save_decor(req):
             used.add(f'{base}_copie{k:02d}')
             specs.append((src, f'{base}_copie{k:02d}', d.get('pos'),
                           d.get('euler') if has_tr else None, d.get('scale') if has_tr else None))
-        for (src, *_), new_id in zip(specs, df.duplicate_many(specs)):
+        for (src, _, pos, eu, sc), new_id in zip(specs, df.duplicate_many(specs)):
             # copie -> objet d'origine, ou meme lien que la source (copie de copie / de modele importe)
             file_links[str(new_id)] = file_links.get(str(src), src)
+            lk = cr_link(src)
+            if lk and pos:                     # copie d'un objet du decor de la Creation : nouvel objet de la recette
+                import secrets
+                g = lk['gen']
+                p = {**_creator_prop_from(lk, pos, eu or g['euler'], sc or [g['s']] * 3), 'u': secrets.token_hex(5)}
+                creator_patch.append({'add': p})
+                file_links[str(new_id)] = {**lk, 'u': p['u'], 'prop': p,
+                                           'gen': {'pos': list(pos), 'euler': list(eu or g['euler']), 's': float((sc or [g['s']])[0])}}
+        for s in ed.get('deleted', []):
+            lk = cr_link(s)
+            if lk:
+                creator_patch.append({'del': lk['u']})
         save_links(track, links)
         df.delete_many([int(s) for s in ed.get('deleted', [])])
         write_art(track, logical, df)
         report.append(f'{os.path.basename(logical)} : {len(ed.get("moves", {}))} modifies, '
                       f'{len(ed.get("duplicates", []))} dupliques, {len(ed.get("deleted", []))} supprimes')
+    if creator_patch:
+        creator_apply_patch(track, creator_patch)
+        report.append(f'décor de la Création : {len(creator_patch)} retouche(s) gardée(s) pour la prochaine génération')
     if not req.get('files') and not req.get('ops') and not collision_pending(track):
         return {'report': report, 'boosts_changed': False}  # lumieres seules : decor et collision inchanges
     with progress.span(0.25, 0.95):
@@ -2877,7 +3057,7 @@ def save_decor(req):
     boosts = boosts_from_decor(track)
     if boosts:
         report.append(boosts)
-    return {'report': report, 'boosts_changed': bool(boosts)}
+    return {'report': report, 'boosts_changed': bool(boosts), 'creator_patch': creator_patch}
 
 
 def boosts_from_decor(track):
@@ -2938,7 +3118,7 @@ def save_links(track, links):
 
 
 # -- historique des enregistrements (« Annuler le dernier enregistrement ») ---------------------
-HISTORY_KEEP = 20
+HISTORY_KEEP = 100
 
 
 def history_dir(track):
@@ -2968,7 +3148,10 @@ def _tracked_files(track):
             (f'{track}_weather.json', weather_path(track)),
             (f'{track}_camera.json', camera_path(track)),
             (f'{track}_music.json', music_settings_path(track)),
-            (f'{track}_times.json', times_path(track))]
+            (f'{track}_times.json', times_path(track)),
+            # retouches du decor genere reportees dans la recette (save_decor -> creator_apply_patch)
+            (f'{track}_creator.json', creator_path(track)),
+            (f'{track}_creator_draft.json', creator_draft_path(track))]
     out += [('music_'+ os.path.basename(lg), music_path(track, lg)) for lg, _ in music_streams(track)]
     reg = custom_models(track)
     out += [('models/' + os.path.basename(k), custom_model_path(k)) for k in reg]
@@ -3060,7 +3243,7 @@ def music_info(track):
             info.update(custom=custom, seconds=round(music.read_header(data)['seconds'], 1), name=st.get(k, {}).get('name') if custom else None)
         kinds[k] = info
     exe = find_ffmpeg()
-    return {'ffmpeg': bool(exe), 'ffmpeg_path': exe, 'continues': music_continues(track), **kinds}
+    return {'ffmpeg': bool(exe), 'ffmpeg_path': exe, 'linux': sys.platform.startswith('linux'), 'continues': music_continues(track), **kinds}
 
 
 def find_ffmpeg():
@@ -3075,7 +3258,7 @@ def pick_ffmpeg(req):
     -> etat de la musique, {'cancelled': True} si la fenetre est fermee sans choix."""
     path = (req.get('path') or '').strip()
     if not path:
-        path = ask_folder('Dossier qui contient ffmpeg (ffmpeg.exe, ou son dossier bin)', os.path.dirname(find_ffmpeg() or '') or None)
+        path = ask_folder('Dossier qui contient ffmpeg (ffmpeg.exe sous Windows, ffmpeg sous Linux, ou son dossier bin)', os.path.dirname(find_ffmpeg() or '') or None)
         if not path:
             return {'cancelled': True}
     exe = music.ffmpeg_in(path)
@@ -3420,7 +3603,8 @@ def snapshot_saved(track, label):
             # modele importe inchange depuis la copie precedente : lien vers elle (les copies ne sont jamais
             # modifiees) au lieu de recopier des dizaines de Mo a chaque enregistrement
             old = os.path.join(prev, name)
-            if name.startswith(('models/', 'music_')) and os.path.exists(old) and os.path.getmtime(p) < prev_t \
+            # (tous les fichiers : avec 100 copies, recopier les fichiers inchanges prendrait des Go)
+            if os.path.exists(old) and os.path.getmtime(p) < prev_t \
                     and os.path.getsize(old) == os.path.getsize(p):
                 try:
                     os.link(old, os.path.join(snap, name))
@@ -3433,12 +3617,136 @@ def snapshot_saved(track, label):
         shutil.rmtree(os.path.join(root, old), ignore_errors=True)
 
 
-def history_list(track):
+def _history_snaps(track):
     root = history_dir(track)
-    if not os.path.isdir(root):
-        return []
-    return [json.load(open(os.path.join(root, d, 'snapshot.json')))['label']
-            for d in sorted(x for x in os.listdir(root) if x.isdigit())]
+    return sorted(d for d in os.listdir(root) if d.isdigit()) if os.path.isdir(root) else []
+
+
+def history_list(track):
+    return [json.load(open(os.path.join(history_dir(track), d, 'snapshot.json')))['label'] for d in _history_snaps(track)]
+
+
+def history_entries(track):
+    """Copies de la plus ancienne a la plus recente : libelle de l'operation et date (heure de la copie)."""
+    out = []
+    for d in _history_snaps(track):
+        f = os.path.join(history_dir(track), d, 'snapshot.json')
+        out.append({'label': json.load(open(f))['label'], 'time': os.path.getmtime(f)})
+    return out
+
+
+def undo_saves(track, count):
+    """Revient de `count` enregistrements en arriere d'un coup. L'etat d'avant ce retour est garde comme
+    derniere copie (« Retour en arriere ») : l'annuler remet la piste comme avant le retour."""
+    snaps = _history_snaps(track)
+    count = int(count)
+    if not 1 <= count <= len(snaps):
+        raise RuntimeError(f'retour impossible : {len(snaps)} enregistrement(s) dans l\'historique')
+    target = json.load(open(os.path.join(history_dir(track), snaps[-count], 'snapshot.json')))['label']
+    snapshot_saved(track, f'Retour avant « {target} »')
+    root = history_dir(track)
+    keep = _history_snaps(track)[-1]
+    hold = os.path.join(root, 'retour_en_cours')
+    shutil.rmtree(hold, ignore_errors=True)
+    os.rename(os.path.join(root, keep), hold)             # mise de cote pendant le retour (undo_save prend la derniere)
+    try:
+        for _ in range(count):
+            undo_save(track)
+    finally:
+        n = max([int(d) for d in _history_snaps(track)] + [0]) + 1
+        os.rename(hold, os.path.join(root, f'{n:06d}'))
+    return {'undone': target, 'steps': count, 'remaining': len(_history_snaps(track))}
+
+
+def _live_path(track, name, current=None):
+    current = current if current is not None else dict(_tracked_files(track))
+    return current.get(name) or (os.path.join(OUT_DIR, 'models', name[len('models/'):]) if name.startswith('models/')
+                                 else os.path.join(OUT_DIR, name))
+
+
+def _same_file(a, b):
+    """a, b : chemin ou None (fichier absent)."""
+    if not a or not os.path.exists(a):
+        return not b or not os.path.exists(b)
+    if not b or not os.path.exists(b):
+        return False
+    return os.path.getsize(a) == os.path.getsize(b) and filecmp.cmp(a, b, shallow=False)
+
+
+def _step_change(track, index):
+    """Fichiers changes par l'enregistrement n° index (0 = plus ancien) : {nom: (avant, apres, actuel)}
+    (chemins, None = absent) et noms des enregistrements suivants qui ont retouche les memes fichiers."""
+    snaps = _history_snaps(track)
+    if not 0 <= index < len(snaps):
+        raise RuntimeError('etape inconnue')
+    root, current = history_dir(track), dict(_tracked_files(track))
+
+    def state(i):                     # i = len(snaps) : etat actuel
+        if i == len(snaps):
+            return None
+        d = os.path.join(root, snaps[i])
+        return d, json.load(open(os.path.join(d, 'snapshot.json')))
+
+    def path_in(i, name):
+        st = state(i)
+        if st is None:
+            p = _live_path(track, name, current)
+            return p if os.path.exists(p) else None
+        d, meta = st
+        if name not in meta['files']:
+            return 'inconnu'
+        return os.path.join(d, name) if meta['files'][name] else None
+
+    names = set(state(index)[1]['files'])
+    if index + 1 < len(snaps):
+        names |= set(state(index + 1)[1]['files'])
+    changed, later = {}, []
+    for name in sorted(names):
+        before, after = path_in(index, name), path_in(index + 1, name)
+        if 'inconnu' in (before, after) or _same_file(before, after):
+            continue
+        now = path_in(len(snaps), name)
+        changed[name] = (before, after, now)
+        if not _same_file(after, now):
+            for j in range(index + 1, len(snaps)):        # quels enregistrements suivants l'ont retouche
+                a, b = path_in(j, name), path_in(j + 1, name)
+                if 'inconnu' not in (a, b) and not _same_file(a, b):
+                    lab = state(j)[1]['label']
+                    if lab not in later:
+                        later.append(lab)
+    return changed, later
+
+
+def remove_step_check(track, index):
+    changed, later = _step_change(track, int(index))
+    return {'files': len(changed), 'conflicts': later}
+
+
+def remove_step(track, index):
+    """Retire uniquement les changements d'un enregistrement (les suivants sont gardes). Refuse si un
+    enregistrement suivant a retouche les memes fichiers (l'enregistrement se fait par fichiers entiers)."""
+    index = int(index)
+    changed, later = _step_change(track, index)
+    if later:
+        raise RuntimeError('des enregistrements suivants ont modifie les memes fichiers : ' + ', '.join(f'« {l} »' for l in later))
+    if not changed:
+        raise RuntimeError('cette etape ne change plus rien')
+    label = json.load(open(os.path.join(history_dir(track), _history_snaps(track)[index], 'snapshot.json')))['label']
+    snapshot_saved(track, f'Suppression de l\'étape « {label} »')
+    current = dict(_tracked_files(track))
+    for name, (before, _after, _now) in changed.items():
+        p = _live_path(track, name, current)
+        if before:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            tmp = p + '.tmp_retour'
+            shutil.copyfile(before, tmp)
+            os.replace(tmp, p)
+        elif os.path.exists(p) and not name.startswith('models/'):
+            os.remove(p)
+    _visual_cache.clear()
+    _model_cache.clear()
+    _preview_cache.clear()
+    return {'removed': label, 'files': len(changed)}
 
 
 def with_history(track, label, fn):
@@ -3507,9 +3815,26 @@ def wall_mesh_path(logical):
     return custom_model_path(logical)[:-4] + '.wall.json'
 
 
+_custom_ro = {}
+
+
+def _custom_models_ro(track):
+    """custom_models en LECTURE SEULE, relu seulement si le fichier change (2026-11-18 : relu a chaque modele de
+    l'apercu, 2,2 s sur les 3,2 s d'ouverture de T922). Ne pas modifier le dictionnaire rendu."""
+    p = os.path.join(OUT_DIR, f'{track}_custom_models.json')
+    try:
+        st = os.stat(p)
+        sig = (p, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    if _custom_ro.get(track, (None,))[0] != sig:
+        _custom_ro[track] = (sig, custom_models(track))
+    return _custom_ro[track][1]
+
+
 def wall_mesh(track, logical):
     """(sommets [[x, y, z]], triangles [[a, b, c]]) en repere local d'un modele mur invisible, sinon None."""
-    if not (custom_models(track).get(logical) or {}).get('invisible'):
+    if not (_custom_models_ro(track).get(logical) or {}).get('invisible'):
         return None
     d = json.load(open(wall_mesh_path(logical)))
     return d['pos'], d['tris']
@@ -3630,7 +3955,7 @@ def walls_auto(req):
     progress.step('bords de la route', 0.3)
     loop, _ = race_path_points(track)
     if len(loop) < 4:
-        raise ValueError('pas de parcours : crée d\'abord le parcours (mode Course)')
+        raise ValueError('pas de parcours : crée d\'abord le parcours (Piste › Créer le parcours depuis la route)')
     pieces = walls.generate(ground_for(track), loop, road_ground(track), margin=margin, piece=piece,
                             sides=req.get('sides', 'both'), offroad=bool(req.get('offroad')))
     if not pieces:
@@ -3700,7 +4025,7 @@ def marks_auto(req):
         return {'report': report or ['aucun marquage à peindre'], 'ids': [], 'file': main_art(track)}
     loop, _ = race_path_points(track)
     if len(loop) < 4:
-        raise ValueError('pas de parcours : crée d\'abord le parcours (mode Course)')
+        raise ValueError('pas de parcours : crée d\'abord le parcours (Piste › Créer le parcours depuis la route)')
     with progress.span(0.02, 0.25):
         sync_collision(track)
     progress.step('largeur de la route', 0.25)
@@ -3747,12 +4072,26 @@ def marks_auto(req):
     nxt = np.roll(np.arange(n), -1)
     jump = (np.hypot(*(P[nxt, :2] - P[:, :2]).T) > 3 * track_creator.STEP * 39.37) | ((T * T[nxt]).sum(1) < 0.7)
     gap |= jump | np.roll(jump, 1)
+    def edge_z(i, side, w):
+        # hauteur du bord : on suit la route depuis le centre, pas a pas (virage releve : le bas du virage est souvent a
+        # plusieurs metres sous le centre ; avant le 2026-11-18 les bords prenaient la hauteur du centre et le vibreur
+        # restait en l'air, au niveau du haut du virage)
+        zp, d = zc[i], 0.0
+        while d < w:
+            d = min(w, d + ai_gen.STEP)
+            x, y = P[i, 0] + side[0] * d, P[i, 1] + side[1] * d
+            g = q.at(x, y, zp, window=ai_gen.MAX_STEP * 2) or ground.at(x, y, zp, window=ai_gen.MAX_STEP * 2)
+            if g is not None:
+                zp = g[0]
+        return zp
+    zl = np.array([zc[i] if gap[i] else edge_z(i, L[i], WL[i]) for i in range(n)])
+    zr = np.array([zc[i] if gap[i] else edge_z(i, -L[i], WR[i]) for i in range(n)])
     C = np.column_stack([P[:, :2], zc]) / 39.37
-    left = np.column_stack([P[:, :2] + L * np.asarray(WL)[:, None], zc]) / 39.37
-    right = np.column_stack([P[:, :2] - L * np.asarray(WR)[:, None], zc]) / 39.37
+    left = np.column_stack([P[:, :2] + L * np.asarray(WL)[:, None], zl]) / 39.37
+    right = np.column_stack([P[:, :2] - L * np.asarray(WR)[:, None], zr]) / 39.37
 
     def zfun(x, y, z):
-        g = ground.at(x * 39.37, y * 39.37, z * 39.37, window=150.0)
+        g = ground.at(x * 39.37, y * 39.37, z * 39.37, window=150.0) or ground.at(x * 39.37, y * 39.37, z * 39.37, window=400.0)
         return g[0] / 39.37 if g else z
     # panneaux de virage : objets de la bibliotheque (lien 'signs'), les precedents remplaces
     if style or had_signs:
@@ -4055,6 +4394,16 @@ def create_texture(track, name, image, source=None, alpha=None, size=1024):
     return {'name': name, 'id': reg[name]['material_id'], 'label': f'Image : {name}'}
 
 
+def _color_template_dims(track, alpha, size):
+    """(largeur, hauteur, niveaux, alpha) de la texture couleur que _write_texture_files fabriquera."""
+    if int(size) == 512:
+        tmpl = _logical_case(track, TEX_TEMPLATES_512[bool(alpha)])
+    else:
+        tmpl = _logical_case(track, TEX_TEMPLATE_ALPHA) if alpha else TEX_TEMPLATE_COLOR
+    info = texture_build.texture_info(read_game_file(track, tmpl))
+    return info['width'], info['height'], info['levels'], info['bytes_per_block'] == 16
+
+
 def _write_texture_files(track, name, image, alpha, size=1024):
     """Fichiers d'une image importee : texture couleur (BC1 opaque, ou BC3 + mipmaps si l'image a de la
     transparence ; size x size), normales plates partagees, materiau clone (roche ; feuilles a decoupe alpha si
@@ -4310,7 +4659,16 @@ def set_object_glow(req):
     name = next((n for n, i in reg.items() if i['material_id'] == mat), None)
     if name is None:
         raise ValueError('ce modèle n\'utilise pas une image importée (texture du jeu : non modifiable)')
-    info, on = reg[name], bool(req.get('glow'))
+    on = bool(req.get('glow'))
+    _glow_texture(track, reg, name, on)
+    users = sum(1 for i in custom_models(track).values() if i.get('material') == mat)
+    return {'report': [f'image « {name} » ' + ('lumineuse' if on else 'non lumineuse')
+                       + f' ({users} modèle(s) l\'utilisent)'], 'texture': name}
+
+
+def _glow_texture(track, reg, name, on):
+    """Materiau de l'image importee « name » refait lumineux (on) ou non ; reg (custom_textures) mis a jour et ecrit."""
+    info = reg[name]
     mat_logical = info['files']['material_instances'][0]
     color_ns = info['files']['texture'][0][len('textures/'):-len('.igz')]
     p = custom_file_path(mat_logical)
@@ -4325,9 +4683,6 @@ def set_object_glow(req):
     else:
         info.pop('glow', None)
     json.dump(reg, open(custom_textures_path(track), 'w'), indent=1)
-    users = sum(1 for i in custom_models(track).values() if i.get('material') == mat)
-    return {'report': [f'image « {name} » ' + ('lumineuse' if on else 'non lumineuse')
-                       + f' ({users} modèle(s) l\'utilisent)'], 'texture': name}
 
 
 def set_custom_material(req):
@@ -4531,11 +4886,16 @@ def recolor(req):
     importee (reutilisee si deja faite avec les memes reglages) ; autres : texture d'origine. -> comme mesh_save."""
     from PIL import Image
     track = req['track']
-    color, mode = _parse_color(req.get('color')), req.get('mode') or 'tint'
+    # glow (2026-11-14, demande utilisateur « pourquoi les objets du jeu ne peuvent pas avoir texture lumineuse ») :
+    # textures des parties cochees copiees SANS teinte dans des images importees propres (« _lum », jamais partagees
+    # avec une copie non lumineuse), rendues lumineuses apres ; l'objet devient un modele importe comme pour la couleur
+    glow = bool(req.get('glow'))
+    color = 'ffffff' if glow else _parse_color(req.get('color'))
+    mode = req.get('mode') or 'tint'
     if mode not in TINT_MODES:
         raise ValueError(f'mode inconnu : {mode}')
-    strength = float(req.get('strength', 1.0))
-    parts, made = [], 0
+    strength = 0.0 if glow else float(req.get('strength', 1.0))
+    parts, made, glow_ids = [], 0, set()
     for p in req.get('parts') or []:
         p = dict(p)
         # partie gardee mais au format de sommet incompatible : mesh_save la remplacerait par la roche du gabarit ->
@@ -4543,7 +4903,8 @@ def recolor(req):
         keep = not p.get('tint') and p.get('compatible') is False and p.get('ns')
         if p.get('tint') or keep:
             ns, s = p.get('ns'), 0.0 if keep else strength
-            src = ['teinte', ns or '', color if s else '', round(s, 2), mode if s else '']
+            lum = glow and not keep
+            src = ['lumineuse', ns or ''] if lum else ['teinte', ns or '', color if s else '', round(s, 2), mode if s else '']
             rgba = _texture_rgba(track, ns, 1024)
             img = tint_image(rgba, color, s, mode)
             buf = io.BytesIO()
@@ -4552,8 +4913,11 @@ def recolor(req):
             mid = ns.split(',')[1] if ns and ns.count(',') >= 2 else (ns or 'uni')
             stem = _clean_name(mid.rsplit('!', 1)[-1].split('`')[0], 'Texture')[:24]
             size = 512 if max(rgba.shape[:2]) <= 512 else 1024
-            r = create_texture(track, f'{stem}_{color}' if s else f'{stem}_copie', buf.getvalue(), source=src, size=size)
+            r = create_texture(track, f'{stem}_lum' if lum else f'{stem}_{color}' if s else f'{stem}_copie', buf.getvalue(),
+                               source=src, size=size)
             p['material'] = r['id']
+            if lum:
+                glow_ids.add(r['id'])
             made += 0 if r.get('reused') else 1
         parts.append(p)
     if not any(q.get('tint') for q in parts):
@@ -4571,6 +4935,12 @@ def recolor(req):
         out = mesh_save({**req, 'parts': parts, 'surface': surface})
     if surface == 'none':
         out['report'].insert(0, "sans collision, comme l'objet d'origine")
+    if glow:
+        reg = custom_textures(track)
+        for name in [n for n, i in reg.items() if i['material_id'] in glow_ids and not i.get('glow')]:
+            _glow_texture(track, reg, name, True)
+        out['report'].insert(0, f'texture lumineuse : {len(glow_ids)} texture(s) copiée(s) du jeu ({made} nouvelle(s))')
+        return out
     out['report'].insert(0, f'couleur #{color} ({"teinte" if mode == "tint" else "unie"}, {round(strength * 100)} %) : '
                             f'{made} texture(s) créée(s)')
     return out
@@ -4782,6 +5152,15 @@ def place_library_many(track, items, tag):
     links = load_links(track)
     fl = links.setdefault(art, {})
     old = [oid for oid, lk in fl.items() if isinstance(lk, dict) and lk.get('tag') == tag]
+    # objets du decor de la Creation recolores / a texture lumineuse / reformes dans Edition (mesh_save : modele importe,
+    # lien garde avec son u) : modele gardé par u et remis sur l'objet regenere (2026-11-19 ; avant : couleur perdue)
+    reg = custom_models(track)
+    looks = {}
+    for oid in old:
+        lk = fl.get(oid) or {}
+        cm = lk.get('custom') or ''
+        if lk.get('u') and not lk.get('library') and cm.startswith(f'models/{CUSTOM_DIR}/')                 and os.path.exists(custom_model_path(cm)):
+            looks[lk['u']] = (cm, lk)
     present = set(df.names)
     df.delete_many([int(oid) for oid in old if int(oid) in present])
     for oid in old:
@@ -4789,6 +5168,7 @@ def place_library_many(track, items, tag):
     for model, pak in {(it['model'], it['pak']) for it in items}:
         library_files(track, model, pak)                    # erreur ici si un fichier manque : rien n'est ecrit
     specs, used, tmpl = [], set(df.names.values()), template_object(track, art)
+    kept_looks = 0
     for it in items:
         base = os.path.basename(it['model'])[:-4]
         name, k = base, 1
@@ -4806,11 +5186,22 @@ def place_library_many(track, items, tag):
         # pleine definition, la collision ne pouvait plus etre encodee (plus de 65 535 sommets partages)
         fl[str(nid)] = {'custom': it['model'], 'library': it['pak'], 'tag': tag, 'coarse': True,
                         'surface': 'none' if NO_COLLISION_HINT.search(sp[1]) else 'auto'}
+        if it.get('u') and isinstance(it.get('src'), dict):
+            # objet du decor de la Creation : sa recette et sa pose, pour reporter les retouches d'Edition (creator_patch)
+            fl[str(nid)].update({'u': it['u'], 'prop': it['src'], 'gen': {'pos': sp[2], 'euler': sp[3], 's': sp[4][0]}})
+            look = looks.get(it['u'])
+            # meme modele de depart que la couleur (type d'objet change dans la Creation : la couleur ne s'applique plus)
+            src = (reg.get(look[0]) or {}).get('edited_from', '') if look else ''
+            if look and src.lower() == it['model'].lower():
+                cm, olk = look
+                df.set_model(nid, 'models:\\' + CUSTOM_DIR.replace('/', '\\') + '\\' + os.path.basename(cm)[:-4] + '.igb')
+                fl[str(nid)] = {**{k: v for k, v in olk.items() if k not in ('prop', 'gen')}, **{k: fl[str(nid)][k] for k in ('u', 'prop', 'gen')}}
+                kept_looks += 1
     save_links(track, links)
     write_art(track, art, df)
     with progress.span(0.5, 1.0):
         rep = defer_collision(track)
-    return {'placed': len(ids), 'removed': len(old), 'report': rep}
+    return {'placed': len(ids), 'removed': len(old), 'report': rep, 'looks': kept_looks}
 
 
 def place_library(req):
@@ -4940,7 +5331,7 @@ def ensure_boost_model(track, super_=False):
     return logical
 
 
-def sync_boost_visuals(track, boosts):
+def sync_boost_visuals(track, boosts, measure=True):
     """Un objet de decor « BoostPad_Visual_NNN » (sans collision) par booster : position, inclinaison et cap, taille =
     celles de sa zone (profondeur x largeur) ; plaque bleue pour un super turbo. Les anciens sont remplaces."""
     art = main_art(track)
@@ -4952,8 +5343,11 @@ def sync_boost_visuals(track, boosts):
     col = lambda b: b.get('color') if b.get('color') in BOOST_COLORS else ('bleu' if b.get('super') else 'orange')
     for s in {col(b) for b in boosts}:
         ensure_boost_model(track, s)                   # (re)construit le modele si sa version a change
-    ground = ground_for(track)
-    zs = [(lambda t: t if t is not None else b['pos'][2])(ground.top(b['pos'][0], b['pos'][1], b['pos'][2])) for b in boosts]
+    # measure=False (generation) : plaque a la hauteur du point du booster (deja repose sur le nouveau sol), sans lire
+    # la collision invalidee ; l'enregistrement de la course qui suit la recale sur le sol a jour
+    ground = ground_for(track) if measure and boosts else None
+    zs = [(lambda t: t if t is not None else b['pos'][2])(ground.top(b['pos'][0], b['pos'][1], b['pos'][2]) if ground else None)
+          for b in boosts]
     euler = lambda b: [float(v) for v in (b.get('tilt') or [0.0, 0.0])] + [float(b.get('yaw') or 0.0)]
     want = [([b['pos'][0], b['pos'][1], z + BOOST_VISUAL_LIFT], euler(b), [b['dims'][0] / 100.0, b['dims'][1] / 100.0],
              col(b)) for b, z in zip(boosts, zs)]
@@ -5316,6 +5710,26 @@ def import_folder(req):
         users[_find_file(folder, mtl.get(name, {}).get('texture'))].append(name)
     tex_size = lambda tex: (int(want_size) if want_size in ('512', '1024') else
                             512 if all((choice.get(m) or {}).get('background') for m in users[tex]) else 1024)
+    # images a (re)encoder : toutes d'avance, en parallele (texture_build.pre_encode, 2026-11-18)
+    try:
+        progress.step('encodage des textures (en parallèle)', 0.04)
+        reg, jobs = custom_textures(track), []
+        for name in summ['triangles']:
+            if (choice.get(name) or {}).get('surface') == 'invisible':
+                continue
+            tex = _find_file(folder, mtl.get(name, {}).get('texture'))
+            if not tex:
+                continue
+            st, data = os.stat(tex), open(tex, 'rb').read()
+            alp = (choice.get(name) or {}).get('alpha')
+            alp = texture_build.image_has_alpha(data) if alp is None else bool(alp)
+            size, source = tex_size(tex), [os.path.abspath(tex), st.st_size, int(st.st_mtime)]
+            if any(i.get('source') == source and bool(i.get('alpha')) == alp and i.get('size', 1024) == size for i in reg.values()):
+                continue                                     # deja importee telle quelle : reutilisee
+            jobs.append((data, *_color_template_dims(track, alp, size)))
+        texture_build.pre_encode(jobs)
+    except Exception:  # noqa: BLE001 - preparation facultative : encodage normal ensuite
+        traceback.print_exc()
     with progress.span(0.05, 0.35):
         for name in progress.items(summ['triangles'], 'texture {i} / {n}'):
             if (choice.get(name) or {}).get('surface') == 'invisible':    # mur invisible : pas de texture
@@ -5577,10 +5991,29 @@ def is_flat(name, T):
     return float(area[np.abs(n[:, 2]) > 0.9 * area].sum() / area.sum()) >= 0.85
 
 
+_simplify_memo = collections.OrderedDict()
+
+
 def simplify_tris(T, cell):
     """Collision simplifiee par regroupement des sommets sur une grille de cell pouces (sommet = moyenne de sa
     cellule), triangles devenus degeneres ou en double retires. Les murs de briques / blocs perdent leurs details
-    (relief des briques, chanfreins) mais gardent leur forme a cell / 2 pres."""
+    (relief des briques, chanfreins) mais gardent leur forme a cell / 2 pres. Resultat garde en memoire par contenu
+    (2026-11-18 : 812 objets resimplifies a chaque objet deplace, 2,2 s sur T922)."""
+    import hashlib
+    T = np.ascontiguousarray(T, np.float64)
+    key = (hashlib.blake2b(T.tobytes(), digest_size=16).hexdigest(), float(cell))
+    hit = _simplify_memo.get(key)
+    if hit is not None:
+        _simplify_memo.move_to_end(key)
+        return hit.copy()
+    out = _simplify_tris(T, cell)
+    _simplify_memo[key] = out.copy()
+    while len(_simplify_memo) > 20000:
+        _simplify_memo.popitem(last=False)
+    return out
+
+
+def _simplify_tris(T, cell):
     V = T.reshape(-1, 3)
     uk, inv = np.unique(np.floor(V / cell).astype(np.int64), axis=0, return_inverse=True)
     inv = inv.reshape(-1)
@@ -5617,6 +6050,23 @@ FOLIAGE_RE = re.compile(r'foliage|grass|vine|fern|flower|bush|leaf|leaves|ivy|we
 def race_point_grid(track, cell=100 * 39.37):
     """Points des traces de course (splines de position et d'IA, tous les ~2 m), ranges par cases (x, y) de `cell` po :
     {(i, j): tableau (n, 2)}. None si la piste n'a pas de trace lisible (alors rien n'est retire)."""
+    import hashlib
+    try:
+        key = (track, float(cell), hashlib.md5(base_file(track, race_file(track))[0]).hexdigest())
+    except Exception:  # noqa: BLE001 - fichier de course illisible : calcul normal (et sans memoire)
+        key = None
+    if key is not None and _race_grid_memo.get('key') == key:
+        return _race_grid_memo['grid']
+    grid = _race_point_grid(track, cell)
+    if key is not None:
+        _race_grid_memo.update(key=key, grid=grid)
+    return grid
+
+
+_race_grid_memo = {}       # derniere grille (cle : piste, case, empreinte du fichier de course) : 2,2 s de relecture evites
+
+
+def _race_point_grid(track, cell):
     try:
         splines = load_track(track)['splines']
     except Exception:  # noqa: BLE001
@@ -5907,7 +6357,7 @@ def sync_collision(track):
     return report
 
 
-COLLISION_CODE_VERSION = 3     # change -> collision recalculee meme si le decor n'a pas change (3 : decor loin retire)
+COLLISION_CODE_VERSION = 4     # change -> collision recalculee meme si le decor n'a pas change (3 : decor loin retire ; 4 : pieces des modeles, decor.model_mesh 2026-11-18)
 
 
 def _collision_memo_path(track):
@@ -6995,7 +7445,7 @@ FIX_LABELS = {'occlusion': 'Retirer les zones d\'occultation', 'sky': 'Appliquer
               'minimap': 'Générer la mini-carte', 'splines': 'Poser les splines sur la route',
               'flyby': 'Générer le survol', 'texmax': 'Textures en 1024 maximum'}
 UI_LABELS = {'mkroute': 'Recréer le parcours…', 'regenall': 'Régénérer les splines IA…', 'dambiance': 'Choisir un ciel…',
-             'dlight': 'Alléger la map…'}
+             'dlight': 'Alléger la map…', 'danim': 'Objets animés…'}
 
 
 def fix_grid(track):
@@ -7296,9 +7746,11 @@ def preinstall_check(track):
     if boosts:
         art = main_art(track)
         vis = [o for o in DecorFile(base_file(track, art)[0]).objects()
-               if (o['model'] or '').lower().endswith(('\\boostpad.igb', '\\boostpadsuper.igb'))]
+               # plaques de couleur aussi (BoostPad_rose, _vert...) : comptees comme dans boosts_from_decor (2026-11-17,
+               # « 7 boosters mais 5 plaques » a tort sur T922)
+               if re.search(r'\\boostpad(super|_[a-z]+)?\.igb$', (o['model'] or '').lower())]
         if len(vis) != len(boosts):
-            add('attention', 'Boosters', f'{len(boosts)} booster(s) mais {len(vis)} plaque(s) au sol → enregistre en mode Course', fix='boosters')
+            add('attention', 'Boosters', f'{len(boosts)} booster(s) mais {len(vis)} plaque(s) au sol → Enregistrer', fix='boosters')
         else:
             add('ok', 'Boosters', f'{len(boosts)} booster(s) avec leur plaque')
     # 5) fichiers
@@ -7326,7 +7778,7 @@ def preinstall_check(track):
     nm = newmap_settings(track)
     if nm.get('strip_art') and move_away_files(track).get('occlusion') and 'occlusion' not in (nm.get('move_away') or []):
         add('attention', 'Occultation', 'les zones d\'occultation de l\'ancienne piste masquent des morceaux de ta map selon '
-                                        'la caméra → mode Décor › Nouvelle map › cocher « Zones d\'occultation »', fix='occlusion')
+                                        'la caméra → Édition › Vider la map… › cocher « Zones d\'occultation »', fix='occlusion')
     # ciel : ce que le jeu chargera vraiment (sky_report)
     for level, text, fix in sky_report(track):
         add(level, 'Ciel', text, fix=fix)
@@ -7334,7 +7786,7 @@ def preinstall_check(track):
     new_course = os.path.exists(road_source_path(track)) or newmap_settings(track).get('strip_art')
     mm = saved_path(minimap.minimap_file(track))
     if new_course and not os.path.exists(mm):
-        add('attention', 'Mini-carte', 'c\'est encore celle de la piste d\'origine → « Générer la mini-carte » (mode Course)', fix='minimap')
+        add('attention', 'Mini-carte', 'c\'est encore celle de la piste d\'origine → Habillage › Mini-carte', fix='minimap')
     elif os.path.exists(mm) and minimap_path_key(track) != minimap_saved_key(track):
         add('attention', 'Mini-carte', 'le parcours a changé depuis sa génération → « Générer la mini-carte » à nouveau', fix='minimap')
     elif os.path.exists(mm):
@@ -7346,7 +7798,7 @@ def preinstall_check(track):
         far = flyby_far_from_grid(track, tr)
         if not done and (new_course or far):
             add('attention', 'Survol d\'introduction', f'caméras d\'origine ({len(shots)} plans) : elles filment l\'ancienne '
-                                                       'piste → « Générer depuis le parcours » (mode Course › Survol)', fix='flyby')
+                                                       'piste → Habillage › Survol d\'introduction › « Générer depuis le parcours »', fix='flyby')
         elif far:
             add('attention', 'Survol d\'introduction', f'le survol finit à {far:.0f} m de la grille : le parcours ou la grille '
                                                        'ont bougé depuis → à refaire', fix='flyby')
@@ -7357,6 +7809,14 @@ def preinstall_check(track):
             add('ok', 'Survol d\'introduction', f'{done} plan(s) sur {len(shots)} refait(s), fin près de la grille')
         else:
             add('ok', 'Survol d\'introduction', 'caméras d\'origine, sur la piste d\'origine')
+    # objets animes (2026-11-18) : figes une fois copies, vitesse presque nulle, objet visible loin de son point de pose
+    # ou en l'air (animation en coordonnees de la piste d'origine)
+    progress.step('objets animés', 0.78)
+    try:
+        for line in animated_report(track):
+            add(*line, ui='danim')
+    except Exception as e:  # noqa: BLE001
+        add('attention', 'Objets animés', f'contrôle impossible : {e}')
     # memoire du jeu (2026-11-07) : le jeu charge toute l'archive de la piste ; T901 a 741 Mo plantait (« OOM »)
     progress.step('poids de la map en jeu', 0.8)
     try:
@@ -7371,6 +7831,28 @@ def preinstall_check(track):
                                                f"à l'installation pour passer à {w['after']} Mo ({limit})", ui='dlight')
         else:
             add('ok', 'Mémoire du jeu', f"archive de la piste : {w['after']} Mo ({limit})")
+        # nombre de modeles (2026-11-17, T922 : 1 319 modeles plantait meme avec une archive allegee, 600 se charge)
+        many = f"{w['models']} modèles différents, {w['files']} fichiers dans l'archive de la piste"
+        if w['models'] > w['models_max']:
+            add('erreur', 'Mémoire du jeu', f"{many} : le jeu plantera au chargement (limite mesurée : 1 082 modèles chargent, 1 126 plantent) "
+                                            '→ moins de sortes d\'objets différents (décor semé à la main sur beaucoup de familles, objets de la bibliothèque)')
+        elif w['models'] > w['models_ok']:
+            add('attention', 'Mémoire du jeu', f"{many} : proche de la limite (1 082 modèles chargent, 1 126 plantent) "
+                                                "→ à essayer en jeu, sinon moins de sortes d'objets")
+        else:
+            add('ok', 'Mémoire du jeu', many)
+        # charge estimee + modeles rares a retirer en premier (2026-11-18)
+        load = w.get('load', 0)
+        if w['models'] > w['models_ok']:
+            rare, n_rare = rare_models(track)
+            if rare:
+                names = ', '.join(f'{nm} ({c})' for nm, c in rare[:10])
+                add('attention', 'Mémoire du jeu', f"charge estimée {load} % de la limite : {n_rare} modèle(s) n'ont qu'1 ou 2 "
+                                                   f"exemplaires, les retirer allège le plus vite → {names}"
+                                                   + (' …' if n_rare > 10 else '') + ' (Liste de la scène : chercher leur nom)',
+                    ui='dlight')
+        else:
+            add('ok', 'Mémoire du jeu', f'charge estimée : {load} % de la limite mesurée en jeu')
         if w['collision'] and w['collision'] > w['collision_budget']:
             add('attention', 'Mémoire du jeu', f"collision lourde : {w['collision']} triangles (au-delà de {w['collision_budget']}) "
                                                '→ décor loin de la piste sans collision, ou collision simplifiée', ui='dlight')
@@ -7378,6 +7860,53 @@ def preinstall_check(track):
         add('attention', 'Mémoire du jeu', f'poids non mesuré : {e}')
     return {'checks': out, 'errors': sum(c['level'] == 'erreur' for c in out),
             'warnings': sum(c['level'] == 'attention' for c in out)}
+
+
+ANIM_FAR_M = 30.0        # objet visible a plus de 30 m de son point de pose : signale
+ANIM_AIR_M = 3.0         # bas de l'objet visible a plus de 3 m au-dessus du sol : signale
+
+
+def animated_report(track):
+    """Lignes (niveau, titre, texte) de Verifier pour les objets animes de la piste (2026-11-18)."""
+    items = animated_load(track)
+    if not items:
+        return []
+    out, ground = [], None
+    for it in items:
+        name = it.get('name') or it['entity']
+        mo = anim_motion(it.get('actor') or '', it['pak'], it['file'], it['entity'])
+        if mo.get('still'):
+            out.append(('attention', 'Objets animés', f'« {name} » restera figé en jeu : son animation est lancée par sa piste '
+                                                       'd\'origine, pas par lui'))
+            continue
+        if not mo.get('anim'):
+            out.append(('attention', 'Objets animés', f'« {name} » : aucune animation lisible, il restera sans doute immobile'))
+            continue
+        speed = it.get('speed', mo.get('speed'))
+        if speed is not None and speed < 0.1:
+            out.append(('attention', 'Objets animés', f'« {name} » : vitesse d\'animation {speed:.2f}, il paraîtra figé '
+                                                       '→ mets 1 dans « Vitesse × »'))
+        # objet visible a l'instant 0 : bas-centre de la pose du jeu, tourne (cap seul) et mis a l'echelle
+        if mo.get('pose'):
+            P = np.frombuffer(base64.b64decode(mo['pose']), '<f4').reshape(-1, 3).astype(np.float64)
+            lo, hi = P.min(0), P.max(0)
+            c = np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]]) * float(it.get('scale') or 1.0)
+            yaw = float(it.get('yaw') or 0.0)
+            dx, dy = c[0] * math.cos(yaw) - c[1] * math.sin(yaw), c[0] * math.sin(yaw) + c[1] * math.cos(yaw)
+            far = math.hypot(dx, dy) / 39.37
+            if far > ANIM_FAR_M:
+                out.append(('attention', 'Objets animés', f'« {name} » apparaît en jeu à {far:.0f} m de son point de pose '
+                                                           '(animation écrite pour sa piste d\'origine) → « ⤵ » le ramène au centre de la vue'))
+            x, y, z = it['pos'][0] + dx, it['pos'][1] + dy, it['pos'][2] + c[2]
+            if ground is None:
+                ground = ground_for(track)
+            g = ground.at(x, y, z, window=1e6)
+            if g is not None and (z - g[0]) / 39.37 > ANIM_AIR_M:
+                out.append(('attention', 'Objets animés', f'« {name} » est {(z - g[0]) / 39.37:.0f} m au-dessus du sol en jeu '
+                                                           '→ « Poser sur le sol »'))
+    if not out:
+        out.append(('ok', 'Objets animés', f'{len(items)} objet(s) animé(s), animation et position correctes'))
+    return out
 
 
 def animated_path(track):
@@ -7443,6 +7972,79 @@ def anim_frames(actor, name):
     return cache[name]
 
 
+_anim_hints, _anim_motion = {}, {}
+
+
+def anim_played(actor, pak, file, entity):
+    """Nom de l'animation que joue l'objet en jeu : celle nommee dans les parametres de son script (anim_hints),
+    sinon « idle », sinon la 1re (meme choix que l'apercu de la liste des objets animes)."""
+    anims = anim_source(actor)[1]
+    key = (pak, file, entity)
+    if key not in _anim_hints:
+        try:
+            z = IgzFile(pak_tool.read_latest(ARCHIVES, file, pak)[0])
+            ent = dict(z.root_objects()).get(entity)
+            _anim_hints[key] = animated.anim_hints(z, ent) if ent is not None else []
+        except Exception:  # noqa: BLE001 - fichier d'origine illisible : choix par defaut
+            _anim_hints[key] = []
+    low = {a.lower(): a for a in anims}
+    hint = next((h.lower() for h in _anim_hints[key] if h.lower() in low), None)
+    return low[hint] if hint else next((a for a in sorted(anims) if 'idle' in a.lower()), sorted(anims)[0] if anims else None)
+
+
+def anim_motion(actor, pak, file, entity):
+    """GET /api/anim_motion (2026-11-18) : ce que fait l'animation jouee en jeu, dans le repere de l'objet (pouces).
+    {anim, pose: float32 base64 [sommets x 3] = pose de la 1re image (meme ordre que model_preview), path: [[x,y,z]]
+    = centre de l'objet au fil de l'animation, moving: trajet de plus de 1,5 m (4 m en hauteur : sauts sur place exclus)}. L'editeur montrait la pose de repos du
+    skin : poissons, baril, wagonnet... sont a des dizaines de metres de la en jeu (objet « en l'air », « pas anime »)."""
+    key = (actor, pak, file, entity)
+    if key not in _anim_motion:
+        out = {'anim': None}
+        skel, anims, pv, _ = anim_source(actor)
+        name = anim_played(actor, pak, file, entity) if 'joints' in pv and anims else None
+        if name:
+            an = havok_anim.spline_animation(*anims[name])
+            M = havok_anim.skin_matrices(skel, an).astype(np.float64)
+            P = pv['positions'].astype(np.float64)
+            J = np.clip(pv['joints'].astype(np.int64), 0, M.shape[1] - 1)
+            W = pv['weights'].astype(np.float64)
+            Ph = np.c_[P, np.ones(len(P))]
+
+            def skinned(f, idx=slice(None)):
+                ph, j, w = Ph[idx], J[idx], W[idx]
+                return sum(w[:, k:k + 1] * np.einsum('ni,nij->nj', ph, M[f][j[:, k]]) for k in range(4))[:, :3]
+            pose = skinned(0)
+            sub = slice(None, None, max(1, len(P) // 400))
+            frames = range(0, M.shape[0], max(1, M.shape[0] // 120))
+            path = np.array([skinned(f, sub).mean(0) for f in frames])
+            ext = np.ptp(path, 0) if len(path) else np.zeros(3)
+            # pose etiree (wagonnet : os du rail fixes, chariot a 100 m -> triangles geants) : pas montree, trajet garde
+            rest_d, pose_d = float(np.linalg.norm(np.ptp(P, 0))), float(np.linalg.norm(np.ptp(pose, 0)))
+            stretched = pose_d > 8 * rest_d and pose_d > 20 * 39.37
+            out = {'anim': name, 'frames': int(M.shape[0]), 'fps': float(an['fps']), 'stretched': stretched,
+                   'pose': None if stretched else base64.b64encode(pose.astype('<f4').tobytes()).decode('ascii'),
+                   'path': np.round(path, 1).tolist(), 'moving': bool(float(np.hypot(ext[0], ext[1])) > 1.5 * 39.37 or float(ext[2]) > 4 * 39.37)}
+        out.update(anim_script_info(pak, file, entity))
+        _anim_motion[key] = out
+    return _anim_motion[key]
+
+
+def anim_script_info(pak, file, entity):
+    """{speed: vitesse d'origine du script common_Delay_Animation (None : pas ce script), still: rien sur l'objet ne
+    lance d'animation (ni script ni CAnimateEntityComponentData : c'est sa piste d'origine qui l'animait, il reste fige
+    une fois copie ; 11 objets du catalogue, 2026-11-18)}."""
+    try:
+        z = IgzFile(pak_tool.read_latest(ARCHIVES, file, pak)[0])
+        ent = dict(z.root_objects()).get(entity)
+        if ent is None:
+            return {'speed': None, 'still': False}
+        scripts, _ = animated.links(z, ent)
+        still = not scripts and 'CAnimateEntityComponentData' not in animated.components(z, ent)
+        return {'speed': animated.anim_speed(z, ent), 'still': still}
+    except Exception:  # noqa: BLE001 - fichier d'origine illisible : rien a signaler
+        return {'speed': None, 'still': False}
+
+
 ANIM_CATALOG_VERSION = 3
 _anim_catalog = {}
 
@@ -7476,10 +8078,12 @@ def animated_save(req):
         pos = [float(v) for v in it['pos']][:3]
         row = {'pak': str(it['pak']), 'file': str(it['file']), 'entity': str(it['entity']), 'name': str(it.get('name') or ''),
                'actor': str(it.get('actor') or ''), 'pos': pos, 'yaw': float(it.get('yaw') or 0.0),
-               'scale': max(0.05, min(20.0, float(it.get('scale') or 1.0)))}
+               'scale': max(0.05, min(100.0, float(it.get('scale') or 1.0)))}
         for k in ('rx', 'ry'):
             if float(it.get(k) or 0.0):
                 row[k] = float(it[k])
+        if it.get('speed') is not None:                  # vitesse de l'animation (animated.set_anim_speed)
+            row['speed'] = max(0.01, min(10.0, float(it['speed'])))
         items.append(row)
     os.makedirs(OUT_DIR, exist_ok=True)
     json.dump(items, open(animated_path(track), 'w', encoding='utf-8'), ensure_ascii=False)
@@ -7676,7 +8280,10 @@ def install_plan(track):
     for logical, src_pak in tp_copies.items():
         per_archive[os.path.join(ARCHIVES, track_pak(track))][logical] = pak_tool.read_latest(ARCHIVES, logical, src_pak)[0]
     # zones camera (parois roulables) : script TunnelCam de Sewer Speedway a declarer (copie si absent des archives communes)
+    # + zones de gravite : script AntiGravZone d'Oxide Station (2026-11-16)
     cam_entries, cam_copies = cam_install_files(track)
+    gr_entries, gr_copies = grav_install_files(track)
+    cam_entries += gr_entries; cam_copies.update(gr_copies)
     entries += [e for e in cam_entries if e not in entries]
     for logical, src_pak in cam_copies.items():
         per_archive[os.path.join(ARCHIVES, track_pak(track))][_archive_case(src_pak, logical)] = \
@@ -8068,7 +8675,9 @@ def map_weight(track):
     reduction des textures), textures (reduites), budget (Mo), collision (triangles du fichier enregistre)}."""
     progress.step('poids de la map : fichiers à installer', 0.0)
     stats = {}
-    shrink_textures(install_plan(track), track, stats=stats)
+    plan = install_plan(track)
+    counts = archive_counts(plan, track)
+    shrink_textures(plan, track, stats=stats)
     coll = None
     try:
         p = saved_path(collision_file(track))      # install_plan l'a remise a jour si besoin
@@ -8086,9 +8695,77 @@ def map_weight(track):
     return {'before': round(stats.get('before', 0) / 2**20), 'after': round(stats.get('after', 0) / 2**20),
             'textures': stats.get('textures', 0), 'budget': PAK_BUDGET // 2**20, 'collision': coll,
             'collision_budget': COLLISION_BUDGET, 'texture_max': int(light_settings(track).get('texture_max') or 0),
-            'decor_reach': light_settings(track).get('decor_reach', 100)}
+            'decor_reach': light_settings(track).get('decor_reach', 100), **counts,
+            'models_ok': MODELS_OK, 'models_max': MODELS_MAX, **_rare_fields(track, counts)}
+
+
+def _rare_fields(track, counts):
+    """Modeles rares pour la fenetre « Alleger la map », seulement quand la limite approche (90 % de la charge)."""
+    if counts.get('load', 0) < 90:
+        return {}
+    try:
+        rare, total = rare_models(track, 30)
+        return {'rare': rare, 'rare_total': total}
+    except Exception:  # noqa: BLE001 - liste facultative
+        return {}
+
+
+# 2026-11-17, map de crash test T922 : plantage « OOM GlobalChunk » au chargement avec 1 319 modeles / 3 199 fichiers dans
+# l'archive, meme ramenee a 346 Mio (textures 512) et 322 k triangles de collision ; chargee avec 600 modeles / 1 162
+# fichiers. Le jeu reserve de la memoire par fichier charge, pas seulement par octet : la taille d'archive ne suffit pas.
+# Pistes du jeu : 89 a 154 modeles. Limite mesuree en jeu le meme jour sur T922 (objets de la bibliotheque ajoutes
+# 200 par 200 puis 50 par 50, sans collision, textures 512) : 797 / 989 / 1 082 modeles chargent, 1 126 et 1 173 plantent.
+MODELS_OK = 1000         # marge sous 1 082 (charge)
+MODELS_MAX = 1100        # 1 126 plantait : au-dela, erreur
+
+
+def archive_counts(per_archive, track):
+    """Fichiers, modeles et materiaux de l'archive de la piste une fois installee (fichiers gardes + remplaces / ajoutes)."""
+    arc = next((a for a in per_archive if os.path.basename(a).lower() == track_pak(track).lower()),
+               os.path.join(ARCHIVES, track_pak(track)))
+    view = pak_tool.original_archive(arc)
+    index = view[1] if view else pak_tool.cached_archive(arc)[1]
+    names = {k.lower() for k in index} | {k.lower() for k in per_archive.get(arc, {})}
+    out = {'files': len(names), 'models': sum(n.startswith('models/') for n in names),
+           'materials': sum(n.startswith('materialinstances/') for n in names),
+           'textures': sum(n.startswith('textures/') for n in names)}
+    out['load'] = load_estimate(out)
+    return out
+
+
+# charge memoire estimee (2026-11-18) : part de la limite mesuree en jeu sur T922 (plantage entre 1 082 et 1 126 modeles,
+# entre 2 528 et 2 696 fichiers ; les deux montent ensemble, la plus haute des deux parts compte)
+LOAD_LIMIT = {'models': 1104, 'files': 2612}
+
+
+def load_estimate(counts):
+    """Charge memoire estimee au chargement de la piste, en % de la limite mesuree (100 % = plantage probable)."""
+    return round(100 * max(counts.get(k, 0) / v for k, v in LOAD_LIMIT.items()))
+
+
+def rare_models(track, n=15):
+    """Modeles du decor enregistre les moins utilises (1-2 exemplaires) : [(nom court, exemplaires)] tries par nombre
+    d'exemplaires. Chacun retire = 1 modele en moins dans l'archive (plus ses materiaux / textures propres) : premiere
+    chose a alleger quand la limite de modeles approche (2026-11-18)."""
+    use = collections.Counter()
+    for art in art_files(track):
+        try:
+            df = DecorFile(base_file(track, art)[0])
+        except Exception:  # noqa: BLE001 - fichier illisible : ignore
+            continue
+        for o in df.objects():
+            m = str(o.get('model') or '')
+            low = m.lower().replace('\\', '/')
+            # pas proposes : collision, plaques de boosters, modeles importes par l'utilisateur (OBJ / DAE)
+            if not m or low.endswith('_collision.igb') or 'boostpad' in low or f'/{CUSTOM_DIR.lower()}/' in low:
+                continue
+            use[m] += 1
+    rare = sorted(((k, c) for k, c in use.items() if c <= 2), key=lambda kc: (kc[1], kc[0]))
+    short = lambda m: re.split(r'[\\/]', m)[-1].rsplit('.', 1)[0]
+    return [(short(k), c) for k, c in rare[:n]], sum(1 for _, c in use.items() if c <= 2)
 
 def install_track(track):
+    refresh_blank_track(track)                       # piste faite avec un ancien modele de map vide : archive refaite
     progress.step('vérification de la course', 0.0)
     try:
         checked = check_race_zones(track)
@@ -8228,7 +8905,12 @@ def creator_info(track):
     saved = json.load(open(creator_path(track))) if os.path.exists(creator_path(track)) else None
     dp = creator_draft_path(track)
     draft = json.load(open(dp)) if os.path.exists(dp) else None
-    return {'saved': saved, 'draft': draft, 'kits': {k: v['label'] for k, v in track_creator.KITS.items()}, 'order': list(track_creator.KITS),
+    # objets semes avant le reclassement du decor (2026-11-17) : convertis (meme modele, nouvelle famille) ; le brouillon du
+    # navigateur l'est par la page avec 'remap' (creator.js migrateProp)
+    for d in (saved, draft):
+        if isinstance(d, dict) and d.get('props'):
+            d['props'] = track_creator.migrate_props(d['props'], d.get('kit'))
+    return {'saved': saved, 'draft': draft, 'remap': track_creator.remap_table(), 'cat': track_creator.CATALOG_VERSION, 'kits': {k: v['label'] for k, v in track_creator.KITS.items()}, 'order': list(track_creator.KITS),
             'materials': {k: [{'label': m[4], 'color': m[5], 'png': m[1]} for m in v['materials']] for k, v in track_creator.KITS.items()},
             'kitinfo': {k: {'road_repeat': v['road_repeat'], 'ground_repeat': v['ground_repeat']} for k, v in track_creator.KITS.items()},
             'props': {k: {pk: {'label': p['label'], 'spacing': p['spacing'], 'scale': p['scale'], 'n': len(p['models']),
@@ -8247,7 +8929,7 @@ def creator_info(track):
 def _prop_footprints(kit, props):
     """Emprise des objets semes [(x, y, rayon)] (m) : la decoupe de la carte loin de la route les contourne."""
     out = []
-    for p in props or []:
+    for p in track_creator.migrate_props(props, kit):
         try:
             k = p.get('k') or kit
             d = (track_creator.KITS.get(k, {}).get('props') or {}).get(p.get('t'))
@@ -8260,6 +8942,281 @@ def _prop_footprints(kit, props):
         except (KeyError, TypeError, ValueError):
             continue
     return out
+
+
+def creator_prop_uids(props):
+    """Identifiant stable (u) de chaque objet du decor du brouillon, donne a la generation (absent ou en double : copie
+    faite dans la Creation) -> liste des u dans l'ordre, reprise par le navigateur dans son brouillon."""
+    import secrets
+    seen, out = set(), []
+    for p in props or []:
+        if not isinstance(p, dict):
+            out.append(None)
+            continue
+        if not isinstance(p.get('u'), str) or p['u'] in seen:
+            p['u'] = secrets.token_hex(5)
+        seen.add(p['u'])
+        out.append(p['u'])
+    return out
+
+
+def _creator_prop_from(link, pos, euler, scale):
+    """Objet du brouillon apres une retouche dans Edition (position, rotation, taille), depuis sa recette et sa pose a la
+    generation : hauteur et inclinaison gardees en ecart a la pose (le sol peut changer a la prochaine generation).
+    Retouche a la main : n'est plus du decor automatique (« Créer le décor » et l'eau ne le retirent plus)."""
+    p, g = track_creator.migrate_prop(dict(link['prop'])), link['gen']      # recette d'avant le reclassement : convertie
+    p['x'], p['y'] = round(float(pos[0]), 2), round(float(pos[1]), 2)
+    if euler:
+        p['yaw'] = round(float(euler[2]), 5)
+        for k, a in (('rx', 0), ('ry', 1)):
+            v = float(p.get(k) or 0.0) + float(euler[a]) - float(g['euler'][a])
+            if abs(v) > 1e-4:
+                p[k] = round(v, 5)
+            else:
+                p.pop(k, None)
+    if scale:
+        p['s'] = round(sum(abs(float(v)) for v in scale) / len(scale), 4)
+    dz = float(p.get('dz') or 0.0) + float(pos[2]) - float(g['pos'][2])
+    if abs(dz) > 0.5:
+        p['dz'] = round(dz, 1)
+    else:
+        p.pop('dz', None)
+    p.pop('ai', None)
+    p['ed'] = 1                         # place dans Edition : garde meme s'il touche la route (track_creator.props_items)
+    return p
+
+
+def creator_apply_patch(track, patch):
+    """Retouches d'Edition sur le decor genere [{set: objet} | {del: u} | {add: objet}] reportees dans la copie du
+    brouillon sur le serveur (et l'enregistrement de la derniere generation) : la prochaine generation les garde.
+    Le brouillon du navigateur est corrige de meme par la page (creator.applyPatch)."""
+    for path, stamp in ((creator_draft_path(track), True), (creator_path(track), False)):
+        if not os.path.exists(path):
+            continue
+        d = json.load(open(path))
+        d['props'] = patch_props(d.get('props') or [], patch)
+        if stamp:
+            d['at'] = int(time.time() * 1000)
+        json.dump(d, open(path, 'w'))
+
+
+def patch_props(props, patch):
+    """Meme calcul que creator.js applyPatch."""
+    props = list(props)
+    for op in patch:
+        if 'add' in op:
+            props.append(op['add'])
+            continue
+        u = op.get('del') or (op.get('set') or {}).get('u')
+        i = next((k for k, p in enumerate(props) if isinstance(p, dict) and p.get('u') == u), None)
+        if i is None:                   # retire depuis dans la Creation : sa suppression l'emporte
+            continue
+        if 'del' in op:
+            props.pop(i)
+        else:
+            props[i] = op['set']
+    return props
+
+
+def creator_ground_file(track):
+    return os.path.join(OUT_DIR, 'creator', track, 'ground.npz')
+
+
+def creator_ground_save(track, gnd):
+    """Sol genere (grille, hauteurs, trous, route ; voutes et eau s'il y en a) garde pour la generation suivante
+    (creator_reseat) et « Appliquer le décor » (creator_props_apply)."""
+    xs, ys, H, hole, C = gnd[:5]
+    more = {}
+    if len(gnd) > 6:
+        more = {'roof': gnd[5] if gnd[5] is not None else np.zeros(0, bool), 'wet': gnd[6] if gnd[6] is not None else np.zeros(0, bool)}
+    os.makedirs(os.path.dirname(creator_ground_file(track)), exist_ok=True)
+    np.savez_compressed(creator_ground_file(track), xs=xs, ys=ys, H=H, hole=hole, C=C, **more)
+
+
+def creator_ground_load(track, full=False):
+    """Sol de la derniere generation : fichier garde, sinon recalcule depuis son enregistrement (pistes generees avant le
+    2026-11-14, une fois). full : avec voutes et eau (7 valeurs, comme track_creator.build). None : jamais generee ou
+    illisible."""
+    try:
+        p = creator_ground_file(track)
+        if os.path.exists(p):
+            z = np.load(p)
+            g = (z['xs'], z['ys'], z['H'], z['hole'], z['C'])
+            if 'wet' in z.files:
+                roof, wet = z['roof'], z['wet']
+                return g + (roof if roof.size else None, wet if wet.size else None)
+            if not full:
+                return g
+        if not os.path.exists(creator_path(track)):
+            return None
+        d = json.load(open(creator_path(track)))
+        progress.step('sol de la génération précédente', 0.0)
+        _, _, info = track_creator.build(d['points'], bool(d.get('closed')), float(d.get('ground_z') or 0.0), d.get('kit') or 'sable',
+                                         d.get('terrain'), d.get('barriers') or 'curves', d.get('waters'), d.get('marks'),
+                                         _prop_footprints(d.get('kit') or 'sable', d.get('props')))   # comme create_build
+        creator_ground_save(track, info['_ground'])
+        return info['_ground']
+    except Exception:  # noqa: BLE001 - sans ancien sol : ajouts laisses ou ils sont (comme avant)
+        traceback.print_exc()
+        return None
+
+
+RESEAT_BELOW, RESEAT_ABOVE = 10.0, 30.0       # m : objet pose sur le sol / la route (au-dela : en l'air, laisse tel quel)
+
+
+def _surfaces_at(g, x, y):
+    """Surfaces sous (x, y) pouces : [(hauteur pouces, 'ground' | 'road')] (route : chaque passage, pont compris)."""
+    out = []
+    h = track_creator.ground_height(g, x, y)
+    if h is not None:
+        out.append((h, 'ground'))
+    C = g[4]
+    mx, my = x / track_creator.INCH, y / track_creator.INCH
+    dist = np.hypot(C[:, 0] - mx, C[:, 1] - my)
+    # un passage = le point de route le plus proche (une route en pente large couvre des points de hauteurs diverses) ;
+    # un autre passage (pont, boucle) : a plus de 4 m de hauteur des passages deja pris
+    passes, reach = [], float(C[:, 3].max()) / 2 + 1.0 if len(C) else 0.0
+    for k in np.argsort(dist):
+        if dist[k] >= reach:
+            break
+        if dist[k] >= C[k, 3] / 2 + 1.0:
+            continue
+        if all(abs(C[k, 2] - z) > 4.0 for z in passes):
+            passes.append(float(C[k, 2]))
+    out += [((z + track_creator.ROAD_LIFT) * track_creator.INCH, 'road') for z in passes]
+    return out
+
+
+def reseat_z(old, new, x, y, z):
+    """Hauteur (pouces) d'un objet pose a z sur l'ancien sol, reportee sur le nouveau : meme ecart au-dessus de la meme
+    surface (sol, ou route du meme passage : la plus proche de l'ancienne). None : rien dessous, ou objet en l'air."""
+    so = _surfaces_at(old, x, y)
+    if not so:
+        return None
+    below = [s for s in so if s[0] <= z + 2 * track_creator.INCH]
+    pick = max(below) if below else min(so, key=lambda s: abs(s[0] - z))
+    off = z - pick[0]
+    if not -RESEAT_BELOW * track_creator.INCH <= off <= RESEAT_ABOVE * track_creator.INCH:
+        return None
+    sn = _surfaces_at(new, x, y)
+    # deja pose sur le NOUVEAU sol (place dans l'Edition sur l'apercu de la base, 2026-11-14) : plus pres de lui que de
+    # l'ancien -> laisse tel quel
+    if sn and min(abs(z - s[0]) for s in sn) < abs(off):
+        return None
+    same = [s for s in sn if s[1] == pick[1]] or [s for s in sn if s[1] == 'ground']
+    if not same:
+        return None
+    return min(same, key=lambda s: abs(s[0] - pick[0]))[0] + off
+
+
+def creator_reseat(track, old, new, crates):
+    """Regeneration sans « Repartir de zéro » : ajouts faits dans Edition (imports, objets de la bibliotheque, copies) et
+    caisses / boosters reposes sur le nouveau sol (meme ecart a la meme surface). Les boosters, retires par « Nouvelle map »,
+    sont remis. -> rapport."""
+    report, n_obj = [], 0
+    if old is not None:
+        links = load_links(track)
+        for art in art_files(track):
+            orig, fl = original_ids(track, art), links.get(art, {})
+            df = DecorFile(base_file(track, art)[0])
+            moved = 0
+            for o in df.objects():
+                lk = fl.get(str(o['id']))
+                if o['id'] in orig or (o['name'] or '').startswith(BOOST_VISUAL_PREFIX) \
+                        or (isinstance(lk, dict) and lk.get('tag') == 'creator'):       # decor de la Creation : repose a part
+                    continue
+                nz = reseat_z(old, new, o['pos'][0], o['pos'][1], o['pos'][2])
+                if nz is not None and abs(nz - o['pos'][2]) > 1.0:
+                    df.set_transform(o['id'], [o['pos'][0], o['pos'][1], nz], None, None)
+                    moved += 1
+            if moved:
+                write_art(track, art, df)
+                n_obj += moved
+    n_cr = 0
+    if crates:
+        want = []
+        for c in crates:
+            nz = reseat_z(old, new, *c['pos']) if old is not None else None
+            if nz is not None and abs(nz - c['pos'][2]) > 1.0:
+                c = {**c, 'pos': [c['pos'][0], c['pos'][1], round(nz, 2)]}
+                n_cr += 1
+            want.append({k: v for k, v in c.items() if k != 'color'})      # couleur : plaque refaite apres l'import
+        logical = crate_file(track)
+        z, _ = write_crates_file(track, want, measure=False)    # inclinaison : a l'enregistrement de la course qui suit
+        safe_compact(track, logical, z)
+        z.save(saved_path(logical))
+    nb = sum(c['kind'] == 'boost' for c in crates)
+    if n_obj or n_cr:
+        report.append(f'ajouts d\'Édition reposés sur le nouveau sol : {n_obj} objet(s), {n_cr} caisse(s) / booster(s)')
+    if nb:
+        report.append(f'{nb} booster(s) gardé(s)')
+    return report
+
+
+def _creator_waters(ws):
+    return [w for w in (ws or []) if isinstance(w, dict) and (('x' in w and 'y' in w) or (w.get('paint') and 'level' in w))]
+
+
+def _creator_diff(saved, req):
+    """Ce qui a change depuis la derniere generation, hors decor seme (objets) : None si rien, sinon de quoi il s'agit."""
+    def terr(t):           # trim_m : choisi a la generation ; aih : suivi du relief du decor auto (Creation seule, inutilise ici)
+        return {k: v for k, v in (t or {}).items() if k not in ('trim_m', 'aih')} if isinstance(t, dict) else t
+    marks = lambda m: {k: bool((m or {}).get(k)) for k in track_creator.MARK_KEYS}
+    checks = [('la route', lambda d: (d.get('points') or [], bool(d.get('closed')), float(d.get('ground_z') or 0.0))),
+              ('le thème', lambda d: d.get('kit') or 'sable'),
+              ('les barrières', lambda d: d.get('barriers') or 'curves'),
+              ('le marquage', lambda d: marks(d.get('marks'))),
+              ('l\'eau', lambda d: _creator_waters(d.get('waters'))),
+              ('le relief ou la peinture', lambda d: terr(d.get('terrain')))]
+    for label, f in checks:
+        if json.dumps(f(saved), sort_keys=True) != json.dumps(f(req), sort_keys=True):
+            return label
+    return None
+
+
+def creator_props_apply(req):
+    """POST /api/creator_props_apply : « Appliquer le décor » (2026-11-14, etape B4) : seul le decor seme a change depuis la
+    derniere generation -> objets reposes sur le sol deja genere (quelques secondes) au lieu de tout regenerer. req = celui de
+    create_build ; dry : verifier seulement. -> {ok, reason?, uids?, report?}"""
+    track = req['track']
+    if not os.path.exists(creator_path(track)):
+        return {'ok': False, 'reason': 'piste jamais générée'}
+    saved = json.load(open(creator_path(track)))
+    diff = _creator_diff(saved, req)
+    if diff:
+        return {'ok': False, 'reason': f'{diff} a changé depuis la dernière génération'}
+    if req.get('dry'):
+        return {'ok': True}
+    kit = saved.get('kit') or 'sable'
+    progress.step('sol de la piste générée', 0.0)
+    gnd = creator_ground_load(track, full=True)
+    if gnd is None or len(gnd) < 7:
+        return {'ok': False, 'reason': 'sol de la dernière génération illisible'}
+    props = req.get('props') or []
+    # carte decoupee loin de la route (sol absent en jeu) : un objet NOUVEAU au-dela flotterait -> regenerer
+    trim = (saved.get('terrain') or {}).get('trim_m') if isinstance(saved.get('terrain'), dict) else None
+    if trim:
+        C = gnd[4]
+        old = np.array([[p['x'], p['y']] for p in saved.get('props') or [] if isinstance(p, dict)] or np.zeros((0, 2))) / track_creator.INCH
+        for p in props:
+            mx, my = p['x'] / track_creator.INCH, p['y'] / track_creator.INCH
+            if float(np.min(np.hypot(C[:, 0] - mx, C[:, 1] - my) - C[:, 3] / 2)) > float(trim) and \
+                    not (len(old) and float(np.min(np.hypot(old[:, 0] - mx, old[:, 1] - my))) < 2.0):
+                return {'ok': False, 'reason': f'un nouvel objet est dans la partie de la carte retirée (à plus de {trim} m de la route)'}
+    uids = creator_prop_uids(props)
+    progress.step('objets posés sur le sol', 0.1)
+    items, dropped = track_creator.props_items(kit, props, gnd, kit_prop_dims)
+    n_on_road = sum(1 for it in items if it.get('on_road'))
+    with progress.span(0.2, 1.0, 'décor semé'):
+        sown = place_library_many(track, items, 'creator')
+    saved['props'] = props
+    json.dump(saved, open(creator_path(track), 'w'))
+    return {'ok': True, 'uids': uids,
+            'report': [f"décor appliqué : {sown['placed']} objet(s) posé(s)"
+                       + (f", {sown['looks']} gardant leur couleur / forme de l'Édition" if sown.get('looks') else '')
+                       + (f", {dropped} trop près de la route, sur une falaise ou dans l'eau (écarté(s))" if dropped else '')
+                       + (f" — ATTENTION {n_on_road} objet(s) retouché(s) dans Édition touchent la route (gardés)" if n_on_road else ''),
+                       'collision recalculée à « Enregistrer »' if collision_pending(track) else '']}
 
 
 def create_build(req):
@@ -8276,16 +9233,20 @@ def create_build(req):
     if kit not in track_creator.KITS:
         raise ValueError(f'thème inconnu : {kit}')
     ground_z = float(req.get('ground_z') or 0.0)
+    uids = creator_prop_uids(req.get('props'))
     progress.step('géométrie de la piste', 0.0)
     terrain = req.get('terrain')
     barriers = req.get('barriers') or 'curves'
     waters = [w for w in (req.get('waters') or []) if isinstance(w, dict) and (('x' in w and 'y' in w)
                                                                           or (w.get('paint') and 'level' in w))]
     marks = {k: bool((req.get('marks') or {}).get(k)) for k in track_creator.MARK_KEYS}
+    # ajouts d'Edition gardes : sol de la generation precedente (avant qu'il soit remplace), pour les reposer sur le nouveau
+    old_ground = None if req.get('wipe') else creator_ground_load(track)
     obj, mtl, info = track_creator.build(pts, bool(req.get('closed')), ground_z, kit, terrain, barriers, waters, marks,
                                          _prop_footprints(kit, req.get('props')))
     folder = os.path.join(OUT_DIR, 'creator', track)
     os.makedirs(folder, exist_ok=True)
+    creator_ground_save(track, info['_ground'])
     for kind in info.get('water_kinds') or []:          # eau : image generee par type (pas de materiau d'eau importable)
         open(os.path.join(folder, track_creator.water_png(kind)), 'wb').write(track_creator.water_texture(kind=kind))
     texs = track_creator.kit_textures(lambda lg, pak: pak_tool.read_latest(ARCHIVES, lg, pak)[0], kit, used=info['materials'])
@@ -8298,6 +9259,14 @@ def create_build(req):
             open(p, 'wb').write(data)
     open(os.path.join(folder, track_creator.OBJ_NAME), 'w', encoding='utf-8').write(obj)
     open(os.path.join(folder, track_creator.MTL_NAME), 'w', encoding='utf-8').write(mtl)
+    # route changee depuis la generation precedente (piste aleatoire, route retracee) : la page retire les zones posees sur
+    # l'ancien trace (gravite, camera), qui sinon restaient au milieu de nulle part (2026-11-17)
+    try:
+        prev = json.load(open(creator_path(track))).get('points') if os.path.exists(creator_path(track)) else None
+    except (OSError, ValueError):
+        prev = None
+    route_changed = not prev or len(prev) != len(pts) or any(
+        abs(float(a) - float(b)) > 1.0 for p, q in zip(prev, pts) for a, b in zip(p[:3], q[:3]))
     json.dump({'points': pts, 'closed': bool(req.get('closed')), 'ground_z': ground_z, 'kit': kit, 'terrain': terrain,
                'barriers': barriers, 'marks': marks, 'signs': req.get('signs') or {}, 'props': req.get('props') or [], 'waters': waters,
                'water_falls': info['water_falls']},              # zones de chute de l'eau profonde (auto_falls)
@@ -8306,10 +9275,22 @@ def create_build(req):
     # zéro ») : aussi tous les ajouts faits dans Edition (imports, objets de la bibliotheque, copies)
     progress.step('nouvelle map (vider la piste)', 0.05)
     prefix = 'imp:' + os.path.splitext(track_creator.OBJ_NAME)[0] + ' —'
+    # caisses et boosters gardes (« Nouvelle map » retire les boosters : remis ensuite, reposes sur le nouveau sol)
+    kept_crates = read_track_crates(track) if not req.get('wipe') and crates_supported(track) else []
+    # couleur de chaque booster : elle n'est gardee que par sa plaque au sol, retiree avec la map (2026-11-17 : un booster
+    # rose redevenait bleu, un vert orange apres une generation) -> relevee avant, plaques refaites apres l'import du sol
+    cols = iter(boost_colors(track)) if any(c['kind'] == 'boost' for c in kept_crates) else iter(())
+    for c in kept_crates:
+        if c['kind'] == 'boost':
+            c['color'] = next(cols, 'bleu' if c.get('super') else 'orange')
     with progress.span(0.05, 0.3):
         apply_newmap({'track': track, 'strip_ground': True, 'strip_art': art_files(track),
-                      'move_away': [k for k, _, _ in MOVE_AWAY_GROUPS],
+                      'move_away': [k for k, _, _ in MOVE_AWAY_GROUPS], 'no_measure': True,
                       'remove': [g['key'] for g in added_groups(track) if req.get('wipe') or g['key'].startswith(prefix)]})
+    reseated = []
+    if not req.get('wipe'):
+        progress.step('ajouts d\'Édition reposés sur le nouveau sol', 0.3)
+        reseated = creator_reseat(track, old_ground, info['_ground'], kept_crates)
     surf = {m: {'collision': s is not None, 'surface': s if s is not None else 'none'}
             for m, s in {**track_creator.surfaces(kit), **info['mix_surfaces']}.items()}
     for kind in track_creator.WATER_TYPES:                    # on passe a travers : fond du creux ou zone de chute
@@ -8318,9 +9299,15 @@ def create_build(req):
         res = import_folder({'track': track, 'folder': folder, 'files': [track_creator.OBJ_NAME], 'scale': 39.37,
                              'up': 'z', 'placement': 'absolute', 'materials': surf, 'road_material': 'Road',
                              'texture_size': '1024', 'force': True})
+    kept_boosts = [c for c in kept_crates if c['kind'] == 'boost']
+    if kept_boosts:                                      # plaques des boosters gardes, couleurs d'avant, sur le nouveau sol
+        cur = [c for c in read_track_crates(track) if c['kind'] == 'boost']
+        if len(cur) == len(kept_boosts):
+            sync_boost_visuals(track, [{**c, 'color': k.get('color')} for c, k in zip(cur, kept_boosts)], measure=False)
     # decor seme (onglet Creation, mode Decor) : objets du jeu poses sur le sol genere, semis precedent remplace
     gnd = info.pop('_ground')
     items, dropped = track_creator.props_items(kit, req.get('props'), gnd, kit_prop_dims)
+    n_on_road = sum(1 for it in items if it.get('on_road'))
     # panneaux de virage (Route > Reglages) : objets de la bibliotheque, poses avec le semis
     signs = {}                                   # option retiree du menu le 2026-11-13 (demande utilisateur) : plus de panneaux
     spots = info.pop('_sign_spots', [])
@@ -8349,10 +9336,12 @@ def create_build(req):
                          if info['waters'] else '')
                       + ''.join(f' · {x}' for x in info['water_report'])
                       + (f", {sown['placed']} objet(s) de décor" if sown['placed'] else '')
-                      + (f" ({dropped} trop près de la route ou au-dessus d'un saut, écarté(s))" if dropped else '')]
-                      + res.get('report', []),
+                      + (f" ({sown['looks']} gardant leur couleur / forme de l'Édition)" if sown.get('looks') else '')
+                      + (f" ({dropped} trop près de la route ou au-dessus d'un saut, écarté(s))" if dropped else '')
+                      + (f" — ATTENTION {n_on_road} objet(s) retouché(s) dans Édition touchent la route (gardés)" if n_on_road else '')]
+                      + reseated + res.get('report', []),
             'road': road, 'guide': info['guide'], 'exact': info['exact'], 'start': info['start'], 'yaw': info['yaw'],
-            'water_falls': len(info['water_falls']),
+            'water_falls': len(info['water_falls']), 'uids': uids, 'route_changed': bool(route_changed),
             # plancher de chute 30 m sous le point le plus bas (celui enregistre peut venir d'une ancienne map plus haute :
             # T905 a z 9512 au-dessus d'un sol a 6812 -> les karts « tombaient » des le depart)
             'killz': info['min_z'] - 30 * 39.37}
@@ -8431,6 +9420,9 @@ def kit_prop_dims(kit):
     for kind, d in (track_creator.KITS[kit].get('props') or {}).items():
         out[kind] = []
         for m, model in enumerate(d['models']):
+            if model not in cache and model in track_creator._CAT.DIMS:   # releve du catalogue (2026-11-17) : sans relire le modele
+                r, z0, z1 = track_creator._CAT.DIMS[model]
+                cache[model] = {'r': r, 'zmin': z0, 'zmax': z1}
             if model not in cache:
                 try:
                     P = np.nan_to_num(np.asarray(_kit_model(kit, kind, m)['positions'], np.float64)).reshape(-1, 3) / 39.37
@@ -8443,7 +9435,7 @@ def kit_prop_dims(kit):
             out[kind].append(cache[model])
     if len(cache) != before:
         os.makedirs(OUT_DIR, exist_ok=True)
-        json.dump(cache, open(os.path.join(OUT_DIR, 'kit_dims_cache.json'), 'w'))
+        json.dump(cache, open(os.path.join(OUT_DIR, 'kit_dims_cache_v2.json'), 'w'))
     return out
 
 
@@ -8451,10 +9443,11 @@ _kit_dims = {}
 
 
 def _kit_dims_cache():
+    # v2 (2026-11-18) : dimensions des modeles a pieces (preview.model_transforms) corrigees, ancien cache ignore
     """{modele: dimensions}, relu du disque une fois par dossier de sortie."""
     if OUT_DIR not in _kit_dims:
         try:
-            _kit_dims[OUT_DIR] = json.load(open(os.path.join(OUT_DIR, 'kit_dims_cache.json')))
+            _kit_dims[OUT_DIR] = json.load(open(os.path.join(OUT_DIR, 'kit_dims_cache_v2.json')))
         except (OSError, ValueError):
             _kit_dims[OUT_DIR] = {}
     return _kit_dims[OUT_DIR]
@@ -8614,6 +9607,265 @@ def uninstall_track(track):
 # -- onglet « Menu » : categories du menu du jeu et nouvelles pistes (custom_category.py, track_clone.py) ----------
 NEW_TRACK_SOURCE = 'T111_Crash_Cove'
 
+# -- modele de map vide (2026-11-16, demande utilisateur) ----------------------------------------------------------
+# Une nouvelle piste etait une copie COMPLETE de Crash Cove (~450 Mo dans le jeu) : vider la map retire les objets mais
+# l'archive gardait leurs textures et modeles, et les fichiers d'effets / decor anime / ambiance etaient seulement
+# descendus sous la carte (charges quand meme). Le modele = Crash Cove deja videe, fabriquee UNE fois depuis le jeu de
+# l'utilisateur et gardee pres de l'editeur (out/modele_map_vide ; jamais livree : fichiers du jeu) :
+#  - fichiers de carte gardes : course (principal, _Design, _RaceSystem, _Power_Up, modes), ciel et eclairage
+#    principal, mini-carte, cameras d'intro, collision, _VFX (generateur de caisses), _Art_Core VIDE (sauf l'entite
+#    qui porte le sol de collision, comme « Nouvelle map ») ; les autres (_Art_*, decor anime, effets, lumieres,
+#    sons d'ambiance, occultation) retires de l'archive ET du manifeste (le jeu ne les charge plus) ;
+#  - textures, modeles, materiaux, acteurs, animations, effets, scripts propres a la piste : gardes seulement si un
+#    fichier garde les cite (dependances TDEP ou nom dans ses textes), plus les gabarits de l'editeur.
+BLANK_VERSION = 3                     # change -> modele refait (2 : objet gabarit garde dans Art_Core ; 3 : fichiers
+                                      # vises par handle et chemins en « \ » gardes, T920 bloquee au chargement)
+BLANK_KEEP_MAPS = {'', '_animation', '_art_core', '_design', '_design_include_switch', '_lighting', '_minimap',
+                   '_moderrace', '_power_up', '_racesystem', '_race_relic', '_race_token', '_race_trophy', '_vfx'}
+BLANK_CANDIDATES = ('textures/', 'models/', 'materialinstances/', 'actors/', 'anims/', 'vfx/', 'vsc/octane/',
+                    'loosetextures/')
+BLANK_EDITOR_FILES = (TEMPLATE, 'materialinstances/octane/t111_crash_cove/t111_props_materials,t111_rockgroundside_b,00020.igz',
+                      'materialinstances/Levels/Crash1/L101_NSanityBeach_materials,T111_VinesLeaf01,0000000002.igz')
+
+
+def blank_dir():
+    return os.path.join(os.path.dirname(OUT_DIR), 'modele_map_vide')
+
+
+def blank_pak():
+    return os.path.join(blank_dir(), NEW_TRACK_SOURCE.lower() + '.pak')
+
+
+def _blank_stamp():
+    """Ce dont le modele depend : version, archive d'origine de Crash Cove (taille, date)."""
+    p = pak_tool.real(os.path.join(ARCHIVES, NEW_TRACK_SOURCE.lower() + '.pak'))
+    bk = pak_tool._backup_info(p)                    # Crash Cove modifiee par l'editeur : taille d'origine (inchangee)
+    size = bk.get('original_size') if bk else os.path.getsize(p)
+    return {'version': BLANK_VERSION, 'source_size': size}
+
+
+def blank_info():
+    try:
+        info = json.load(open(os.path.join(blank_dir(), 'info.json'), encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not os.path.exists(blank_pak()) or any(info.get(k) != v for k, v in _blank_stamp().items()):
+        return None
+    return info
+
+
+def _tdep_logical(p):
+    """Chemin TDEP (« materials:/Levels/... ») -> nom logique (« materialinstances/levels/... »), minuscules."""
+    if ':/' not in p:
+        return p.lower()
+    ns, rest = p.split(':/', 1)
+    return ({'materials': 'materialinstances'}.get(ns.lower(), ns.lower()) + '/' + rest).lower()
+
+
+def _blank_art_core(data, owner_name):
+    """_Art_Core vide comme « Nouvelle map » (write_art) : objets retires sauf l'entite du sol de collision ; entites
+    animees / scriptees descendues (supprimees : plantage au chargement suivant) ; regroupements retires.
+    + l'objet GABARIT (2026-11-16, erreur « aucun objet modèle à copier » en generant T920) : celui que
+    template_object choisit (modele + statique, le moins de composants), garde et descendu sous la carte ; chaque
+    objet ajoute (generation, imports, bibliotheque) est une copie de lui. Retire du fichier enregistre de la piste
+    par « Nouvelle map » comme les autres objets d'origine. -> (octets, objets retires, nom du gabarit)."""
+    orig = DecorFile(data)
+    z = orig.igz
+    oobjs = {o['id']: o for o in orig.objects()}
+    keep = {i for i, o in oobjs.items() if o['name'] == owner_name}
+
+    def n_components(o):
+        d = z.deref(o['id'] + 0x40)
+        table = z.deref(d + 0x10) if d is not None else None
+        return len(list(z.hash_items(table))) if table is not None else 99
+    owned = z.owned_by(ENTITY_TYPES)
+    cands = [o for o in oobjs.values() if o['has_transform'] and o['name'] != owner_name and o['id'] in owned[o['id']][0]]
+    donor = min(cands, key=lambda o: (n_components(o), o['id'])) if cands else None
+    if donor is None:
+        raise RuntimeError('modèle de map vide : aucun objet gabarit dans Art_Core')
+    sunk = ({r for r in orig.roots if z.objects.get(r) in ('CGameEntity', 'CEntity')} - keep) | {donor['id']}
+    holders = [r for r in orig.roots if z.objects.get(r) in ENTITY_TYPES and r not in oobjs and r not in sunk]
+    orig.delete_many([i for i in oobjs if i not in keep and i not in sunk] + holders)
+    for r in sunk:
+        x, y, zz = z.vec3(r + 0x20)
+        struct.pack_into('<3f', *z._loc(r + 0x20), x, y, zz + MOVE_AWAY_DZ)
+    return orig.to_bytes(), len(oobjs) - len(keep) - 1, donor['name']
+
+
+def blank_track_outdated(track):
+    """Piste faite avec un ancien modele de map vide : il manque a son archive d'origine des fichiers du modele a jour
+    (version 3 : _Design_Excl_4p, modele d'ombres et sonde du _Lighting). Copies completes de Crash Cove : non."""
+    p = os.path.join(ARCHIVES, track_pak(track))
+    if not pak_tool.exists(p):
+        return False
+    view = pak_tool.original_archive(p)
+    idx = view[1] if view else pak_tool.cached_archive(p)[1]
+    ren = track_clone.Renamer(NEW_TRACK_SOURCE, track)
+    return any(ren.name(n).lower() not in idx for n in blank_files())
+
+
+def refresh_blank_track(track, logical=None):
+    """Piste creee avec un ancien modele de map vide (1er : Art_Core sans objet gabarit, rien ne pouvait y etre
+    ajoute ; 2e : fichiers retires que le jeu attend, chargement sans fin) : son archive est refaite depuis le modele
+    a jour (meme numero, memes fichiers ; ce qui etait installe est remis a l'installation suivante), puis les fichiers
+    revenus descendus sous la carte comme a la creation. Rien a faire pour les autres pistes."""
+    created = {t['id'] for t in (custom_category.read_state(ARCHIVES) or {}).get('tracks', [])}
+    if track not in created:
+        return
+    no_tmpl = logical is not None and logical == main_art(track) and template_object(track, logical) is None
+    if not no_tmpl and not blank_track_outdated(track):
+        return
+    if quick_test.emulator_running():
+        raise RuntimeError('shadPS4 est ouvert : ferme-le (l\'archive de la piste doit être refaite)')
+    with progress.span(0.0, 0.3, 'archive de la piste refaite (modèle de map vide à jour)'):
+        _release_archives()                          # archive de la piste fermee (Windows : remplacement refuse)
+        files = blank_files()                        # (ouvert APRES : _release_archives ferme aussi le modele)
+        track_clone.create(ARCHIVES, NEW_TRACK_SOURCE, n=int(track[2:4]), overwrite=True, files=files,
+                           progress=lambda f: progress.step(None, f))
+        _release_archives()
+        for c in (_template_cache, _art_cache, _main_art_cache, _owner_cache, _move_away_cache, _lighting_cache,
+                  _orig_ids_cache):
+            for k in [k for k in c if (k[0] if isinstance(k, tuple) else k) == track]:
+                del c[k]
+    # fichiers revenus avec le modele a jour (_Design_Excl_4p : bateau de Crash Cove) : descendus sous la carte comme
+    # par « Nouvelle map » a la creation (les fichiers deja descendus sont refaits a l'identique)
+    groups = newmap_settings(track).get('move_away') or []
+    if groups:
+        write_moved_away(track, groups)
+    if no_tmpl and template_object(track, logical) is None:
+        raise ValueError(f'{os.path.basename(logical)} : aucun objet modèle à copier, même après la remise à jour')
+
+
+def build_blank_template():
+    """Fabrique le modele (voir plus haut) -> info. Lecture seule sur le jeu ; ecrit seulement dans blank_dir()."""
+    T = NEW_TRACK_SOURCE
+    with progress.span(0.0, 0.15, 'modèle de map vide : lecture de Crash Cove'):
+        src = track_clone.source_files(ARCHIVES, T)          # versions d'origine (jamais celles de l'editeur)
+    low = {n.lower(): n for n in src}
+    data = {}
+    read = lambda n: data[n] if n in data else track_clone._read(src[n])
+    prefix = f'maps/octane/{T.lower()}/{T.lower()}'
+    # entite du sol de collision (comme ground_owner / collision_owners, sur les fichiers d'origine)
+    art_core = low[f'{prefix}_art_core.igz']
+    pf = Packfile(read(low[collision_file(T).lower()]))
+    comp = next(o for o, c in pf.objects.items() if c == 'hknpStaticCompoundShape')
+    io_, ninst = pf.array(comp + 0x60)
+    best = max((i for i in range(ninst) if pf.objects.get(pf.ptr(io_ + i * 128 + 0x50)) == 'hknpCompressedMeshShape'),
+               key=lambda i: pf.array(pf.ptr(pf.ptr(io_ + i * 128 + 0x50) + 0x58) + 0x60)[1])
+    sc = IgzFile(read(low[f'maps/octane/{T.lower()}/staticcollision_{T.lower()}.igz']))
+    tbl = next(o for o, t in sc.objects.items() if t == 'CStaticCollisionHashInstanceIdHashTable')
+    vd, kd, cap = sc.deref(tbl + 0x18), sc.deref(tbl + 0x28), sc.u32(tbl + 0x20) // 8
+    want = {sc.u64(kd + i * 8) for i in range(cap)
+            if sc.u64(kd + i * 8) != 0xFAFAFAFAFAFAFAFA and struct.unpack_from('<H', *sc._loc(vd + i * 2))[0] == best}
+    za = IgzFile(read(art_core))
+    fh = pak_tool.fnv1a_lower(os.path.basename(art_core)[:-4])
+    cnt, _, nd = za.list_info(za.names_offset)
+    owner = next((name for i, (name, _) in enumerate(za.root_objects()[:cnt]) if (fh << 32 | za.u32(nd + i * 16 + 8)) in want), None)
+    if not owner:
+        raise RuntimeError('modèle de map vide : entité du sol de collision introuvable dans Art_Core')
+    data[art_core], n_art, donor = _blank_art_core(read(art_core), owner)
+    # fichiers de carte : gardes / retires
+    dropped_maps = set()
+    for n in src:
+        nl = n.lower()
+        if nl.startswith(prefix) and nl.endswith('.igz') and nl[len(prefix):-4] not in BLANK_KEEP_MAPS:
+            dropped_maps.add(nl)
+    # fichiers de carte vises par un handle (espace de noms EXNM) d'un fichier garde : gardes aussi (2026-11-16, T920
+    # en chargement sans fin : le _Design de Crash Cove vise Small_Boat01 / small_boat_spline de _Design_Excl_4p).
+    # Leurs entites sont descendues sous la carte par « Nouvelle map » (groupes MOVE_AWAY_GROUPS) a la creation.
+    by_space = {os.path.basename(nl)[:-4]: nl for nl in dropped_maps}
+    todo = [nl for nl in low if nl.startswith('maps/') and nl.endswith('.igz') and nl not in dropped_maps]
+    while todo:
+        try:
+            z = IgzFile(read(low[todo.pop()]))
+            spaces = {s.lower() for _, s in z._exnm_flagged(1) + z._exnm_flagged(0) if s}
+        except Exception:  # noqa: BLE001 - fichier sans EXNM lisible
+            continue
+        for s in spaces:
+            nl = by_space.pop(s, None)
+            if nl:
+                dropped_maps.discard(nl)
+                todo.append(nl)
+    # fermeture : racines = tout ce qui n'est pas candidat (sauf cartes retirees) + gabarits de l'editeur
+    cands = {nl for nl in low if nl.startswith(BLANK_CANDIDATES)}
+    by_base = defaultdict(set)
+    for nl in cands:
+        by_base[os.path.basename(nl).rsplit('.', 1)[0]].add(nl)
+    keep, strings, seen = set(), set(), set()
+    stack = [nl for nl in low if nl not in cands and nl not in dropped_maps] + [f.lower() for f in BLANK_EDITOR_FILES]
+    # modele de l'entite du sol de collision restee dans l'Art_Core vide (RaceTrack_Collision -> <piste>_Collision.igb,
+    # 3 Ko) : les textes de l'Art_Core ne sont pas suivis (chemins des objets retires), il manquait (T920, 2026-11-16).
+    # Pas celui du gabarit (logo, ~110 Mo avec ses dependances) : chaque copie recoit son propre modele et « Nouvelle
+    # map » retire le gabarit lui-meme de la piste creee.
+    stack += [model_logical_path(o['model']).lower() for o in DecorFile(data[art_core]).objects()
+              if o.get('model') and o['name'] == owner]
+    with progress.span(0.15, 0.6, 'modèle de map vide : fichiers encore utilisés'):
+        while stack:
+            p = stack.pop()
+            if p in keep:
+                continue
+            keep.add(p)
+            if p not in low or not p.endswith(('.igz', '.lng')):
+                continue
+            d = read(low[p])
+            if d[:4] not in (b'\x01ZGI', b'IGZ\x01'):
+                continue
+            try:
+                z = IgzFile(d)
+                stack += [_tdep_logical(x) for _, x in library.tdep_entries(z)]
+                if p.startswith('packages/'):                      # manifestes : listent tout, pas des citations
+                    continue
+                st = {s.lower() for s in track_clone._strings(d, track_clone._fixups(d))}
+            except Exception:  # noqa: BLE001 - fichier illisible : garde, sans ses citations
+                continue
+            # chemins du moteur en « \ » (models:\Levels\...\X.igb, loosetextures:\probes\X.dds) : sans eux le modele
+            # d'ombres et la sonde du _Lighting etaient retires (T920 : chargement sans fin). Pas pour l'Art_Core vide :
+            # ses textes gardent les chemins des 700 objets retires (tout le decor de Crash Cove reviendrait, 317 Mo)
+            keys = {s.replace('\\', '/') for s in st} if p != art_core.lower() else st
+            for b in keys - seen:
+                for m in by_base.get(b.rsplit('/', 1)[-1].rsplit('.', 1)[0], ()):
+                    stack.append(m)
+            seen |= keys
+            strings |= st
+    kept = [n for n in src if n.lower() in keep]
+    gone = {n.lower() for n in src if n.lower() not in keep}
+    # manifeste : entrees des fichiers retires enlevees
+    man = low[pkg_manifest.manifest_logical(T).lower()]
+    rows = pkg_manifest.entries(read(man))
+    rows2 = [(t, p) for t, p in rows if p.lower() not in gone]
+    data[man] = pkg_manifest.set_entries(read(man), rows2)
+    # fichiers retires encore cites par nom dans un fichier garde (avertissement : a verifier en jeu)
+    cited = sorted(os.path.basename(g) for g in gone if g.startswith('maps/')
+                   and os.path.basename(g)[:-4] in strings)
+    with progress.span(0.6, 1.0, 'modèle de map vide : écriture'):
+        os.makedirs(blank_dir(), exist_ok=True)
+        ords = track_clone._ordinals(ARCHIVES, T.lower() + '.pak', kept)
+        used = sorted({o for o in ords.values() if o < 0xFFFFFF})
+        rank = {o: i for i, o in enumerate(used)}
+        files = []
+        for n in sorted(kept):
+            a, e, lock = src[n]
+            full = e.name if e.name.lower().endswith(n.lower()) else pak_tool.FULL_PREFIX + n
+            files.append((n, full, rank.get(ords[n], ords[n]), ('data', data[n]) if n in data else ('raw', a, e, lock)))
+        tmp = blank_pak() + '.tmp'
+        track_clone.write_archive(tmp, files, os.path.join(ARCHIVES, T.lower() + '.pak'))
+        os.replace(tmp, blank_pak())
+    size = lambda L: sum(src[n][1].size for n in L)
+    info = {**_blank_stamp(), 'date': time.strftime('%Y-%m-%d %H:%M'), 'files': len(kept), 'removed': len(gone),
+            'size_before': size(src), 'size_after': size(kept), 'pak_size': os.path.getsize(blank_pak()),
+            'manifest': [len(rows), len(rows2)], 'art_core_removed': n_art, 'ground_owner': owner, 'template_object': donor,
+            'dropped_maps': sorted(os.path.basename(m) for m in dropped_maps), 'dropped_maps_cited': cited}
+    json.dump(info, open(os.path.join(blank_dir(), 'info.json'), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+    return info
+
+
+def blank_files():
+    """{nom logique: (archive, entree, verrou)} du modele (fabrique d'abord s'il manque ou n'est plus a jour)."""
+    if blank_info() is None:
+        build_blank_template()
+    a, idx, lock = pak_tool.cached_archive(blank_pak())
+    return {e.logical_name: (a, e, lock) for e in idx.values()}
+
 
 def _zone_display(zone, lang, created):
     """Nom affiche d'une zone : piste creee -> son nom ; piste du jeu -> son .lng (version installee)."""
@@ -8697,21 +9949,40 @@ def menu_track_create(req):
     if quick_test.emulator_running():
         raise RuntimeError('shadPS4 est ouvert : ferme-le avant de créer une piste')
     name = (req.get('name') or '').strip() or 'Custom Track'
-    with progress.span(0.0, 0.6, 'copie de Crash Cove (≈ 360 Mo)'):
+    blank = req.get('blank', True)
+    # map vide : depuis le modele deja vide et allege (fabrique la premiere fois, ~1 min) ; sinon Crash Cove entiere
+    files = None
+    if blank:
+        if blank_info() is None:
+            with progress.span(0.0, 0.3, 'modèle de map vide (une seule fois)'):
+                build_blank_template()
+        files = blank_files()
+    with progress.span(0.3 if blank else 0.0, 0.6, 'copie du modèle de map vide' if blank else 'copie de Crash Cove (≈ 360 Mo)'):
         new, written, _ = track_clone.create(ARCHIVES, NEW_TRACK_SOURCE, n=free_track_number(), display=name,
-                                             progress=lambda f: progress.step(None, f))
+                                             progress=lambda f: progress.step(None, f), files=files)
     with progress.span(0.6, 0.75, 'enregistrement dans le menu du jeu'):
         _release_archives()
         custom_category.add_track(ARCHIVES, new, NEW_TRACK_SOURCE, name, written, req.get('group'))
         clear_caches()
     report = [f'{new} : {", ".join(written)}']
-    if req.get('blank', True):
+    if blank:
+        bi = blank_info() or {}
+        report.append(f'modèle de map vide : {bi.get("files")} fichiers, {bi.get("size_after", 0) / 1e6:.0f} Mo '
+                      f'(Crash Cove entière : {bi.get("size_before", 0) / 1e6:.0f} Mo)')
         reset_track(new, 'all')                         # restes d'une ancienne piste de meme numero
         with progress.span(0.75, 0.9, 'map vierge (nouvelle map)'):
             r = with_history(new, 'nouvelle map', lambda: apply_newmap(
                 {'track': new, 'strip_ground': True, 'strip_art': art_files(new),
                  'move_away': [g[0] for g in MOVE_AWAY_GROUPS]}))
         report += [x for x in r.get('report', []) if x]
+        # caisses de Crash Cove (et TNT / Nitro / fruits) : flottaient dans le vide de la map vierge (2026-11-14)
+        if crates_supported(new) and read_track_crates(new):
+            progress.step('caisses de Crash Cove retirées', 0.9)
+            logical = crate_file(new)
+            z, _ = write_crates_file(new, [])
+            safe_compact(new, logical, z)
+            z.save(saved_path(logical))
+            report.append('caisses de Crash Cove retirées')
         with progress.span(0.9, 1.0, 'installation dans le jeu'):
             install_track(new)
     return {'track': new, 'report': report, 'menu': menu_layout_info(), 'tracks': list_tracks()}
@@ -8915,7 +10186,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == '/api/track':
                 self._send(200, load_track(parse_qs(u.query)['name'][0]))
             elif u.path == '/api/collision':                 # sol gris seul (relu apres un enregistrement)
-                self._send(200, load_collision(parse_qs(u.query)['track'][0]))
+                q = parse_qs(u.query)
+                if q.get('fresh', [''])[0]:                    # collision differee : recalculee d'abord (2026-11-18)
+                    ensure_collision(q['track'][0])
+                self._send(200, load_collision(q['track'][0]))
             elif u.path == '/api/decor':
                 self._send(200, load_decor(parse_qs(u.query)['name'][0]))
             elif u.path == '/api/decor_collision':
@@ -8949,6 +10223,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, anim_list(parse_qs(u.query)['actor'][0]))
             elif u.path == '/api/anim_skin':
                 self._send(200, anim_skin(parse_qs(u.query)['actor'][0]), 'application/octet-stream')
+            elif u.path == '/api/anim_motion':               # pose de depart et trajet de l'animation jouee en jeu
+                q = parse_qs(u.query)
+                self._send(200, anim_motion(q['actor'][0], q['pak'][0], q['file'][0], q['entity'][0]))
             elif u.path == '/api/anim_frames':
                 q = parse_qs(u.query)
                 self._send(200, anim_frames(q['actor'][0], q['anim'][0]), 'application/octet-stream')
@@ -8993,11 +10270,12 @@ class Handler(BaseHTTPRequestHandler):
 
     PROGRESS_LABELS = {'/api/update_download': 'Mise à jour', '/api/update_apply': 'Mise à jour', '/api/octr_export': 'Export pour le PC (OCTR)', '/api/pack_export': 'Export des maps', '/api/pack_import': 'Import des maps',
                        '/api/save': 'Enregistrement de la course', '/api/install': 'Installation dans le jeu',
-                       '/api/test_in_game': 'Tester en jeu', '/api/create_build': 'Création de la piste',
+                       '/api/test_in_game': 'Tester en jeu', '/api/create_build': 'Création de la piste', '/api/creator_props_apply': 'Décor de la Création',
                        '/api/uninstall': 'Désinstallation', '/api/restore_all': 'Retour au jeu d\'origine', '/api/reset': "Retour à l'original",
                        '/api/decor_save': 'Enregistrement du décor', '/api/import_model': 'Import du modèle',
                        '/api/set_custom_material': 'Texture du modèle', '/api/import_texture': "Import de l'image",
                        '/api/newmap': 'Nouvelle map', '/api/undo_save': 'Annulation',
+                       '/api/undo_saves': 'Retour en arrière', '/api/remove_step': "Suppression d'une étape",
                        '/api/gen_ai_splines': 'Génération des splines IA', '/api/route_layout': 'Création du parcours',
                        '/api/crates_auto': 'Placement des caisses', '/api/check': 'Vérification avant installation', '/api/sky_check': 'Vérification du ciel',
                        '/api/alpha_textures': 'Analyse des textures', '/api/set_alpha_textures': 'Transparence des textures',
@@ -9059,7 +10337,10 @@ class Handler(BaseHTTPRequestHandler):
                                                                   lambda: import_texture(req)),
                       '/api/newmap': lambda: with_history(req['track'], 'nouvelle map', lambda: apply_newmap(req)),
                       '/api/undo_save': lambda: undo_save(req['track']),
-                      '/api/history': lambda: {'labels': history_list(req['track'])},
+                      '/api/history': lambda: {'labels': history_list(req['track']), 'entries': history_entries(req['track'])},
+                      '/api/undo_saves': lambda: undo_saves(req['track'], req['count']),
+                      '/api/remove_step_check': lambda: remove_step_check(req['track'], req['index']),
+                      '/api/remove_step': lambda: remove_step(req['track'], req['index']),
                       '/api/gen_ai_splines': lambda: gen_ai_splines(req),
                       '/api/route_layout': lambda: route_layout(req),
                       '/api/crates_auto': lambda: crates_auto(req),
@@ -9084,6 +10365,8 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/object_alpha': lambda: with_history(req['track'], 'transparence', lambda: set_object_alpha(req)),
                       '/api/mesh_save': lambda: with_history(req['track'], 'forme d\'un objet', lambda: mesh_save(req)),
                       '/api/creator_draft': lambda: save_creator_draft(req),
+                      '/api/creator_props_apply': lambda: creator_props_apply(req) if req.get('dry')
+                      else with_history(req['track'], 'décor de la Création appliqué', lambda: creator_props_apply(req)),
                       '/api/animated_save': lambda: animated_save(req),
                       '/api/camera_settings': lambda: set_camera_settings(req) if 'values' in req
                       else {'values': camera_settings(req['track']), 'original': camera_original(req['track'])},

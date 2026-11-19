@@ -103,6 +103,15 @@ def _entity_by_name(z, name):
     return next((o for n, o in z.root_objects() if n == name), None)
 
 
+def _entities_by_name(z):
+    """{nom : objet} des objets racines (premier de chaque nom, comme _entity_by_name) : une seule lecture de la
+    liste au lieu d'une par nom (836 noms sur T922 : 14 s -> instantane)."""
+    out = {}
+    for n, o in z.root_objects():
+        out.setdefault(n, o)
+    return out
+
+
 def _is_entity(z, o):
     """Seules les entites ont leur position a +0x20 (une camera CAirArcadeCamera y a sa rotation et le pointeur de
     son nom : l'ecraser fait planter le jeu en quittant la course, T901/T111/T113)."""
@@ -112,9 +121,9 @@ def _is_entity(z, o):
 def read_entity_poses(data, names):
     """{nom : {pos, yaw}} d'entites (position +0x20, cap = transformation +0x68 si elle existe)."""
     z = IgzFile(data)
-    out = {}
+    out, by = {}, _entities_by_name(z)
     for name in names:
-        o = _entity_by_name(z, name)
+        o = by.get(name)
         if o is None or not _is_entity(z, o):
             continue
         tr = z.deref(o + 0x30)
@@ -126,8 +135,9 @@ def read_entity_poses(data, names):
 def write_entity_poses(data, poses):
     """poses = {nom : {pos, yaw?}} -> octets ; le cap n'est ecrit que si l'entite a une transformation."""
     z = IgzFile(data)
+    by = _entities_by_name(z)
     for name, p in poses.items():
-        o = _entity_by_name(z, name)
+        o = by.get(name)
         if o is None:
             raise KeyError(f'entite introuvable : {name}')
         set_entity_pose(z, o, p)

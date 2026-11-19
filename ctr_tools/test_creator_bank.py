@@ -162,12 +162,13 @@ assert w025 < w075 < w15, (w025, w075, w15)
 assert abs(w075 / w15 - 0.5) < 0.2, (w075, w15)
 print(f'ok largeur du talus, route a 40 m : {w15} m a 15 m/10 m, {w075} m a 7,5, {w025} m a 2,5')
 
-# relief +50 m sculpte le long de la route plate : atteint a moins de 15 m du bord ; la route ne bouge pas
+# relief +50 m sculpte le long de la route plate : atteint a moins de 40 m du bord (2026-11-16 : talus elargi sur le
+# relief sculpte, avant 15 m : saccades le long des virages) ; la route ne bouge pas
 wall = lambda X, Y: 50.0 * (np.abs(Y) > 25)
 flat = [[i * 4 * IN, 0.0, GZ, W, 0] for i in range(150)]
 ob0 = tc.build(flat, False, GZ, 'sable', grid_terrain(0.75), 'none')[0]
 ob1 = tc.build(flat, False, GZ, 'sable', grid_terrain(0.75, wall), 'none')[0]
-near = ground_at(ob1, 300, 32)
+near = ground_at(ob1, 300, 55)
 assert near > 40, f'relief ecrase pres de la route : {near:.1f} m'
 assert ground_at(ob0, 300, 32) < 1
 assert np.allclose(np.sort(ground_of(ob0)[1][:, 2]), np.sort(ground_of(ob1)[1][:, 2]), atol=0.01), 'la route ne doit pas changer'

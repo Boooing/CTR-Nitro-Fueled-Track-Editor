@@ -1,0 +1,10 @@
+﻿Outils qui ont fabrique track_creator_catalog.py (2026-11-17) — scripts de developpement, pas utilises par l'editeur.
+
+1. decor_survey.py : releve de tous les modeles de decor du jeu (pistes qui les utilisent, dimensions, triangles) -> decor_survey.json
+2. decor_survey_tex.py : couleur / contraste des textures de chaque modele (ecarte les modeles gris ou unis)
+3. decor_classify.py : classement par MOTS du nom + taille + textures ; --write ecrit ctr_tools/track_creator_catalog.py
+
+ATTENTION : decor_classify.py prend l'ANCIEN catalogue dans track_creator.KITS. Depuis le 2026-11-17, KITS utilise deja le
+nouveau catalogue : avant de relancer --write, faire lire LEGACY dans track_creator_catalog.LEGACY (sinon la conversion des
+objets deja semes, track_creator.migrate_prop, serait perdue) et monter CATALOG_VERSION si des familles changent encore.
+Chemins du dossier temporaire a adapter (HERE, ctr_editor_config.json).

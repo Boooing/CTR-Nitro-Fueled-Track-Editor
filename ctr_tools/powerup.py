@@ -479,17 +479,34 @@ def _resample(points, step):
 
 
 def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=150.0, fruit=0, closed=True,
-              tnt=0, nitro=0, wumpa_lines=0, wumpa_per_line=5, wumpa_gap=120.0):
+              tnt=0, nitro=0, wumpa_lines=0, wumpa_per_line=5, wumpa_gap=120.0, avoid=None):
     """Rangees de caisses « ? » en travers de la route le long de `path` (trace de course dans l'ordre, depuis la
     ligne d'arrivee), reparties sur le tour en laissant libre le debut (`skip` : part du tour apres la ligne, ou est
     la grille) ; ecart `spacing` entre caisses (575 po sur Crash Cove), reduit si la route est plus etroite.
     fruit : caisses de fruits isolees entre les rangees. tnt / nitro : caisses explosives posees sur la route, a
     gauche ou a droite de la trajectoire, decalees des rangees ; wumpa_lines : lignes de wumpa_per_line fruits dans le
-    sens de la course (ecart wumpa_gap po). Retourne ([{'kind', 'pos'}], rapport)."""
+    sens de la course (ecart wumpa_gap po). avoid : [(x, y, rayon po)] (sauts, boosters de la piste aleatoire) : une
+    rangee ou une caisse qui y tombe est avancee (ou reculee) le long du trace jusqu'a en sortir.
+    Retourne ([{'kind', 'pos'}], rapport)."""
     pts = ai_gen.catmull_rom(path, 100.0) if len(path) > 2 else path
     P, length = _resample(pts, 100.0)
     if length < 1000:
         raise ValueError('trace trop court')
+    avoid = [(float(a[0]), float(a[1]), float(a[2])) for a in (avoid or [])]
+
+    def clear(s, reach=0.0):
+        # abscisse la plus proche de s (pas de 2 m, 150 m au plus de chaque cote) hors des zones a eviter ; reach :
+        # demi-largeur de ce qui est pose en travers (rangee)
+        if not avoid:
+            return s
+        for d in range(0, 7500, 200):
+            for t in ((s + d, s - d) if d else (s,)):
+                if not 0 <= t <= length:
+                    continue
+                q = P[min(int(t / 100.0), len(P) - 1)]
+                if all(math.hypot(q[0] - x, q[1] - y) > r + reach for x, y, r in avoid):
+                    return t
+        return s
     road = set(ai_gen.road_surfaces(ground, P[::5]))
 
     # 2026-11-07 : la ligne de parcours est la reference. Les caisses sont posees de part et d'autre du trace, a egale
@@ -529,7 +546,7 @@ def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=
     span = length * (1 - skip - (0.04 if closed else 0.0))
     marks = [length * skip + span * (k + 0.5) / max(rows, 1) for k in range(rows)]
     for s in marks:
-        p, n = frame(s)
+        p, n = frame(clear(s, spacing * (per_row - 1) / 2))
         hw = half_width(p, n)
         gap = spacing
         if per_row > 1 and hw:
@@ -545,7 +562,7 @@ def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=
     side = lambda p, n, frac: min(spacing, half_width(p, n) or spacing) * frac
     for k in range(fruit):                                     # entre deux rangees, alternativement a gauche / droite
         s = length * skip + span * (k + 1) / (fruit + 1)
-        p, n = frame(s)
+        p, n = frame(clear(s, spacing * 0.5))
         q = place(p, n, (1 if k % 2 else -1) * side(p, n, 0.5))
         if q:
             out.append({'kind': 'fruit', **q})
@@ -556,7 +573,7 @@ def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=
     bombs = [bombs[i] for i in sorted(range(len(bombs)), key=lambda i: (i % max(tnt, nitro, 1), i))]   # melange
     for k, kind in enumerate(bombs):
         s = length * skip + span * (k + 0.33) / max(len(bombs), 1)
-        p, n = frame(s)
+        p, n = frame(clear(s, spacing * 0.4))
         q = place(p, n, (1 if k % 2 else -1) * side(p, n, 0.4))
         if q:
             out.append({'kind': kind, **q})
@@ -565,6 +582,9 @@ def auto_rows(ground, path, rows=4, per_row=4, spacing=575.0, skip=0.12, margin=
     # lignes de fruits : au milieu entre deux rangees (aux deux tiers), sur un cote de la trajectoire
     for k in range(wumpa_lines):
         s0 = length * skip + span * (k + 0.66) / max(wumpa_lines, 1)
+        if avoid:                                              # toute la ligne hors des zones (pas seulement son debut)
+            s0 = next((t for t in (clear(s0 + d, spacing * 0.33) for d in range(0, 6000, 400))
+                       if all(clear(t + j * wumpa_gap, spacing * 0.33) == t + j * wumpa_gap for j in range(wumpa_per_line))), s0)
         for j in range(wumpa_per_line):
             p, n = frame(min(length - 1, s0 + j * wumpa_gap))
             q = place(p, n, (-1 if k % 2 else 1) * side(p, n, 0.33), lift_of('wumpa'))

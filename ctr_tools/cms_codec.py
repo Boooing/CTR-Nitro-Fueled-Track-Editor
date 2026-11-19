@@ -17,6 +17,7 @@ Structure (decodee et verifiee sur le sol de Crash Cove, voir README) :
   cle de triangle = section << 8 | primitive << 1 | (0 premier triangle, 1 second du quad)
 """
 import math
+import collections
 import struct
 from dataclasses import dataclass, field
 
@@ -107,41 +108,53 @@ def read_mesh(pf, shape):
 # ---------------------------------------------------------------------------------------------
 def _quant_bounds(child, parent):
     """3 octets de bornes : quartets tels que la boite decodee contienne child (conservatif)."""
+    # (2026-11-17) variables locales, memes expressions dans le meme ordre : resultats identiques, plus rapide
     out, dec_lo, dec_hi = [], [], []
-    for k in range(3):
-        ext = parent[1][k] - parent[0][k]
+    sqrt, floor = math.sqrt, math.floor
+    for p0, p1, c0, c1 in zip(parent[0], parent[1], child[0], child[1]):
+        ext = p1 - p0
         if ext <= 0:
             out.append(0)
-            dec_lo.append(parent[0][k]); dec_hi.append(parent[1][k])
+            dec_lo.append(p0); dec_hi.append(p1)
             continue
-        a = max(0.0, (child[0][k] - parent[0][k]) / ext * 226.0)
-        b = max(0.0, (parent[1][k] - child[1][k]) / ext * 226.0)
-        qa = min(15, int(math.floor(math.sqrt(a))))
-        qb = min(15, int(math.floor(math.sqrt(b))))
-        lo = parent[0][k] + qa * qa * ext / 226.0
-        hi = parent[1][k] - qb * qb * ext / 226.0
-        while lo > child[0][k] and qa > 0:          # securite flottante
-            qa -= 1; lo = parent[0][k] + qa * qa * ext / 226.0
-        while hi < child[1][k] and qb > 0:
-            qb -= 1; hi = parent[1][k] - qb * qb * ext / 226.0
+        a = (c0 - p0) / ext * 226.0
+        b = (p1 - c1) / ext * 226.0
+        qa = min(15, int(floor(sqrt(a)))) if a > 0.0 else 0
+        qb = min(15, int(floor(sqrt(b)))) if b > 0.0 else 0
+        lo = p0 + qa * qa * ext / 226.0
+        hi = p1 - qb * qb * ext / 226.0
+        while lo > c0 and qa > 0:                   # securite flottante
+            qa -= 1; lo = p0 + qa * qa * ext / 226.0
+        while hi < c1 and qb > 0:
+            qb -= 1; hi = p1 - qb * qb * ext / 226.0
         out.append(qa << 4 | qb)
         dec_lo.append(lo); dec_hi.append(hi)
     return bytes(out), (dec_lo, dec_hi)
 
 
+# (2026-11-17) min / max / tri par colonnes (zip) au lieu d'un parcours par axe : memes valeurs, memes egalites
+# departagees (tri stable, 1er axe le plus long), donc fichier identique a l'octet ; encodage ~3 fois plus rapide
 def _aabb(points):
-    return ([min(p[k] for p in points) for k in range(3)], [max(p[k] for p in points) for k in range(3)])
+    cols = list(zip(*points))[:3]
+    return [min(c) for c in cols], [max(c) for c in cols]
 
 
 def _union(boxes):
-    return ([min(b[0][k] for b in boxes) for k in range(3)], [max(b[1][k] for b in boxes) for k in range(3)])
+    return ([min(c) for c in zip(*[b[0] for b in boxes])], [max(c) for c in zip(*[b[1] for b in boxes])])
 
 
-def _split(items, box_of, h=None):
-    """Coupe une liste en deux selon l'axe le plus long des centres (h : taille de la 1re partie, defaut moitie)."""
-    cs = [[(b[0][k] + b[1][k]) / 2 for k in range(3)] for b in map(box_of, items)]
-    ax = max(range(3), key=lambda k: max(c[k] for c in cs) - min(c[k] for c in cs))
-    order = sorted(range(len(items)), key=lambda j: cs[j][ax])
+def _center(b):
+    return [(b[0][k] + b[1][k]) / 2 for k in range(3)]
+
+
+def _split(items, box_of, h=None, center_of=None):
+    """Coupe une liste en deux selon l'axe le plus long des centres (h : taille de la 1re partie, defaut moitie).
+    center_of : centres deja calcules (sinon tires de box_of)."""
+    cs = [center_of(i) for i in items] if center_of else [_center(box_of(i)) for i in items]
+    cols = list(zip(*cs))
+    spans = [max(c) - min(c) for c in cols]
+    ax = max(range(3), key=spans.__getitem__)
+    order = sorted(range(len(items)), key=cols[ax].__getitem__)
     if h is None:
         h = len(items) // 2
     return [items[j] for j in order[:h]], [items[j] for j in order[h:]]
@@ -159,23 +172,56 @@ def _sections(prims, pkeys, box_of_prim, cap, full=False):
     """Decoupe spatiale jusqu'a `cap` primitives et MAX_VERTS sommets par section. full : sections pleines (moins
     nombreuses mais plus etendues, donc sommets compresses un peu moins precis : ~2,2 cm au lieu de ~1,2 sur la route)."""
     groups, stack = [], [list(range(len(prims)))]
+    centers = [_center(box_of_prim(i)) for i in range(len(prims))]
+    C = None
+    if len(prims) >= BIG_SPLIT:
+        import numpy as np
+        C = np.array(centers, dtype=np.float64)              # memes valeurs (float Python = float64)
     while stack:
         g = stack.pop()
-        nverts = len({k for i in g for k in pkeys[i]})
-        gb = _union([box_of_prim(i) for i in g])
-        small = all(gb[1][k] - gb[0][k] <= MAX_EXTENT[k] for k in range(3))
-        if len(g) <= cap and nverts <= MAX_VERTS and (small or len(g) == 1):
+        # sommets et etendue comptes seulement pour un groupe assez petit (un gros groupe est coupe de toute facon) :
+        # le comptage sur les 272 000 primitives d'une grande carte prenait la moitie du decoupage
+        keep = False
+        if len(g) <= cap and len({k for i in g for k in pkeys[i]}) <= MAX_VERTS:
+            gb = _union([box_of_prim(i) for i in g])
+            keep = len(g) == 1 or all(gb[1][k] - gb[0][k] <= MAX_EXTENT[k] for k in range(3))
+        if keep:
             groups.append(g)
         else:
-            a, b = _split(g, box_of_prim, _section_cut(len(g), cap) if full and len(g) > cap else None)
+            h = _section_cut(len(g), cap) if full and len(g) > cap else None
+            if C is not None and len(g) >= BIG_SPLIT:
+                a, b = _split_np(g, C, h)
+            else:
+                a, b = _split(g, box_of_prim, h, center_of=centers.__getitem__)
             stack += [b, a]
     return groups
+
+
+# gros groupes (debut du decoupage d'une grande carte) : meme coupe que _split, en numpy (2026-11-17)
+BIG_SPLIT = 4096
+
+
+def _split_np(items, C, h=None):
+    """_split pour un gros groupe : etendue des centres par axe (1er axe le plus long en cas d'egalite, comme max()),
+    tri STABLE sur cet axe (egalites dans l'ordre de la liste, comme sorted()) -> meme coupe a l'identique."""
+    import numpy as np
+    idx = np.asarray(items)
+    c = C[idx]
+    spans = (c.max(0) - c.min(0)).tolist()
+    ax = max(range(3), key=spans.__getitem__)
+    order = np.argsort(c[:, ax], kind='stable')
+    if h is None:
+        h = len(items) // 2
+    o = idx[order].tolist()
+    return o[:h], o[h:]
 
 
 def _build_tree(leaves, box_of, root_box, node_size, encode_leaf, encode_internal):
     """Arbre binaire en profondeur : gauche = i+1, droite = i + 2*(feuilles a gauche). Renvoie (octets, {feuille: indice})."""
     nodes, where = [], {}
-    box_of = {i: box_of(i) for i in leaves}.__getitem__      # boites calculees une seule fois
+    boxes = {i: box_of(i) for i in leaves}                    # boites et centres calcules une seule fois
+    box_of = boxes.__getitem__
+    center_of = {i: _center(b) for i, b in boxes.items()}.__getitem__
 
     def rec(items, parent_box, is_root):
         box = _union([box_of(i) for i in items])
@@ -189,7 +235,7 @@ def _build_tree(leaves, box_of, root_box, node_size, encode_leaf, encode_interna
             nodes[idx] = q + encode_leaf(items[0])
             where[items[0]] = idx
             return
-        left, right = _split(items, box_of)
+        left, right = _split(items, box_of, center_of=center_of)
         rec(left, dec, False)
         nodes[idx] = q + encode_internal(len(left))    # enfant droit a i + 2*len(left)
         rec(right, dec, False)
@@ -222,8 +268,142 @@ def _shared_priority(prims, pkeys, ext):
     return score
 
 
+def _encode_section(sec, shared, dlo):
+    """Une section : sec = [(sommets, surface, cles des sommets)] de ses primitives, shared = {cle: (indice partage,
+    position decodee)} des sommets partages qu'elle utilise. Tout est local a la section (meme code qu'avant le
+    decoupage en taches) ; les debuts dans les tableaux communs sont ajoutes a l'assemblage (encode_mesh)."""
+    # sommets de la section (ensemble des deja vus : meme ordre d'ajout que la liste reconstruite d'avant)
+    pk, sh, seen = [], [], set()
+    for verts, _, keys in sec:
+        for v, k in zip(verts, keys):
+            if k not in seen:
+                seen.add(k)
+                (sh if k in shared else pk).append((k, v))
+    if pk:
+        plo, phi = _aabb([v for _, v in pk])
+        sc = [max(phi[k] - plo[k], 1e-6) / PACKED_MAX[k] for k in range(3)]
+    else:
+        plo, sc = list(dlo), [1e-6] * 3
+    local_index, dec_points = {}, []
+    packed, shidx, prim_bin, runs = bytearray(), bytearray(), bytearray(), bytearray()
+    for n, (k, v) in enumerate(pk):
+        q = tuple(min(PACKED_MAX[j], max(0, int(round((v[j] - plo[j]) / sc[j])))) for j in range(3))
+        packed += struct.pack('<I', q[0] | q[1] << 11 | q[2] << 22)
+        local_index[k] = n
+        dec_points.append(tuple(plo[j] + sc[j] * q[j] for j in range(3)))
+    for n, (k, v) in enumerate(sh):
+        shidx += struct.pack('<H', shared[k][0])
+        local_index[k] = len(pk) + n
+        dec_points.append(shared[k][1])
+    slo, shi = _aabb(dec_points)
+    for _, _, keys in sec:
+        idx = [local_index[k] for k in keys]
+        if len(idx) == 3:
+            idx.append(idx[2])
+        prim_bin += bytes(idx)
+    run_start, nruns = 0, 0
+    for p_local in range(1, len(sec) + 1):
+        if p_local == len(sec) or sec[p_local][1] != sec[run_start][1]:
+            runs += struct.pack('<HBB', sec[run_start][1], run_start, p_local - run_start)
+            run_start = p_local
+            nruns += 1
+    # arbre de la section (feuille = primitive locale)
+    dec_prim_box = lambda pl: _aabb([dec_points[local_index[k]] for k in sec[pl][2]])
+    tree, _ = _build_tree(list(range(len(sec))), dec_prim_box, (slo, shi), 4,
+                          lambda pl: bytes([pl << 1]), lambda nleft: bytes([(nleft << 1) | 1]))
+    return {'packed': bytes(packed), 'shidx': bytes(shidx), 'prims': bytes(prim_bin), 'runs': bytes(runs),
+            'nruns': nruns, 'tree': tree, 'lo': slo, 'hi': shi, 'codec': list(plo) + list(sc),
+            'np': len(pk), 'ns': len(sh)}
+
+
+def _encode_batch(batch, dlo):
+    """Tache d'un processus de calcul : plusieurs sections a la suite."""
+    return [_encode_section(sec, shared, dlo) for sec, shared in batch]
+
+
+# Calcul en parallele (2026-11-17, demande utilisateur : enregistrements et generation plus rapides). Python ne
+# calcule qu'un fil a la fois (GIL) : des PROCESSUS, crees une fois et reutilises (le lancement coute ~1 s chacun).
+# Petites collisions : sur place (le lancement couterait plus que le calcul). Toute erreur du parallele (processus
+# refuses, exe sans freeze_support...) : on refait sur place, meme resultat.
+PARALLEL_MIN_SECTIONS = 256
+_pool = None
+
+
+def _workers():
+    import os
+    return max(1, min(8, (os.cpu_count() or 2) - 1))
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        import concurrent.futures
+        import multiprocessing
+        _pool = concurrent.futures.ProcessPoolExecutor(_workers(), mp_context=multiprocessing.get_context('spawn'))
+    return _pool
+
+
+def _encode_all(groups, section_input, dlo):
+    """Resultats de _encode_section pour chaque groupe, dans l'ordre."""
+    global _pool
+    n = len(groups)
+    if n >= PARALLEL_MIN_SECTIONS and _workers() > 1:
+        try:
+            pool = _get_pool()
+            size = max(16, -(-n // (_workers() * 6)))             # ~6 lots par processus : charge equilibree
+            futures = [pool.submit(_encode_batch, [section_input(g) for g in groups[a:a + size]], dlo)
+                       for a in range(0, n, size)]
+            out = []
+            for f in futures:
+                out += f.result()
+                progress.step(f'encodage de la collision : section {len(out)} / {n}', len(out) / n)
+            return out
+        except Exception as e:  # noqa: BLE001 - repli sur place, meme resultat
+            print(f'encodage de la collision en parallele impossible ({e!r}) : calcul sur place', flush=True)
+            _pool = None
+    return [_encode_section(*section_input(g), dlo)
+            for g in progress.items(groups, 'encodage de la collision : section {i} / {n}')]
+
+
+# memoire des encodages (2026-11-18) : la collision est faite de plusieurs maillages (15 sur T922) ; deplacer UN objet
+# n'en change qu'un ou deux -> les autres reprennent leur encodage precedent (cle = empreinte des primitives et du
+# rayon ; sortie identique a un encodage complet). 14,1 s -> voir pending-ingame-tests 118.
+_ENC_MEMO = collections.OrderedDict()
+ENC_MEMO_MAX = 48
+
+
+def mesh_key(mesh):
+    """Empreinte du contenu d'un Mesh (sommets, surface, drapeaux, rayon)."""
+    import hashlib
+    from array import array
+    h = hashlib.blake2b(digest_size=20)
+    h.update(struct.pack('<d', float(mesh.radius)))
+    coords, meta = array('d'), array('i')
+    for p in mesh.prims:
+        coords.extend(c for v in p.verts for c in v)
+        meta.extend((len(p.verts), int(p.value), int(bool(p.flat)), int(bool(p.interior[0])), int(bool(p.interior[1]))))
+    h.update(coords.tobytes())
+    h.update(meta.tobytes())
+    return h.hexdigest()
+
+
 def encode_mesh(mesh):
-    """Encode un Mesh -> dict de tableaux binaires + valeurs scalaires (voir write_mesh)."""
+    """Encode un Mesh -> dict de tableaux binaires + valeurs scalaires (voir write_mesh). Resultat garde en memoire
+    (_ENC_MEMO) : un maillage inchange n'est pas reencode. Le dict rendu ne doit pas etre modifie."""
+    key = mesh_key(mesh)
+    if key in _ENC_MEMO:
+        _ENC_MEMO.move_to_end(key)
+        progress.step(f'encodage de la collision : {len(mesh.prims)} primitives inchangées (reprises)')
+        return _ENC_MEMO[key]
+    enc = _encode_mesh(mesh)
+    _ENC_MEMO[key] = enc
+    while len(_ENC_MEMO) > ENC_MEMO_MAX:
+        _ENC_MEMO.popitem(last=False)
+    return enc
+
+
+def _encode_mesh(mesh):
+    """Encodage complet d'un Mesh (voir encode_mesh)."""
     prims = mesh.prims
     allv = [v for p in prims for v in p.verts]
     dlo, dhi = _aabb(allv)
@@ -267,55 +447,31 @@ def encode_mesh(mesh):
     shared_pos = {}
     for g in groups:
         for i in g:
-            for v in prims[i].verts:
-                if vkey(v) in shared_index:
-                    shared_pos[vkey(v)] = v
-    shared_bin = bytearray()
-    for k in shared_keys:
+            for v, k in zip(prims[i].verts, pkeys[i]):       # cles deja calculees (pkeys) : memes valeurs que vkey(v)
+                if k in shared_index:
+                    shared_pos[k] = v
+    shared_bin, shared_dec = bytearray(), {}
+    for k in shared_keys:                                # quantifie une seule fois (avant : deux fois, meme valeur)
         q = _quantize(shared_pos[k], dlo, ext, SHARED_MAX)
         shared_bin += struct.pack('<Q', q[0] | q[1] << 21 | q[2] << 42)
-    shared_dec = {k: tuple(dlo[j] + ext[j] * _quantize(shared_pos[k], dlo, ext, SHARED_MAX)[j] / SHARED_MAX[j]
-                           for j in range(3)) for k in shared_keys}
+        shared_dec[k] = tuple(dlo[j] + ext[j] * q[j] / SHARED_MAX[j] for j in range(3))
+
+    # sections encodees une par une (_encode_section), en parallele sur une grande carte (2026-11-17), puis assemblees
+    # dans l'ordre : les debuts dans les tableaux communs et les cles (section << 8 | primitive << 1) se calculent ici
+    def section_input(g):
+        used = {k for i in g for k in pkeys[i] if k in shared_index}
+        return ([(prims[i].verts, prims[i].value, pkeys[i]) for i in g],
+                {k: (shared_index[k], shared_dec[k]) for k in used})
+    results = _encode_all(groups, section_input, list(dlo))
 
     sections, packed_bin, shidx_bin, prim_bin, runs_bin = [], bytearray(), bytearray(), bytearray(), bytearray()
     sec_trees, flat_bits, int_bits, n_tris, max_key = [], set(), set(), 0, 0
-    for si, g in enumerate(progress.items(groups, 'encodage de la collision : section {i} / {n}')):
-        # sommets de la section
-        pk, sh = [], []
-        for i in g:
-            for v in prims[i].verts:
-                k = vkey(v)
-                lst = sh if k in shared_index else pk
-                if k not in [x[0] for x in lst]:
-                    lst.append((k, v))
-        if pk:
-            plo, phi = _aabb([v for _, v in pk])
-            sc = [max(phi[k] - plo[k], 1e-6) / PACKED_MAX[k] for k in range(3)]
-        else:
-            plo, sc = list(dlo), [1e-6] * 3
-        local_index, dec_points = {}, []
-        first_packed = len(packed_bin) // 4
-        for n, (k, v) in enumerate(pk):
-            q = tuple(min(PACKED_MAX[j], max(0, int(round((v[j] - plo[j]) / sc[j])))) for j in range(3))
-            packed_bin += struct.pack('<I', q[0] | q[1] << 11 | q[2] << 22)
-            local_index[k] = n
-            dec_points.append(tuple(plo[j] + sc[j] * q[j] for j in range(3)))
-        first_shared = len(shidx_bin) // 2
-        for n, (k, v) in enumerate(sh):
-            shidx_bin += struct.pack('<H', shared_index[k])
-            local_index[k] = len(pk) + n
-            dec_points.append(shared_dec[k])
-        slo, shi = _aabb(dec_points)
-        # primitives + runs
-        first_prim = len(prim_bin) // 4
-        first_run = len(runs_bin) // 4
-        local_prims = []
+    for si, (g, r) in enumerate(zip(groups, results)):
+        first_packed, first_shared = len(packed_bin) // 4, len(shidx_bin) // 2
+        first_prim, first_run = len(prim_bin) // 4, len(runs_bin) // 4
+        packed_bin += r['packed']; shidx_bin += r['shidx']; prim_bin += r['prims']; runs_bin += r['runs']
         for p_local, i in enumerate(g):
             p = prims[i]
-            idx = [local_index[vkey(v)] for v in p.verts]
-            if len(idx) == 3:
-                idx.append(idx[2])
-            prim_bin += bytes(idx)
             key = si << 8 | p_local << 1
             n_tris += 2 if p.is_quad else 1
             max_key = max(max_key, key | (1 if p.is_quad else 0))
@@ -325,21 +481,10 @@ def encode_mesh(mesh):
                 int_bits.add(key)
             if p.is_quad and p.interior[1]:
                 int_bits.add(key | 1)
-            local_prims.append(p_local)
-        run_start = 0
-        for p_local in range(1, len(g) + 1):
-            if p_local == len(g) or prims[g[p_local]].value != prims[g[run_start]].value:
-                runs_bin += struct.pack('<HBB', prims[g[run_start]].value, run_start, p_local - run_start)
-                run_start = p_local
-        nruns = len(runs_bin) // 4 - first_run
-        # arbre de la section (feuille = primitive locale)
-        dec_prim_box = lambda pl: _aabb([dec_points[local_index[k]] for k in pkeys[g[pl]]])
-        tree, _ = _build_tree(local_prims, dec_prim_box, (slo, shi), 4,
-                              lambda pl: bytes([pl << 1]), lambda nleft: bytes([(nleft << 1) | 1]))
-        sec_trees.append(tree)
-        sections.append({'lo': slo, 'hi': shi, 'codec': list(plo) + list(sc), 'fp': first_packed,
-                         'sh': first_shared << 8 | len(pk), 'pr': first_prim << 8 | len(g),
-                         'dr': first_run << 8 | nruns, 'np': len(pk), 'ns': len(sh)})
+        sec_trees.append(r['tree'])
+        sections.append({'lo': r['lo'], 'hi': r['hi'], 'codec': r['codec'], 'fp': first_packed,
+                         'sh': first_shared << 8 | r['np'], 'pr': first_prim << 8 | len(g),
+                         'dr': first_run << 8 | r['nruns'], 'np': r['np'], 'ns': r['ns']})
     # 3) arbre du haut (feuille = section)
     dlo_q, dhi_q = list(dlo), list(dhi)
     top_tree, leaf_of = _build_tree(list(range(len(sections))), lambda s: (sections[s]['lo'], sections[s]['hi']),

@@ -6,6 +6,7 @@
 `lire(logique)` rend les octets d'un fichier (materiau ou texture) ou None. Les draw calls doubles (passe d'ombre,
 variante : meme nombre de triangles et meme boite) sont ignores comme dans decor.model_mesh.
 """
+import math
 import struct
 
 import numpy as np
@@ -42,6 +43,73 @@ def material_color_texture(material_bytes, material_name):
     return None
 
 
+def _quat_rows(x, y, z, w):
+    """Matrice 3x3 d'un quaternion (x, y, z, w) des pieces de modele, a utiliser en v' = v @ R. Releve sur
+    T232_Pipe_01_RotatingHandle (bornes du jeu) : c'est la matrice « colonnes » habituelle prise telle quelle, donc la
+    rotation inverse de la convention lignes."""
+    n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    x, y, z, w = x / n, y / n, z / n, w / n
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def model_transforms(z, md):
+    """Pieces d'un modele (2026-11-18) : igModelData +0x40 liste des igAnimatedTransform, +0x58 parents (rang + 1, 0 =
+    racine), +0x88 transformation de chaque appel de dessin (rang + 1, 0 = aucune). Une piece = matrice fixe (+0x20,
+    convention lignes) ou source animee (+0x60 igAnimatedTransformSource : +0x10 nombre de valeurs, +0x18 valeurs,
+    +0x28 nombre de cles ; +0x48 canaux 1 rotation (quaternion), 2 translation, 8 echelle ; +0x4C rangs : octet 0
+    translation, 2 echelle, rotation en 0). Le jeu les applique (cartes de Hot Air Skyway montees de 6 m, kart des
+    statues sur leur socle...) ; l'apercu les ignorait -> objets poses « au sol » dans l'editeur, en l'air en jeu.
+    -> [matrice 4x4 monde a l'instant 0 | None] par appel de dessin (ordre de la liste +0x70), ou None si aucune."""
+    n = z.u32(md + 0x40)
+    lp = z.deref(md + 0x50) if n else None
+    ip = z.deref(md + 0x98)
+    if not n or lp is None or ip is None:
+        return None
+    local = []
+    for i in range(n):
+        t = z.deref(lp + i * 8)
+        M = np.eye(4)
+        if t is not None and z.objects.get(t) == 'igAnimatedTransform':
+            M = np.array(struct.unpack_from('<16f', *z._loc(t + 0x20)), np.float64).reshape(4, 4)
+            s = z.deref(t + 0x60) if z.is_ptr(t + 0x60) else None
+            if s is not None and z.objects.get(s) == 'igAnimatedTransformSource':
+                cnt, nkeys = z.u32(s + 0x10), z.u32(s + 0x28)
+                mem, size = z.memory_ref(s + 0x18)
+                stride = cnt // max(nkeys, 1)
+                if mem is not None and stride and size >= stride * 4:
+                    b, o = z._loc(mem)
+                    k = struct.unpack_from(f'<{stride}f', b, o)               # 1re cle
+                    ch, offs = z.u32(s + 0x48), z.u32(s + 0x4C)
+                    to, so = offs & 0xFF, (offs >> 16) & 0xFF
+                    S = np.diag(list(k[so:so + 3]) + [1.0]) if ch & 8 and so + 3 <= stride else np.eye(4)
+                    R = np.eye(4)
+                    if ch & 1 and stride >= 4:
+                        R[:3, :3] = _quat_rows(*k[0:4])
+                    T = np.eye(4)
+                    if ch & 2 and to + 3 <= stride:
+                        T[3, :3] = k[to:to + 3]
+                    M = S @ R @ T
+        local.append(M)
+    hp = z.deref(md + 0x68)
+    parents = [struct.unpack_from('<i', *z._loc(hp + 4 * i))[0] - 1 for i in range(min(n, z.u32(md + 0x58)))] if hp is not None else []
+    world = [None] * n
+
+    def get(i, depth=0):
+        if world[i] is None:
+            p = parents[i] if i < len(parents) else -1
+            # enfant puis parent (convention lignes) ; l'ordre inverse donnait de moins bonnes bornes (167 / 174 modeles)
+            world[i] = local[i] @ get(p, depth + 1) if 0 <= p < n and p != i and depth < 64 else local[i]
+        return world[i]
+    nd = z.u32(md + 0x88)
+    out = []
+    for d in range(nd):
+        k = struct.unpack_from('<i', *z._loc(ip + 4 * d))[0]
+        out.append(get(k - 1) if 1 <= k <= n else None)
+    return out
+
+
 def model_preview(data, read):
     z = IgzFile(data)
     deps = dict(tdep_entries(z))
@@ -60,6 +128,19 @@ def model_preview(data, read):
                 palette = np.frombuffer(bytes(pb[po:po + ps]), np.int32).copy()
         except Exception:  # noqa: BLE001 - pas de palette : modele sans os
             palette = None
+    # pieces du modele (model_transforms) : matrice de chaque appel de dessin, comme en jeu
+    dc_mat = {}
+    if md is not None:
+        try:
+            mats = model_transforms(z, md)
+            dp = z.deref(md + 0x80)
+            if mats and dp is not None:
+                for i, m in enumerate(mats):
+                    d = z.deref(dp + 8 * i)
+                    if d is not None and m is not None and not np.allclose(m, np.eye(4)):
+                        dc_mat[d] = m
+        except Exception:  # noqa: BLE001 - pieces illisibles : apercu brut
+            dc_mat = {}
     for o, t in sorted(z.objects.items()):
         if t != 'igModelDrawCallData':
             continue
@@ -95,7 +176,11 @@ def model_preview(data, read):
                 j_off = off
         vbuf, vo = z._loc(vdata)
         raw = np.frombuffer(bytes(vbuf[vo:vo + nv * stride]), np.uint8).reshape(nv, stride)
-        pos.append(raw[:, p_off:p_off + 12].copy().view(np.float32).reshape(nv, 3))
+        P = raw[:, p_off:p_off + 12].copy().view(np.float32).reshape(nv, 3)
+        if o in dc_mat:
+            m = dc_mat[o]
+            P = (P.astype(np.float64) @ m[:3, :3] + m[3, :3]).astype(np.float32)
+        pos.append(P)
         uvs.append(raw[:, uv_off:uv_off + 4].copy().view(np.float16).astype(np.float32).reshape(nv, 2)
                    if uv_off is not None else np.zeros((nv, 2), np.float32))
         if w_off is not None and j_off is not None and palette is not None:

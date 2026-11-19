@@ -30,7 +30,7 @@ DEFAULT_LEVELS = ['octane/t111_crash_cove/t111_crash_cove']
 GUI_DATA = 'loosedata/guisystemdata.igz'                     # liste globale des pistes de course du jeu
 RACE_LISTS = 'GuiSystemData_raceAreaLevelDataList'
 LNG_LANGS = ('en', 'fr', 'mx', 'pt')
-UI_LANG = {'fr': 'fr', 'en': 'en', 'es': 'mx', 'it': 'en', 'de': 'en', 'pt': 'pt'}   # langue editeur -> .lng
+UI_LANG = {'fr': 'fr', 'en': 'en', 'es': 'mx', 'it': 'en', 'de': 'en', 'id': 'en', 'pt': 'pt'}   # langue editeur -> .lng
 
 
 def proto_lng(lang):
