@@ -15,7 +15,8 @@ from igz import IgzFile
 from model_build import tdep_entries
 from texture_build import LUT, level_size, texture_info
 
-FORMATS = {'833431f8': 'bc1', 'cf76b9f0': 'bc3'}      # 4 premiers octets de l'EXID des textures couleur
+FORMATS = {'833431f8': 'bc1', 'cf76b9f0': 'bc3',      # 4 premiers octets de l'EXID des textures couleur
+           '48fb549b': 'rgba8'}                     # non compresse, 4 octets / pixel (ciels : Thunder Struck...)
 
 
 def material_color_texture(material_bytes, material_name):
@@ -265,10 +266,20 @@ def _alpha(b):
 
 
 def decode_texture(data, max_size=256):
-    """Texture couleur BC1/BC3 -> (rgba, transparence ?) au plus grand niveau de mipmap <= max_size."""
+    """Texture couleur BC1/BC3 (ou RGBA8 non compressee) -> (rgba, transparence ?) au plus grand niveau de mipmap <= max_size."""
     z = IgzFile(data)
     fmt = FORMATS.get(bytes(z.fixups['EXID'][1][:4]).hex())
     info = texture_info(data)
+    if fmt == 'rgba8':                    # pixels ranges en tuiles 8 x 8 (meme ordre que les blocs BC : LUT)
+        w, h = info['width'], info['height']
+        raw = np.frombuffer(bytes(z.data[1]), np.uint8, count=w * h * 4).reshape(-1, 4)
+        y, x = np.mgrid[0:h, 0:w]
+        rgba = raw[(((y // 8) * ((w + 7) // 8) + x // 8) * 64 + LUT[y % 8, x % 8]).reshape(-1)].reshape(h, w, 4)
+        step = 1
+        while max(w, h) // step > max_size:
+            step *= 2
+        rgba = np.ascontiguousarray(rgba[::step, ::step])
+        return rgba, bool((rgba[:, :, 3] < 250).any())
     if fmt is None or info['bytes_per_block'] is None:
         raise ValueError('format de texture non pris en charge')
     bpb = info['bytes_per_block']

@@ -10,7 +10,34 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 
 ---
 
-## What's new in v0.7
+## What's new in v0.7.5
+
+### Smaller history, same undo
+- **The save history (`out/editor/history`) is now stored compactly**: each file content is kept once, compressed, and every step only points to it. Undo, *Go back to this step* and *Remove a step* work as before. On a real set of 31 tracks: **11.3 GB shown / 3.9 GB on disk → 0.77 GB**.
+- On first launch after the update, the editor **offers to compress the old history** and shows how much space you get back (only when it is worth it). Old steps stay readable until then, and the conversion is safe if the app is closed in the middle.
+
+### New tools
+- **📏 Measure** (left bar, key M): two clicks in the 3D view → distance, horizontal gap, height and slope.
+- **Arrange** (several scenery objects selected): *Align*, *Spread evenly*, *Same height*, *Along the road* (same side, same gap, heading relative to the road).
+- **📷 Postcard** (Track menu): 6 previews (current view, aerial view framed inside the map, 4 views beside the road like the intro cameras, **↻ Regenerate** for new ones), 1080p / 1440p / 4K, without the editor's markers; one PNG per ticked view in `captures`.
+- **Track name and images**: a **📷 Postcard…** button next to each image turns a view of your track into the menu image, at the right size.
+- **Live memory gauge** in the status bar (🧠 %), updated as you edit; a click opens *Lighten the map*.
+
+### Check, before installing
+- **Check** now also looks at: checkpoints (the lap closes, no checkpoint left unreachable), teleporters (arrival far away, after the next checkpoint, or with no ground), fall zones crossed by the route where the kart drives, crates above the void, and edited AI splines that run into a wall.
+
+### In the 3D view
+- **Sky and weather** shown in the editor: the track's sky (or the one picked in Ambiance) and the chosen weather (rain, storm with lightning, snow, blizzard, leaves, fireflies, pollen) around the camera.
+- **Display menu tidied up** into folding sections (Track, Scenery and ground, Sky and mood, Performance). New box **Sand ground under the track** (off by default) to hide the large sand plane of the base.
+- **Fall, camera and gravity zones can be rotated** (button, *Heading (°)* field, gizmo, key E).
+
+### Fixes
+- Created tracks (Custom Track slots) could not be renamed in *Track name and images*: the name field is back (one name for all languages).
+- The **Box** select tool of the left bar did nothing on crates and was not shown as active.
+- Many texts were still in French in the other languages (gravity buttons, history, tools): full translation pass.
+- Postcards no longer show the base's crates, Wumpa fruit, boosters or sand ground.
+
+## What was new in v0.7
 
 ### One map, one tab
 - **Create and Edit are now a single tab, *Create / Edit*.** The left tool bar holds the **Base** tools (Route, Edges, Bridge, Relief, Paint, Scenery, 🎲 Random) and then the **Edit** tools (Scene, Move, Rotate, Size, Box, Tour, Refresh). You work on one map at a time, whatever the tool.
@@ -251,6 +278,14 @@ Third-party: [three.js](https://threejs.org) (MIT, `ctr_tools/editor/vendor/thre
 Importe ta map (OBJ / COLLADA) ou **construis-la de zéro dans l'éditeur**, transforme-la en course jouable en quelques clics et ajoute-la au jeu comme **nouvelle piste** ou à la place d'une piste existante : IA, caisses, boosters, réapparitions, mini-carte, images de menu, ta propre musique, lumières et même téléporteurs.
 
 Ce dossier contient l'éditeur seul. **CTR Track Installer**, l'appli à part pour les joueurs, n'en fait pas partie.
+
+### Nouveautés de la v0.7.5
+
+- **Historique plus léger, mêmes annulations** : l'historique des enregistrements (`out/editor/history`) est rangé de façon compacte (chaque contenu gardé une seule fois, compressé ; chaque étape y renvoie). Annuler, *Revenir à cette étape* et *Retirer une étape* marchent comme avant. Sur 31 pistes réelles : **11,3 Go affichés / 3,9 Go sur le disque → 0,77 Go**. Au premier lancement après la mise à jour, l'éditeur **propose de compresser l'ancien historique** en montrant la place gagnée ; l'ancien format reste lisible d'ici là, et la conversion ne perd rien si l'appli est fermée en cours.
+- **Nouveaux outils** : **📏 Mesure** (barre de gauche, touche M : distance, écart horizontal, hauteur, pente) ; **Disposer** pour plusieurs objets du décor (*Aligner*, *Répartir*, *Même hauteur*, *Le long de la route*) ; **📷 Carte postale** (menu Piste : 6 aperçus — vue actuelle, vue aérienne cadrée dans la map, 4 vues au bord de la route comme les caméras d'intro, **↻ Régénérer** — en 1080p / 1440p / 4K, sans les repères de l'éditeur, une image par vue cochée dans `captures`) ; bouton **📷 Carte postale…** à côté de chaque image dans *Nom et images* pour en faire l'image du menu ; **jauge mémoire en direct** (🧠 %) dans la barre d'état.
+- **Vérifier** contrôle aussi : checkpoints (le tour se referme, aucun checkpoint inatteignable), téléporteurs (arrivée trop loin, après le checkpoint suivant ou sans sol), zones de chute traversées par le parcours là où le kart roule, caisses au-dessus du vide, splines IA modifiées qui touchent un mur.
+- **Vue 3D** : **ciel et météo** affichés dans l'éditeur (ciel de la piste ou celui d'Ambiance ; pluie, orage avec éclairs, neige, tempête, feuilles, lucioles, pollen). **Menu Affichage rangé** en rubriques repliables (Piste, Décor et sol, Ciel et ambiance, Performances) ; nouvelle case **Sol sable sous la piste** (décochée de base). **Zones de chute, de caméra et de gravité orientables** (bouton, champ *Cap (°)*, poignée, touche E).
+- **Corrections** : nom des pistes créées impossible à changer dans *Nom et images* (champ unique pour toutes les langues) ; outil **Cadre** de la barre de gauche sans effet sur les caisses et pas allumé ; textes restés en français dans les autres langues (boutons de gravité, historique, outils) ; caisses, fruits Wumpa, boosters et sol sable de la base visibles sur les cartes postales.
 
 ### Nouveautés de la v0.7
 

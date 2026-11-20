@@ -159,6 +159,15 @@
   #dispmenu label { display:flex; gap:8px; align-items:center; padding:5px 8px; font-size:12.5px; border-radius:6px; cursor:pointer; }
   #dispmenu label:hover { background:#2c313a; }
   #dispmenu .cnt { color:var(--muted); font-size:11.5px; }
+  #dispmenu details.dsec { border-top:1px solid var(--line); }
+  #dispmenu details.dsec:first-child { border-top:0; }
+  #dispmenu details.dsec > summary { list-style:none; cursor:pointer; padding:7px 8px; font-size:12px; font-weight:600; color:var(--muted);
+    display:flex; justify-content:space-between; border-radius:6px; }
+  #dispmenu details.dsec > summary::-webkit-details-marker { display:none; }
+  #dispmenu details.dsec > summary::after { content:'▸'; }
+  #dispmenu details.dsec[open] > summary::after { content:'▾'; }
+  #dispmenu details.dsec > summary:hover { background:#2c313a; color:var(--text); }
+  #dispmenu details.dsec[open] { padding-bottom:4px; }
   #tourhud { position:fixed; left:calc(var(--side) + 12px); right:calc(var(--details) + 12px); bottom:calc(var(--bot,30px) + 12px); z-index:6; background:#000c; border:1px solid var(--line);
              border-radius:10px; padding:8px 12px; display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; font-size:12.5px; }
   #tourhud[hidden] { display:none; }
@@ -420,6 +429,7 @@
  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"/><circle cx="6.500" cy="18" r="2.500"/><circle cx="16.500" cy="16" r="2.500"/></symbol>
  <symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.500 2M10 2h4"/></symbol>
+ <symbol id="i-ruler" viewBox="0 0 24 24"><path d="M3 16 16 3l5 5L8 21z M7 12l2 2M10 9l2 2M13 6l2 2"/></symbol>
  <symbol id="i-width" viewBox="0 0 24 24"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></symbol>
  <symbol id="i-brush" viewBox="0 0 24 24"><path d="M4 20c0-3 1.500-4.500 4-4.500 0 2.500-1.500 4.500-4 4.500zM9.500 14.500L19 4l1.500 1.500L10.500 16"/></symbol>
  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8zM7.500 8.500h.01"/></symbol>
@@ -491,7 +501,8 @@
  <span id="sbchips"><button id="sbsave" hidden title="Modifications pas encore enregistrées : clique pour enregistrer (Ctrl+S)">● Non enregistré</button>
   <button id="sbgen" hidden title="La base a changé depuis la dernière génération : clique pour générer la piste">⚙ À générer</button>
   <button id="sbcourse" hidden title="Ta map importée n'a pas encore de parcours : clique pour le créer depuis sa route (départ, sens, IA)">🏁 Créer le parcours</button>
-  <span id="sblen" hidden title="Longueur de la route de la base"></span></span>
+  <span id="sblen" hidden title="Longueur de la route de la base"></span>
+  <button id="sbload" hidden title="Charge mémoire estimée de la piste en jeu (modèles différents, d'après le décor enregistré) : au-delà de 100 %, le jeu plante au chargement. Clic : alléger la map"></button></span>
  <span id="hints"><span><kbd>Clic</kbd>sélectionner</span><span><kbd>Clic droit</kbd>menu · tourner la vue</span><span><kbd>Molette</kbd>zoom</span></span>
  <button id="histbtn" title="Tous les messages depuis l'ouverture de l'éditeur"><svg class="ic"><use href="#i-clock"/></svg>Historique</button>
  <button id="helpbtn" title="Raccourcis clavier et souris"><svg class="ic"><use href="#i-keys"/></svg>Raccourcis</button></div>
@@ -628,7 +639,8 @@
    <button class="rb" data-gmode="rotate" title="Tourner l'objet sélectionné (E)"><svg class="ic"><use href="#i-rotate"/></svg><span>Tourner</span><kbd>E</kbd></button>
    <button class="rb" data-gmode="scale" title="Changer la taille de l'objet sélectionné (R)"><svg class="ic"><use href="#i-scale"/></svg><span>Taille</span><kbd>R</kbd></button>
   </div>
-  <button id="boxselbtn" class="rb" title="Sélection rectangle (B) : glisse un cadre dans la vue 3D pour prendre plusieurs objets du décor"><svg class="ic"><use href="#i-box"/></svg><span>Cadre</span><kbd>B</kbd></button>
+  <button id="boxselbtn" class="rb" title="Sélection rectangle (B) : glisse un cadre dans la vue 3D pour prendre plusieurs objets du décor (ou des caisses)"><svg class="ic"><use href="#i-box"/></svg><span>Cadre</span><kbd>B</kbd></button>
+  <button id="measurebtn" class="rb" title="Mesure (M) : clique deux points dans la vue 3D pour connaître la distance, la différence de hauteur et la pente"><svg class="ic"><use href="#i-ruler"/></svg><span>Mesure</span><kbd>M</kbd></button>
   <div class="rsep"></div>
   <button id="tour" class="rb" title="La caméra parcourt la ligne de course à hauteur de kart, pour repérer les problèmes avant d'installer"><svg class="ic"><use href="#i-cam"/></svg><span>Visite</span></button>
   <button id="refresh3d" class="rb" title="Relit la piste et le décor enregistrés (modèles, textures, collision), sans recharger la page ; la caméra ne bouge pas"><svg class="ic"><use href="#i-refresh"/></svg><span>Actualiser</span></button>
@@ -647,31 +659,43 @@
  <div id="dispwrap">
   <button id="dispbtn" title="Ce qui est affiché dans la vue 3D"><svg class="ic"><use href="#i-eye"/></svg>Affichage ▾</button>
   <div id="dispmenu" hidden>
-   <!-- base pas encore generee (2026-11-14) : ses elements, a la place de ceux de la map generee -->
-   <div id="dispbase" hidden>
-    <label title="Arbres, rochers, bâtiments… semés par la base (pas encore générés)"><input type="checkbox" id="vbprops" checked> Décor de la base</label>
-    <label title="Eau remplie ou peinte dans la base"><input type="checkbox" id="vbwater" checked> Eau de la base</label>
-    <label title="Sol, route et bords de la base"><input type="checkbox" id="vbground" checked> Sol et route de la base</label>
-   </div>
-   <label title="Caisses, fruits Wumpa et boosters posés sur la piste"><input type="checkbox" id="vobjects" checked> Objets</label>
-   <label title="Quand rien ne bouge, la vue n'est redessinée que quelques fois par seconde (la carte graphique souffle). Décoche si l'écran clignote en Édition."><input type="checkbox" id="vidle" checked> Vue au repos (moins de calcul)</label>
-   <label title="Pour les petits ordinateurs dont l'écran clignote avec beaucoup d'objets : résolution réduite, sans anticrénelage, 30 images/s au plus, vue au repos quand rien ne bouge. Pris en compte entièrement au prochain démarrage de l'éditeur."><input type="checkbox" id="vlowgfx"> Mode PC modeste</label>
-   <label title="Coché : l'éclairage de l'ambiance (nuit, orage…) est montré tel quel, objets sombres compris. Décoché : l'ambiance colore la vue mais les objets restent bien visibles."><input type="checkbox" id="vambfull"> Ambiance fidèle (nuit sombre)</label>
-   <label title="Les objets du décor répétés (herbe, palmiers…) sont dessinés en une fois par la carte graphique : vue plus fluide sur les grosses maps. Décoche en cas d'affichage bizarre."><input type="checkbox" id="vinst" checked> Dessin groupé (plus fluide)</label>
-   <label title="Les objets animés jouent dans la vue l'animation qu'ils auront en jeu (vitesse comprise) : mouvement et déplacement visibles. Ceux qui restent figés en jeu restent figés ici."><input type="checkbox" id="vanim" checked> Animer les objets animés</label>
-   <label title="Splines de position et IA, transitions, points de réapparition"><input type="checkbox" id="vroute" checked> Parcours / splines IA</label>   <div data-only="race">
+   <!-- 2026-11-20 : « trop de choix, menu enorme » -> rubriques repliables (etat garde dans le navigateur) -->
+   <details class="dsec" data-sec="race"><summary>Piste</summary>
+    <label title="Caisses, fruits Wumpa et boosters posés sur la piste"><input type="checkbox" id="vobjects" checked> Objets</label>
+    <label title="Splines de position et IA, transitions, points de réapparition"><input type="checkbox" id="vroute" checked> Parcours / splines IA</label>
+    <div data-only="race">
     <label title="Boîtes rouges : un kart qui y entre réapparaît. Clique une zone pour la déplacer (W), la redimensionner (R) ou la supprimer (Suppr)">
      <input type="checkbox" id="fzvis" checked> Voir les zones de chute <span id="fzcount" class="cnt"></span></label>
     <label title="Disques turquoise (flèche = sens du kart à la réapparition) ; en jaune : ceux de la zone de chute sélectionnée">
      <input type="checkbox" id="rpvis" checked> Voir les points de réapparition <span id="rpcount" class="cnt"></span></label>
    </div>
-   <div data-only="decor">
+   </details>
+   <details class="dsec" data-sec="decor"><summary>Décor et sol</summary>
+    <div id="dispbase" hidden>
+    <label title="Arbres, rochers, bâtiments… semés par la base (pas encore générés)"><input type="checkbox" id="vbprops" checked> Décor de la base</label>
+    <label title="Eau remplie ou peinte dans la base"><input type="checkbox" id="vbwater" checked> Eau de la base</label>
+    <label title="Sol, route et bords de la base"><input type="checkbox" id="vbground" checked> Sol et route de la base</label>
+   </div>
+    <div data-only="decor">
     <label><input type="checkbox" id="dtextures" checked> Afficher les textures du jeu <span class="cnt">(décoché : une couleur par fichier)</span></label>
     <label><input type="checkbox" id="dcolvis" checked> Afficher la collision du sol (gris)</label>
     <label><input type="checkbox" id="dwallvis" checked> Afficher les murs invisibles</label>
     <label><input type="checkbox" id="dltvis" checked> Afficher les lumières (<span id="dltcount">0</span>)</label>
    </div>
-   <label><input type="checkbox" id="wire"> Vue filaire de la collision</label>
+    <label title="Les objets animés jouent dans la vue l'animation qu'ils auront en jeu (vitesse comprise) : mouvement et déplacement visibles. Ceux qui restent figés en jeu restent figés ici."><input type="checkbox" id="vanim" checked> Animer les objets animés</label>
+    <label title="Grand sol couleur sable sous la piste en Création : un repère de l'éditeur, absent en jeu"><input type="checkbox" id="vsand"> Sol sable sous la piste</label>
+    <label><input type="checkbox" id="wire"> Vue filaire de la collision</label>
+   </details>
+   <details class="dsec" data-sec="amb"><summary>Ciel et ambiance</summary>
+    <label title="Le ciel de la piste (ou celui choisi dans Ambiance), comme en jeu"><input type="checkbox" id="vsky" checked> Ciel</label>
+    <label title="La météo choisie dans Ambiance (pluie, orage, neige, feuilles, lucioles, pollen), autour de la caméra. Aperçu : en jeu, ce sont les effets des pistes d'origine"><input type="checkbox" id="vweather" checked> Météo</label>
+    <label title="Coché : l'éclairage de l'ambiance (nuit, orage…) est montré tel quel, objets sombres compris. Décoché : l'ambiance colore la vue mais les objets restent bien visibles."><input type="checkbox" id="vambfull"> Ambiance fidèle (nuit sombre)</label>
+   </details>
+   <details class="dsec" data-sec="perf"><summary>Performances</summary>
+    <label title="Quand rien ne bouge, la vue n'est redessinée que quelques fois par seconde (la carte graphique souffle). Décoche si l'écran clignote en Édition."><input type="checkbox" id="vidle" checked> Vue au repos (moins de calcul)</label>
+    <label title="Pour les petits ordinateurs dont l'écran clignote avec beaucoup d'objets : résolution réduite, sans anticrénelage, 30 images/s au plus, vue au repos quand rien ne bouge. Pris en compte entièrement au prochain démarrage de l'éditeur."><input type="checkbox" id="vlowgfx"> Mode PC modeste</label>
+    <label title="Les objets du décor répétés (herbe, palmiers…) sont dessinés en une fois par la carte graphique : vue plus fluide sur les grosses maps. Décoche en cas d'affichage bizarre."><input type="checkbox" id="vinst" checked> Dessin groupé (plus fluide)</label>
+   </details>
   </div>
  </div>
 </div>
@@ -742,6 +766,25 @@ function syncStatusChips() {
   set('sblen', !!txt && (creator?.hasBase || creator?.active)); if (txt && $('sblen').textContent !== txt) $('sblen').textContent = txt;
 }
 $('sbsave').onclick = () => $('save').click();
+// charge memoire estimee en direct (2026-11-20) : /api/weight_live (modeles du decor enregistre, en memoire cote serveur)
+let loadKey = '';
+async function refreshLoadChip(force) {
+  const b = $('sbload'); if (!b || !track || !decor) return;
+  const key = track + '|' + (decor.files || []).map(f => f.saved ? 1 : 0).join('') + '|' + (dirty ? 1 : 0);
+  if (!force && key === loadKey) return;
+  loadKey = key;
+  try {
+    const w = await (await fetch('/api/weight_live?track=' + encodeURIComponent(track))).json();
+    if (w.error) return;
+    const c = w.load >= 100 ? 'var(--err)' : w.load >= 80 ? '#ffb13d' : 'var(--muted)';
+    b.textContent = `🧠 ${w.load} %`;
+    b.style.cssText = `color:${c};border-color:${c};background:transparent`;
+    b.hidden = false;
+    b.dataset.models = w.models;
+  } catch (e) { /* serveur occupe : au prochain passage */ }
+}
+$('sbload').onclick = () => $('dlight').click();
+setInterval(() => refreshLoadChip(false), 15000);
 $('sbgen').onclick = () => $('gentrack').click();
 $('sbcourse').onclick = () => startCourseCreation();
 setInterval(() => { try { if (creator && decor) syncStatusChips(); } catch (e) { console.error(e); } }, 400);
@@ -952,7 +995,8 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
 });
 function gfxShouldRender(t) {
   if (gfxLost) return false;
-  const animating = tour || flyPreview || creator?.active || ($('vanim')?.checked && animGroup.children.some(m => m.userData.play?.data && m.visible));
+  const animating = tour || flyPreview || creator?.active || ($('vanim')?.checked && animGroup.children.some(m => m.userData.play?.data && m.visible))
+    || (weatherFx && weatherFx.group.visible);
   const idle = !animating && t - gfxActivity > 1500 && $('vidle')?.checked !== false;   // decoche : jamais au repos
   const minGap = idle ? (LOWGFX ? 500 : 250) : (LOWGFX ? 33 : 0);              // PC modeste : 30 images/s au plus
   if (t - gfxLastRender < minGap) return false;
@@ -976,7 +1020,9 @@ renderer.setAnimationLoop(t => {
   flyTick(t);                                           // vol de la camera (clic droit + ZQSD)
   animSceneTick(t);                                     // objets animes joues dans la vue (2026-11-18)
   if (flyPreview) flyPreview();                        // lecture du survol d'introduction (voir playFlyby)
+  weatherTick(t);                                       // meteo : particules autour de la camera (2026-11-20)
   if (!gfxShouldRender(t)) return;                      // repos / PC modeste / affichage perdu (2026-11-18)
+  if (skyMesh) skyMesh.position.copy(camera.position);  // le ciel suit la camera, comme en jeu
   instPrepare();                                        // decor repete dessine en une fois (2026-11-18)
   renderer.render(scene, camera);
   instRestore();
@@ -1558,7 +1604,7 @@ function renderFallMarkers() {
     const m = new THREE.Mesh(new THREE.BoxGeometry(d[0], d[1], d[2]),
       new THREE.MeshBasicMaterial({ color: sel ? 0xffe27a : 0xff3355, transparent: true, opacity: sel ? 0.28 : 0.12, depthWrite: false }));
     m.add(new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({ color: sel ? 0xffe27a : 0xff5577 })));
-    m.position.set(...z.pos);
+    m.position.set(...z.pos); m.rotation.z = z.yaw || 0;          // cap (2026-11-20)
     m.userData = { kind: 'fallZone', index: i, dims: [...d] };
     fallGroup.add(m);
   });
@@ -1575,7 +1621,7 @@ function renderFallSelection(valuesOnly) {
   if (valuesOnly && box.querySelector('[data-fz]')) {
     box.querySelectorAll('[data-fz]').forEach(inp => {
       const [f, k] = inp.dataset.fz.split(':');
-      if (document.activeElement !== inp) inp.value = f === 'dims' ? m(z.dims[+k]) : z.pos[+k].toFixed(0);
+      if (document.activeElement !== inp) inp.value = f === 'dims' ? m(z.dims[+k]) : f === 'yaw' ? Math.round((z.yaw || 0) * 180 / Math.PI) : z.pos[+k].toFixed(0);
     });
     return;
   }
@@ -1583,14 +1629,14 @@ function renderFallSelection(valuesOnly) {
   box.innerHTML = insHead('Zone de chute', `<span style="color:var(--muted);font-size:11px">${esc(z.name)}</span>`)
     + `<div class="inssub">Un kart qui entre dans cette boîte réapparaît à l'un de ces points :
       ${z.points.map(esc).join(', ') || '—'}. Si un raccourci passe dedans, réduis-la ou supprime-la.</div>`
-    + insBlock('Position', insXYZ + row('pos', 'Centre (po)', z.pos, v => v.toFixed(0)) + row('dims', 'Taille (m)', z.dims, m))
-    + insBlock('Outil', '<div class="grid2"><button data-g="translate">Déplacer<kbd>W</kbd></button><button data-g="scale">Taille<kbd>R</kbd></button></div>')
+    + insBlock('Position', insXYZ + row('pos', 'Centre (po)', z.pos, v => v.toFixed(0)) + row('dims', 'Taille (m)', z.dims, m) + row('yaw', 'Cap (°)', [z.yaw || 0], v => Math.round(v * 180 / Math.PI)))
+    + insBlock('Outil', '<div class="grid3"><button data-g="translate">Déplacer<kbd>W</kbd></button><button data-g="rotate">Tourner<kbd>E</kbd></button><button data-g="scale">Taille<kbd>R</kbd></button></div>')
     + insBlock('Actions', '<div class="grid2"><button id="fzfocus">Centrer la vue</button><button id="fzdel" class="danger">Supprimer<kbd>Suppr</kbd></button></div>');
   box.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { gizmo.setMode(b.dataset.g); applyGizmoAxes(); });
   box.querySelectorAll('[data-fz]').forEach(inp => inp.onchange = () => {
     const [f, k] = inp.dataset.fz.split(':'), v = parseFloat(inp.value);
     if (!isFinite(v)) return;
-    if (f === 'dims') z.dims[+k] = Math.max(100, v * 39.37); else z.pos[+k] = v;
+    if (f === 'dims') z.dims[+k] = Math.max(100, v * 39.37); else if (f === 'yaw') z.yaw = v * Math.PI / 180; else z.pos[+k] = v;
     selectFallZone(selected.index); markDirty(); pushHistory();
   });
   $('fzfocus').onclick = () => focusOn(z.pos);
@@ -1610,7 +1656,7 @@ function renderCamMarkers() {
     const m = new THREE.Mesh(new THREE.BoxGeometry(d[0], d[1], d[2]),
       new THREE.MeshBasicMaterial({ color: sel ? 0xffe27a : 0x37c8ff, transparent: true, opacity: sel ? 0.25 : 0.1, depthWrite: false }));
     m.add(new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({ color: sel ? 0xffe27a : 0x37c8ff })));
-    m.position.set(...z.pos);
+    m.position.set(...z.pos); m.rotation.z = z.yaw || 0;          // cap (2026-11-20)
     m.userData = { kind: 'camZone', index: i, dims: [...d] };
     camGroup.add(m);
   });
@@ -1636,7 +1682,7 @@ function renderCamSelection(valuesOnly) {
   if (valuesOnly && box.querySelector('[data-cz]')) {
     box.querySelectorAll('[data-cz]').forEach(inp => {
       const [f, k] = inp.dataset.cz.split(':');
-      if (document.activeElement !== inp) inp.value = f === 'dims' ? m(z.dims[+k]) : z.pos[+k].toFixed(0);
+      if (document.activeElement !== inp) inp.value = f === 'dims' ? m(z.dims[+k]) : f === 'yaw' ? Math.round((z.yaw || 0) * 180 / Math.PI) : z.pos[+k].toFixed(0);
     });
     return;
   }
@@ -1644,14 +1690,14 @@ function renderCamSelection(valuesOnly) {
   box.innerHTML = insHead('Zone caméra', `<span style="color:var(--muted);font-size:11px">${esc(z.name || 'nouvelle')}</span>`)
     + `<div class="inssub">Dans cette boîte, la caméra du kart passe en mode « tunnel » (comme dans les tunnels de Sewer Speedway) :
       pour les parois roulables très inclinées ou à l'envers. Elle doit englober toute la paroi et un peu d'espace au-dessus.</div>`
-    + insBlock('Position', insXYZ + row('pos', 'Centre (po)', z.pos, v => v.toFixed(0)) + row('dims', 'Taille (m)', z.dims, m))
-    + insBlock('Outil', '<div class="grid2"><button data-g="translate">Déplacer<kbd>W</kbd></button><button data-g="scale">Taille<kbd>R</kbd></button></div>')
+    + insBlock('Position', insXYZ + row('pos', 'Centre (po)', z.pos, v => v.toFixed(0)) + row('dims', 'Taille (m)', z.dims, m) + row('yaw', 'Cap (°)', [z.yaw || 0], v => Math.round(v * 180 / Math.PI)))
+    + insBlock('Outil', '<div class="grid3"><button data-g="translate">Déplacer<kbd>W</kbd></button><button data-g="rotate">Tourner<kbd>E</kbd></button><button data-g="scale">Taille<kbd>R</kbd></button></div>')
     + insBlock('Actions', '<div class="grid2"><button id="czfocus">Centrer la vue</button><button id="czdel" class="danger">Supprimer<kbd>Suppr</kbd></button></div>');
   box.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { gizmo.setMode(b.dataset.g); applyGizmoAxes(); });
   box.querySelectorAll('[data-cz]').forEach(inp => inp.onchange = () => {
     const [f, k] = inp.dataset.cz.split(':'), v = parseFloat(inp.value);
     if (!isFinite(v)) return;
-    if (f === 'dims') z.dims[+k] = Math.max(100, v * 39.37); else z.pos[+k] = v;
+    if (f === 'dims') z.dims[+k] = Math.max(100, v * 39.37); else if (f === 'yaw') z.yaw = v * Math.PI / 180; else z.pos[+k] = v;
     selectCamZone(selected.index); markDirty(); pushHistory();
   });
   $('czfocus').onclick = () => focusOn(z.pos);
@@ -1673,7 +1719,7 @@ function renderGravMarkers() {
       new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: sel ? 0.25 : 0.12, depthWrite: false }));
     m.add(new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({ color: c })));
     m.add(letterSprite('×' + (+z.gravity).toLocaleString('fr', { maximumFractionDigits: 2 }), '#fff'));
-    m.position.set(...z.pos);
+    m.position.set(...z.pos); m.rotation.z = z.yaw || 0;          // cap (2026-11-20)
     m.userData = { kind: 'gravZone', index: i, dims: [...d] };
     gravGroup.add(m);
   });
@@ -1697,7 +1743,7 @@ function renderGravSelection(valuesOnly) {
   if (valuesOnly && box.querySelector('[data-gz]')) {
     box.querySelectorAll('[data-gz]').forEach(inp => {
       const [f, k] = inp.dataset.gz.split(':');
-      if (document.activeElement !== inp) inp.value = f === 'dims' ? m(z.dims[+k]) : z.pos[+k].toFixed(0);
+      if (document.activeElement !== inp) inp.value = f === 'dims' ? m(z.dims[+k]) : f === 'yaw' ? Math.round((z.yaw || 0) * 180 / Math.PI) : z.pos[+k].toFixed(0);
     });
     return;
   }
@@ -1707,9 +1753,9 @@ function renderGravSelection(valuesOnly) {
       (Oxide Station : × 0,32), au-dessus il retombe plus vite (× 1,5 à × 4,5 à la fin du passage). Pour un saut en apesanteur : une
       grande zone légère, puis une zone forte juste avant l'atterrissage.</div>`
     + insBlock('Gravité', `<div class="xyzrow" style="grid-template-columns:62px 1fr"><span>Multiplier</span><input id="gzval" type="number" min="0.05" max="5" step="0.05" value="${z.gravity}"></div>
-        <div class="grid2" style="margin-top:5px">${GRAV_PRESETS.map(([v, l]) => `<button data-gp="${v}" class="${Math.abs(z.gravity - v) < 1e-3 ? 'primary' : ''}">${l} ×${String(v).replace('.', ',')}</button>`).join('')}</div>`)
-    + insBlock('Position', insXYZ + row('pos', 'Centre (po)', z.pos, v => v.toFixed(0)) + row('dims', 'Taille (m)', z.dims, m))
-    + insBlock('Outil', '<div class="grid2"><button data-g="translate">Déplacer<kbd>W</kbd></button><button data-g="scale">Taille<kbd>R</kbd></button></div>')
+        <div class="grid2" style="margin-top:5px">${GRAV_PRESETS.map(([v, l]) => `<button data-gp="${v}" class="${Math.abs(z.gravity - v) < 1e-3 ? 'primary' : ''}"><span>${l}</span> ×${String(v).replace('.', ',')}</button>`).join('')}</div>`)
+    + insBlock('Position', insXYZ + row('pos', 'Centre (po)', z.pos, v => v.toFixed(0)) + row('dims', 'Taille (m)', z.dims, m) + row('yaw', 'Cap (°)', [z.yaw || 0], v => Math.round(v * 180 / Math.PI)))
+    + insBlock('Outil', '<div class="grid3"><button data-g="translate">Déplacer<kbd>W</kbd></button><button data-g="rotate">Tourner<kbd>E</kbd></button><button data-g="scale">Taille<kbd>R</kbd></button></div>')
     + insBlock('Actions', '<div class="grid2"><button id="gzfocus">Centrer la vue</button><button id="gzdel" class="danger">Supprimer<kbd>Suppr</kbd></button></div>');
   const setG = v => { if (!isFinite(v)) return; z.gravity = Math.round(Math.min(5, Math.max(0.05, v)) * 1000) / 1000; selectGravZone(selected.index); markDirty(); pushHistory(); };
   $('gzval').onchange = e => setG(parseFloat(e.target.value));
@@ -1718,7 +1764,7 @@ function renderGravSelection(valuesOnly) {
   box.querySelectorAll('[data-gz]').forEach(inp => inp.onchange = () => {
     const [f, k] = inp.dataset.gz.split(':'), v = parseFloat(inp.value);
     if (!isFinite(v)) return;
-    if (f === 'dims') z.dims[+k] = Math.max(100, v * 39.37); else z.pos[+k] = v;
+    if (f === 'dims') z.dims[+k] = Math.max(100, v * 39.37); else if (f === 'yaw') z.yaw = v * Math.PI / 180; else z.pos[+k] = v;
     selectGravZone(selected.index); markDirty(); pushHistory();
   });
   $('gzfocus').onclick = () => focusOn(z.pos);
@@ -2160,18 +2206,21 @@ function startChanged() {
     const m = fallGroup.children.find(x => x.userData.index === sel.index), z = fallZones[sel.index];
     if (m && z) {
       z.pos = m.position.toArray().map(v => Math.round(v));
+      if (gizmo.getMode() === 'rotate') z.yaw = +m.rotation.z.toFixed(5);
       if (gizmo.getMode() === 'scale') z.dims = [0, 1, 2].map(k => Math.max(100, Math.round(m.userData.dims[k] * Math.abs(m.scale.getComponent(k)))));
     }
   } else if (sel.kind === 'gravZone') {
     const m = gravGroup.children.find(x => x.userData.index === sel.index), z = gravZones[sel.index];
     if (m && z) {
       z.pos = m.position.toArray().map(v => Math.round(v));
+      if (gizmo.getMode() === 'rotate') z.yaw = +m.rotation.z.toFixed(5);
       if (gizmo.getMode() === 'scale') z.dims = [0, 1, 2].map(k => Math.max(100, Math.round(m.userData.dims[k] * Math.abs(m.scale.getComponent(k)))));
     }
   } else if (sel.kind === 'camZone') {
     const m = camGroup.children.find(x => x.userData.index === sel.index), z = camZones[sel.index];
     if (m && z) {
       z.pos = m.position.toArray().map(v => Math.round(v));
+      if (gizmo.getMode() === 'rotate') z.yaw = +m.rotation.z.toFixed(5);
       if (gizmo.getMode() === 'scale') z.dims = [0, 1, 2].map(k => Math.max(100, Math.round(m.userData.dims[k] * Math.abs(m.scale.getComponent(k)))));
     }
   } else if (sel.kind === 'transition') {
@@ -2577,17 +2626,17 @@ function select(handle) {
   if (was === 'fallZone' || selected?.kind === 'fallZone') {
     renderFallMarkers(); renderRespawnMarkers();         // points de la zone en jaune
     if (selected?.kind === 'fallZone') handle = fallGroup.children.find(x => x.userData.index === selected.index);
-    if (selected?.kind === 'fallZone' && gizmo.getMode() === 'rotate') gizmo.setMode('translate');   // boite alignee sur les axes
+    
   }
   if (was === 'gravZone' || selected?.kind === 'gravZone') {
     renderGravMarkers();
     if (selected?.kind === 'gravZone') handle = gravGroup.children.find(x => x.userData.index === selected.index);
-    if (selected?.kind === 'gravZone' && gizmo.getMode() === 'rotate') gizmo.setMode('translate');    // boite alignee sur les axes
+    
   }
   if (was === 'camZone' || selected?.kind === 'camZone') {
     renderCamMarkers();
     if (selected?.kind === 'camZone') handle = camGroup.children.find(x => x.userData.index === selected.index);
-    if (selected?.kind === 'camZone' && gizmo.getMode() === 'rotate') gizmo.setMode('translate');     // boite alignee sur les axes
+    
   }
   if (selected?.kind === 'transition') { renderTransitionMarkers(); handle = markers.children.find(x => x.userData.name === selected.name); }
   if (was === 'flyPose' || selected?.kind === 'flyPose') {
@@ -3646,7 +3695,7 @@ function openAiDraw(startRef) {
     const cam = new THREE.OrthographicCamera(x0 - cx, x1 - cx, y1 - cy, y0 - cy, 1, 1e7);
     cam.position.set(cx, cy, z1 + 200000); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
     const rt = new THREE.WebGLRenderTarget(W, H);
-    const hide = [root, markers, gizmo, animGroup].filter(Boolean).map(o => [o, o.visible]);
+    const hide = [root, markers, gizmo, animGroup, weatherFx?.group].filter(Boolean).map(o => [o, o.visible]);
     hide.forEach(([o]) => o.visible = false);
     try {
       instPrepare(); renderer.setRenderTarget(rt); renderer.render(scene, cam);
@@ -3678,9 +3727,10 @@ function openAiDraw(startRef) {
     if (D.cur) poly(D.cur, '#ffffff', 2);
     box.querySelector('#adname').textContent = `Section ${D.k + 1} / ${D.refs.length}`;
     box.querySelector('#addel').disabled = !D.lane;
-    box.querySelector('#adinfo').innerHTML = `Jaune : la spline de position (flèche = sens) · bleu : les ${lanes().length} voies IA de la section`
-      + (D.lane ? ` · <b style="color:#ff8c1a">${esc(D.lane.name)}</b> sélectionnée : dessine par-dessus pour corriger la portion entre les deux bouts de ton trait.`
-                : ' · aucune voie sélectionnée : clique une voie, ou dessine d\'un bout à l\'autre de la section pour <b>ajouter une voie</b>.');
+    // morceaux dans des <span> separes : chacun est traduit a part (i18n.js)
+    box.querySelector('#adinfo').innerHTML = `<span>Jaune : la spline de position (flèche = sens) · bleu : les ${lanes().length} voies IA de la section</span>`
+      + (D.lane ? ` · <b style="color:#ff8c1a">${esc(D.lane.name)}</b> <span>sélectionnée : dessine par-dessus pour corriger la portion entre les deux bouts de ton trait.</span>`
+                : ' <span>· aucune voie sélectionnée : clique une voie, ou dessine d\'un bout à l\'autre de la section pour</span> <b>ajouter une voie</b>.');
   };
   const at = e => { const b = cv.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
   const nearestLane = (u, v) => {
@@ -3892,6 +3942,8 @@ addEventListener('keydown', e => {
   if (!e.ctrlKey && !e.metaKey && !e.altKey && !creator?.active && !tour) {
     if (e.key === 'Escape' && boxArmed) { armBoxSelect(false); status('Sélection rectangle annulée'); return; }
     if (e.key === 'b' || e.key === 'B') { armBoxSelect(!boxArmed); return; }
+    if (e.key === 'Escape' && measureArmed) { armMeasure(false); return; }
+    if (e.key === 'm' || e.key === 'M') { armMeasure(!measureArmed); return; }
     if (e.key === 'H') { showHiddenDecor(); return; }                       // Maj+H
     if (e.key === 'h') {
       // objets de la base pas encore generee (2026-11-16 : H ne cachait que le decor genere)
@@ -3934,6 +3986,7 @@ addEventListener('keydown', e => {
   if (!selected) return;
   if (selected.kind === 'fallZone' || selected.kind === 'camZone' || selected.kind === 'gravZone') {
     if (e.key === 'w' || e.key === 'z') { gizmo.setMode('translate'); applyGizmoAxes(); }
+    if (e.key === 'e') { gizmo.setMode('rotate'); applyGizmoAxes(); }
     if (e.key === 'r') { gizmo.setMode('scale'); applyGizmoAxes(); }
     if (e.key === 'Delete') ({ camZone: deleteCamZone, gravZone: deleteGravZone }[selected.kind] || deleteFallZone)(selected.index);
     else if (e.key === 'Escape') select(null);
@@ -4404,6 +4457,7 @@ async function loadDecor(keepCamera, refreshCol = !!keepCamera) {
   const got = await api('/api/decor?name=' + encodeURIComponent(name));
   if (gen !== loadGen || name !== track) return false;     // piste changee pendant le chargement : decor perime
   decor = got;
+  setTimeout(() => refreshLoadChip(true), 300);              // decor relu (ajout, enregistrement) : jauge memoire a jour
   decorGroup.clear(); allDecorMeshes.clear(); dEdits = {}; dOps = []; selectDecor(null);
   scThumbs.clear(); scThumbQueue.length = 0;
   lights = decor.lights || []; lightPresets = decor.light_presets || {}; lightsLoaded = JSON.stringify(lights);
@@ -4478,6 +4532,7 @@ function hideBaseProps(indices) {
 let boxArmed = false, boxDrag = null;
 function armBoxSelect(on = true) {
   boxArmed = on;
+  $('boxselbtn')?.classList.toggle('on', on);           // bouton allume tant que le cadre est arme (2026-11-20)
   renderer.domElement.style.cursor = on ? 'crosshair' : '';
   if (on) status('Sélection rectangle : glisse dans la vue 3D (Maj : ajouter à la sélection) · Échap : annuler');
 }
@@ -4507,6 +4562,19 @@ renderer.domElement.addEventListener('pointerup', e => {
   const x1 = Math.min(x0, e.clientX), x2 = Math.max(x0, e.clientX), y1 = Math.min(y0, e.clientY), y2 = Math.max(y0, e.clientY);
   if (x2 - x1 < 4 || y2 - y1 < 4) { status('Sélection rectangle annulée (cadre trop petit)'); return; }
   const v = new THREE.Vector3(), box = new THREE.Box3();
+  const inRect = p => { v.copy(p).project(camera); if (v.z < -1 || v.z > 1) return false;
+    const sx = r.left + (v.x + 1) / 2 * r.width, sy = r.top + (1 - v.y) / 2 * r.height;
+    return sx >= x1 && sx <= x2 && sy >= y1 && sy <= y2; };
+  // caisses et fruits de la course dans le cadre (2026-11-20 : le cadre ne prenait que le decor) : filtre « Course »,
+  // ou « Tout » quand le cadre ne contient aucun objet du decor
+  const crateIdx = pickFilter !== 'decor' && itemsShown() && crateGroup.visible
+    ? [...new Set(crateGroup.children.filter(m => m.userData.index != null && crates[m.userData.index] && inRect(m.getWorldPosition(new THREE.Vector3())))
+        .map(m => m.userData.index))] : [];
+  if (pickFilter === 'race') {
+    if (crateIdx.length) { selectCrates(crateIdx); status(`${crateIdx.length} caisse(s) sélectionnée(s)`, 'ok'); }
+    else status('Aucune caisse dans le cadre (filtre Sélection : Course)');
+    return;
+  }
   const inside = decorGroup.visible ? decorGroup.children.filter(m => {
     if (!m.visible || isCreatorGround(m)) return false;
     box.setFromObject(m); box.getCenter(v); v.project(camera);
@@ -4524,7 +4592,8 @@ renderer.domElement.addEventListener('pointerup', e => {
     });
     if (idx.length) { selectBaseMany(idx); return; }
   }
-  if (!inside.length && !add) { status('Aucun objet du décor dans le cadre'); return; }
+  if (!inside.length && crateIdx.length && pickFilter === 'all') { selectCrates(crateIdx); status(`${crateIdx.length} caisse(s) sélectionnée(s)`, 'ok'); return; }
+  if (!inside.length && !add) { status('Aucun objet du décor ni caisse dans le cadre'); return; }
   setContext('decor');
   setDecorSelection(add ? [...new Set([...dMulti, ...inside])] : inside);
   renderDecorPanel();
@@ -5284,6 +5353,11 @@ function renderMultiSel(valuesOnly) {
     <div class="ins"><h4>Outil</h4><div class="grid2"><button data-m="translate">Déplacer<kbd>W</kbd></button><button data-m="rotate">Tourner<kbd>E</kbd></button></div></div>
     <div class="ins"><h4>Actions</h4>
       <div class="grid2"><button id="dfocus">Centrer la vue</button><button id="ddrop">Poser au sol<kbd>G</kbd></button><button id="ddup" title="Les copies deviennent la sélection : déplace-les tout de suite (W)">Dupliquer<kbd>Ctrl+D</kbd></button><button id="ddel" class="danger">Supprimer</button></div></div>
+    <div class="ins"><h4>Disposer</h4>
+      <div class="grid2"><button id="dalign" title="Sur la droite qui joint les deux objets les plus éloignés (écarts gardés)">Aligner</button>
+        <button id="dspread" title="Sur cette droite, à intervalles égaux entre les deux objets des bouts">Répartir</button>
+        <button id="dsamez" title="Tous à la hauteur moyenne du groupe">Même hauteur</button>
+        <button id="dalongroad" title="À intervalles égaux le long du parcours, du même côté de la route, tournés comme elle, puis posés au sol">Le long de la route</button></div></div>
     <div class="ins"><h4>Objets</h4><div id="dmlist" style="max-height:180px;overflow:auto;font-size:12px"></div></div>`;
   const list = box.querySelector('#dmlist');
   for (const m of dMulti.slice(0, 200)) {
@@ -5299,7 +5373,65 @@ function renderMultiSel(valuesOnly) {
   });
   $('ddup').onclick = duplicateDecor; $('ddel').onclick = deleteDecor; $('dfocus').onclick = focusSelection;
   $('ddrop').onclick = () => dropDecorOnGround();
+  $('dalign').onclick = () => arrangeDecor('line'); $('dspread').onclick = () => arrangeDecor('spread');
+  $('dsamez').onclick = () => arrangeDecor('height'); $('dalongroad').onclick = () => arrangeDecor('road');
   renderMultiSel(true);
+}
+// Disposer plusieurs objets du decor (2026-11-20) : aligner / repartir sur une droite, meme hauteur, le long de la route
+function raceLinePoints() {
+  const out = [];
+  for (const c of raceChain()) for (const v of curvePoints(c.position.points)) out.push([v.x, v.y]);
+  return out;
+}
+function arrangeDecor(mode) {
+  const list = [...dMulti];
+  if (list.length < 2) { status('Sélectionne au moins deux objets', 'err'); return; }
+  const P = list.map(m => m.position);
+  if (mode === 'height') {
+    const z = P.reduce((a, p) => a + p.z, 0) / P.length;
+    list.forEach(m => { m.position.z = z; recordDecorEdit(m); });
+  } else if (mode === 'line' || mode === 'spread') {
+    let a = 0, b = 1, best = -1;                          // les deux plus eloignes : les bouts de la droite
+    for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) {
+      const d = Math.hypot(P[i].x - P[j].x, P[i].y - P[j].y); if (d > best) { best = d; a = i; b = j; }
+    }
+    if (best < 1) { status('Objets tous au même endroit : rien à aligner', 'err'); return; }
+    const ax = P[a].x, ay = P[a].y, ux = (P[b].x - ax) / best, uy = (P[b].y - ay) / best;
+    const order = list.map((m, i) => [i, (P[i].x - ax) * ux + (P[i].y - ay) * uy]).sort((p, q) => p[1] - q[1]);
+    order.forEach(([i, t], k) => {
+      const tt = mode === 'spread' ? best * k / (order.length - 1) : t;
+      list[i].position.x = ax + ux * tt; list[i].position.y = ay + uy * tt; recordDecorEdit(list[i]);
+    });
+  } else if (mode === 'road') {
+    const R = raceLinePoints();
+    if (R.length < 2) { status('Pas de parcours : crée d’abord le parcours', 'err'); return; }
+    const cum = [0]; for (let k = 1; k < R.length; k++) cum.push(cum[k - 1] + Math.hypot(R[k][0] - R[k - 1][0], R[k][1] - R[k - 1][1]));
+    const tan = k => { const p = R[Math.max(0, k - 1)], q = R[Math.min(R.length - 1, k + 1)]; return Math.atan2(q[1] - p[1], q[0] - p[0]); };
+    const at = s => { let k = 1; while (k < R.length - 1 && cum[k] < s) k++;
+      const f = Math.min(1, Math.max(0, (s - cum[k - 1]) / ((cum[k] - cum[k - 1]) || 1)));
+      return [R[k - 1][0] + (R[k][0] - R[k - 1][0]) * f, R[k - 1][1] + (R[k][1] - R[k - 1][1]) * f, tan(k)]; };
+    const info = list.map(m => {                           // abscisse sur le parcours, ecart lateral, cap par rapport a la route
+      let k = 0, d = Infinity;
+      R.forEach((q, i) => { const e = Math.hypot(q[0] - m.position.x, q[1] - m.position.y); if (e < d) { d = e; k = i; } });
+      const t = tan(k), side = Math.sign(-Math.sin(t) * (m.position.x - R[k][0]) + Math.cos(t) * (m.position.y - R[k][1])) || 1;
+      return { m, s: cum[k], off: side * d, rel: m.rotation.z - t };
+    }).sort((p, q) => p.s - q.s);
+    const s0 = info[0].s, s1 = info[info.length - 1].s;
+    if (s1 - s0 < 100) { status('Les objets sont au même endroit du parcours : écarte les deux des bouts', 'err'); return; }
+    const off = info.reduce((a, x) => a + x.off, 0) / info.length;   // meme cote de la route, meme ecart (moyen)
+    info.forEach((x, k) => {
+      const [px, py, t] = at(s0 + (s1 - s0) * k / (info.length - 1));
+      x.m.position.x = px - Math.sin(t) * off; x.m.position.y = py + Math.cos(t) * off;
+      if (x.m.userData.obj.has_transform) x.m.rotation.z = t + x.rel;
+      recordDecorEdit(x.m);
+    });
+    setDecorSelection([...dMulti]); markDirty(); pushHistory();
+    dropDecorOnGround(list);                               // puis poses sur le sol (enregistre l'etape et le message)
+    status(`${list.length} objet(s) répartis le long de la route sur ${Math.round((s1 - s0) / 39.37)} m, posés au sol`, 'ok');
+    return;
+  }
+  setDecorSelection([...dMulti]); markDirty(); pushHistory(); renderDecorSel();
+  status({ line: `${list.length} objet(s) alignés`, spread: `${list.length} objet(s) répartis à intervalles égaux`, height: `${list.length} objet(s) à la même hauteur` }[mode], 'ok');
 }
 function renderBasePropSel(valuesOnly) {
   const box = $('dsel'), p = creator.extInfo();
@@ -6187,6 +6319,409 @@ function sceneSync() {
 $('dsearch').oninput = () => renderScene();
 $('scclear').onclick = () => { $('dsearch').value = ''; renderScene(); $('dsearch').focus(); };
 $('boxselbtn').onclick = () => armBoxSelect(!boxArmed);
+// ---- ciel et meteo dans l'editeur (2026-11-20) : ciel = modele du jeu (boite texturee de 50 000 po) centre sur la camera,
+// derriere tout ; meteo = particules autour de la camera (apercu : en jeu, ce sont les effets des pistes d'origine) ----
+var skyMesh = null, skyModel = '', weatherFx = null, weatherKey = '';      // var : lus par la boucle de rendu (plus haut)
+const prefOn = (id, k) => { try { const v = localStorage.getItem(k); if (v != null) $(id).checked = v === '1'; } catch (e) {} };
+prefOn('vsky', 'ctr_vsky'); prefOn('vweather', 'ctr_vweather');
+$('vsky').onchange = () => { try { localStorage.setItem('ctr_vsky', $('vsky').checked ? '1' : '0'); } catch (e) {} if (skyMesh) skyMesh.visible = $('vsky').checked; };
+$('vweather').onchange = () => { try { localStorage.setItem('ctr_vweather', $('vweather').checked ? '1' : '0'); } catch (e) {} if (weatherFx) weatherFx.group.visible = $('vweather').checked; };
+async function loadSkyAndWeather() {
+  let info;
+  try { info = await (await fetch('/api/sky_info?track=' + encodeURIComponent(track))).json(); } catch (e) { return; }
+  if (info.error) return;
+  if ((info.model || '') !== skyModel) {
+    skyModel = info.model || '';
+    if (skyMesh) { scene.remove(skyMesh); skyMesh = null; }
+    if (skyModel) {
+      try {
+        const mine = skyModel, g = await getGeometry(skyModel);
+        if (mine !== skyModel) return;                         // piste changee pendant le chargement
+        const mats = [new THREE.MeshBasicMaterial({ color: 0x5a6a80, side: THREE.DoubleSide, depthWrite: false, depthTest: false, fog: false }),
+          ...(g.userData.texKeys || []).map(k => new THREE.MeshBasicMaterial({ map: textureMaterial(k).map, side: THREE.DoubleSide,
+                                                                               depthWrite: false, depthTest: false, fog: false }))];
+        skyMesh = new THREE.Mesh(g, mats);
+        skyMesh.scale.setScalar(20); skyMesh.renderOrder = -1000; skyMesh.frustumCulled = false;
+        skyMesh.visible = $('vsky').checked; skyMesh.userData.isSky = true;
+        scene.add(skyMesh);
+      } catch (e) { /* ciel illisible : fond uni */ }
+    }
+  }
+  setWeatherPreview(info.weather?.preset || '', info.weather?.density || 'normal');
+}
+const WX_LOOK = {   // n : particules (densite normale), v : chute (po/s), wind : vent, size, color, kind
+  rain:      { n: 2600, v: 3600, wind: 300, size: 140, color: 0xb8c8e8, kind: 'streak', opacity: 0.55 },
+  storm:     { n: 3600, v: 4200, wind: 700, size: 170, color: 0xb8c8e8, kind: 'streak', opacity: 0.6, flash: true },
+  snow:      { n: 2200, v: 260, wind: 120, size: 30, color: 0xffffff, kind: 'flake', opacity: 0.9, sway: 120 },
+  blizzard:  { n: 4200, v: 420, wind: 1600, size: 34, color: 0xffffff, kind: 'flake', opacity: 0.9, sway: 220 },
+  leaves:    { n: 500, v: 160, wind: 140, size: 60, color: 0xff8fc8, kind: 'flake', opacity: 0.95, sway: 260 },
+  fireflies: { n: 300, v: 0, wind: 0, size: 40, color: 0xfff27a, kind: 'glow', opacity: 1, sway: 160 },
+  pollen:    { n: 700, v: -15, wind: 40, size: 16, color: 0xfff6c8, kind: 'glow', opacity: 0.8, sway: 90 },
+};
+const WX_BOX = [7000, 7000, 3500];                          // demi-etendue autour de la camera (po, ~180 m)
+let wxDot = null;
+function wxDotTexture() {
+  if (wxDot) return wxDot;
+  const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, '#fff'); gr.addColorStop(0.5, '#fffc'); gr.addColorStop(1, '#fff0');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  return wxDot = new THREE.CanvasTexture(c);
+}
+function setWeatherPreview(preset, density) {
+  const key = preset + '|' + density + '|' + (LOWGFX ? 1 : 0);
+  if (key === weatherKey) return;
+  weatherKey = key;
+  if (weatherFx) { scene.remove(weatherFx.group); weatherFx.group.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); }); weatherFx = null; }
+  const L = WX_LOOK[preset]; if (!L) return;
+  const mul = ({ low: 0.6, normal: 1, high: 1.6 }[density] || 1) * (LOWGFX ? 0.4 : 1), n = Math.round(L.n * mul);
+  const P = new Float32Array(n * 3), seed = new Float32Array(n);
+  for (let i = 0; i < n; i++) { for (let k = 0; k < 3; k++) P[i * 3 + k] = (Math.random() * 2 - 1) * WX_BOX[k]; seed[i] = Math.random() * 6.283; }
+  const group = new THREE.Group(); let obj;
+  if (L.kind === 'streak') {                              // pluie : traits inclines dans le sens du vent
+    const G = new THREE.BufferGeometry(); G.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 6), 3));
+    obj = new THREE.LineSegments(G, new THREE.LineBasicMaterial({ color: L.color, transparent: true, opacity: L.opacity, depthWrite: false, fog: false }));
+  } else {
+    const G = new THREE.BufferGeometry(); G.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+    obj = new THREE.Points(G, new THREE.PointsMaterial({ color: L.color, size: L.size, map: wxDotTexture(), transparent: true, opacity: L.opacity,
+      depthWrite: false, fog: false, blending: L.kind === 'glow' ? THREE.AdditiveBlending : THREE.NormalBlending }));
+  }
+  obj.frustumCulled = false; group.add(obj); group.visible = $('vweather').checked; scene.add(group);
+  weatherFx = { L, P, seed, obj, group, last: 0, flashAt: 0 };
+}
+function weatherTick(t) {
+  const W = weatherFx; if (!W || !W.group.visible) return;
+  const dt = Math.min(0.1, W.last ? (t - W.last) / 1000 : 0); W.last = t;
+  const { L, P, seed } = W, n = seed.length, out = W.obj.geometry.attributes.position.array, s = t / 1000;
+  W.group.position.copy(camera.position);
+  for (let i = 0; i < n; i++) {
+    const j = i * 3, ph = seed[i];
+    P[j] += (L.wind + (L.sway ? Math.sin(s * 0.8 + ph) * L.sway : 0)) * dt;
+    P[j + 1] += (L.sway ? Math.cos(s * 0.6 + ph * 1.7) * L.sway * 0.6 : 0) * dt;
+    P[j + 2] -= (L.v + (L.kind === 'glow' ? Math.sin(s + ph) * 40 : 0)) * dt;
+    for (let k = 0; k < 3; k++) { const b = WX_BOX[k]; if (P[j + k] < -b) P[j + k] += 2 * b; else if (P[j + k] > b) P[j + k] -= 2 * b; }
+    if (L.kind === 'streak') {
+      const f = L.size / Math.hypot(L.v, L.wind);
+      out[i * 6] = P[j]; out[i * 6 + 1] = P[j + 1]; out[i * 6 + 2] = P[j + 2];
+      out[i * 6 + 3] = P[j] - L.wind * f; out[i * 6 + 4] = P[j + 1]; out[i * 6 + 5] = P[j + 2] + L.v * f;
+    } else { out[j] = P[j]; out[j + 1] = P[j + 1]; out[j + 2] = P[j + 2]; }
+  }
+  W.obj.geometry.attributes.position.needsUpdate = true;
+  if (L.kind === 'glow') W.obj.material.opacity = L.opacity * (0.75 + 0.25 * Math.sin(s * 3));   // lucioles qui clignotent
+  if (L.flash) {                                           // orage : eclair de temps en temps (voile blanc sur la vue)
+    if (!W.flashAt) W.flashAt = t + 4000 + Math.random() * 8000;
+    if (t > W.flashAt) { W.flashAt = 0; flashView(); }
+  }
+}
+function flashView() {
+  let f = $('wxflash');
+  if (!f) { f = document.createElement('div'); f.id = 'wxflash'; f.style.cssText = 'position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .35s'; $('view').appendChild(f); }
+  f.style.transition = 'none'; f.style.opacity = '0.55';
+  requestAnimationFrame(() => { f.style.transition = 'opacity .45s'; f.style.opacity = '0'; });
+}
+// ---- carte postale (2026-11-20) : image haute definition de la piste, sans les reperes de l'editeur, enregistree dans
+// captures/ a cote des sauvegardes. 6 cadrages proposes en apercu (2026-11-20 : « 6 vues differentes ») ; aussi utilisable
+// comme image de menu (Habillage › Nom et images : bouton 📷 a cote de chaque image) ----
+// 2026-11-20 : « trop de vues du dessus » -> une seule vue d'ensemble ; 4 vues au bord de la route, tirees au hasard comme
+// les cameras d'introduction (a cote du trace, a hauteur de kart ou un peu au-dessus, regard le long de la route) ; ↻ Regenerer
+const PC_VIEWS = [
+  ['view', 'Vue actuelle de la caméra'], ['aerial', 'Vue aérienne (trois quarts)'],
+  ['road0', 'Sur la route 1'], ['road1', 'Sur la route 2'], ['road2', 'Sur la route 3'], ['road3', 'Sur la route 4'],
+];
+const pcLabel = k => (PC_VIEWS.find(v => v[0] === k) || [k, k])[1];
+let pcRoad = [];
+function pcRollRoad() {                                    // 4 cameras « d'intro » reparties sur le parcours
+  const base = Math.random();
+  pcRoad = [0, 1, 2, 3].map(i => ({
+    frac: (base + i / 4 + (Math.random() - 0.5) * 0.12 + 1) % 1,
+    side: (Math.random() < 0.5 ? -1 : 1) * (3 + Math.random() * 8),       // metres a cote du trace
+    up: Math.random() < 0.3 ? 3 + Math.random() * 2 : 5 + Math.random() * 8,   // un peu au-dessus du kart ou plus haut (2026-11-20 : « un peu plus haute »)
+    ahead: 18 + Math.random() * 35, back: Math.random() < 0.3,           // parfois regard vers l'arriere (le peloton arrive)
+    fov: 50 + Math.random() * 18,
+  }));
+}
+function pcGround(x, y) {                                  // hauteur du sol (collision) sous un point, sinon celle du pivot
+  if (colMesh) {
+    const rc = new THREE.Raycaster(new THREE.Vector3(x, y, 1e6), new THREE.Vector3(0, 0, -1));
+    const h = rc.intersectObject(colMesh, false)[0];
+    if (h) return h.point.z;
+  }
+  return orbit.target.z;
+}
+function pcTrackBox() {                                    // boite 3D du parcours (sol compris), sinon de la piste entiere
+  const pts = raceLinePoints(), box = new THREE.Box3();
+  if (pts.length) {
+    const step = Math.max(1, Math.floor(pts.length / 80));
+    for (let i = 0; i < pts.length; i += step) box.expandByPoint(new THREE.Vector3(pts[i][0], pts[i][1], pcGround(pts[i][0], pts[i][1])));
+  } else box.setFromObject(colMesh || decorGroup);
+  if (box.isEmpty()) throw new Error('rien à cadrer');
+  return box;
+}
+function pcRoadCam(c, W, H) {                              // camera au bord du trace, verifiee : la route doit etre visible
+  const pts = raceLinePoints();
+  if (pts.length < 3) throw new Error('pas de parcours');
+  let L = 0; const acc = [0];
+  for (let i = 1; i < pts.length; i++) acc.push(L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const at = d => {
+    d = ((d % L) + L) % L; let i = 1; while (i < acc.length - 1 && acc[i] < d) i++;
+    const t = (d - acc[i - 1]) / Math.max(1e-6, acc[i] - acc[i - 1]);
+    return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
+  };
+  const M = 39.37, rc = new THREE.Raycaster();
+  const blockers = [colMesh, ...decorGroup.children.filter(m => m.visible && !m.userData.obj?.invisible)].filter(Boolean);
+  let best = null;
+  for (let k = 0; k < 8 && !best; k++) {                   // essais : decaler / rapprocher si un mur cache la route
+    const d0 = c.frac * L + k * 7 * M, side = c.side * (k % 2 ? -1 : 1) * (k >= 4 ? 0.5 : 1);
+    const p = at(d0), p2 = at(d0 + 4 * M);
+    let dx = p2[0] - p[0], dy = p2[1] - p[1]; const n = Math.hypot(dx, dy) || 1; dx /= n; dy /= n;
+    const roadZ = pcGround(p[0], p[1]);
+    const cx = p[0] - dy * side * M, cy = p[1] + dx * side * M;
+    const cz = Math.max(roadZ, pcGround(cx, cy)) + c.up * M;
+    const f = at(d0 + (c.back ? -1 : 1) * c.ahead * M), fz = pcGround(f[0], f[1]) + 2.5 * M;   // un peu au-dessus de la route : plus de paysage
+    const from = new THREE.Vector3(cx, cy, cz), to = new THREE.Vector3(f[0], f[1], fz);
+    if (cz - roadZ > 25 * M) continue;                    // sur une falaise : trop haut
+    {                                                      // ni le sol ni un objet du decor (rocher...) devant l'objectif
+      const dir = to.clone().sub(from), dist = dir.length();
+      rc.set(from.clone().addScaledVector(dir.clone().normalize(), -2 * M), dir.normalize()); rc.far = dist * 0.9 + 2 * M;
+      if (rc.intersectObjects(blockers, false).length) continue;
+      // camera dans un rocher : vue de l'interieur, les faces ne bloquent pas -> la route doit « voir » la camera
+      const road = new THREE.Vector3(p[0], p[1], roadZ + M), back = from.clone().sub(road), bd = back.length();
+      rc.set(road, back.normalize()); rc.far = bd;
+      if (rc.intersectObjects(blockers, false).length) continue;
+    }
+    best = [from, to];
+  }
+  if (!best) {                                             // rien de degage : juste au-dessus du trace
+    const p = at(c.frac * L), f = at(c.frac * L + c.ahead * M);
+    best = [new THREE.Vector3(p[0], p[1], pcGround(p[0], p[1]) + 6 * M), new THREE.Vector3(f[0], f[1], pcGround(f[0], f[1]) + M)];
+  }
+  const cam = new THREE.PerspectiveCamera(c.fov, W / H, 10, 2e6);
+  cam.position.copy(best[0]); cam.up.set(0, 0, 1); cam.lookAt(best[1]);
+  return cam;
+}
+function pcAlong(frac, back, up, ahead, fov, W, H) {       // camera sur le parcours : derriere un point, regardant devant
+  const pts = raceLinePoints();
+  if (pts.length < 3) throw new Error('pas de parcours');
+  let L = 0; const acc = [0];
+  for (let i = 1; i < pts.length; i++) acc.push(L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const at = d => {                                         // point a la distance d le long du parcours (boucle)
+    d = ((d % L) + L) % L; let i = 1; while (i < acc.length - 1 && acc[i] < d) i++;
+    const t = (d - acc[i - 1]) / Math.max(1e-6, acc[i] - acc[i - 1]);
+    return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
+  };
+  const M = 39.37, d0 = frac * L, p = at(d0), p2 = at(d0 + 5 * M), b = at(d0 - back * M), f = at(d0 + ahead * M);
+  let dx = p2[0] - p[0], dy = p2[1] - p[1]; const n = Math.hypot(dx, dy) || 1; dx /= n; dy /= n;
+  const cam = new THREE.PerspectiveCamera(fov, W / H, 10, 2e6);
+  const bx = back ? b[0] : p[0] - dx * 4 * M, by = back ? b[1] : p[1] - dy * 4 * M;
+  cam.position.set(bx, by, pcGround(bx, by) + up * M); cam.up.set(0, 0, 1);
+  cam.lookAt(f[0], f[1], pcGround(f[0], f[1]) + M);
+  return cam;
+}
+function postcardCamera(kind, W, H) {
+  if (kind === 'view') { const cam = camera.clone(); cam.aspect = W / H; return cam; }
+  const box = pcTrackBox();
+  if (kind === 'top') {
+    const m = 60 * 39.37; box.min.x -= m; box.min.y -= m; box.max.x += m; box.max.y += m;
+    let w = box.max.x - box.min.x, h = box.max.y - box.min.y;
+    if (w / h < W / H) w = h * W / H; else h = w * H / W;       // cadre au format de l'image, sans deformation
+    const cx = (box.min.x + box.max.x) / 2, cy = (box.min.y + box.max.y) / 2;
+    const cam = new THREE.OrthographicCamera(-w / 2, w / 2, h / 2, -h / 2, 1, 1e7);
+    cam.position.set(cx, cy, box.max.z + 300000); cam.up.set(0, 1, 0); cam.lookAt(cx, cy, 0);
+    return cam;
+  }
+  if (kind === 'aerial' || kind === 'aerial2') {
+    // vue d'ensemble plongeante (2026-11-20 : « ne doit laisser apparaitre que la map, sans bord de fin de map ») :
+    // la distance est la plus grande pour laquelle les 4 coins de l'image tombent encore sur la carte ; au plus celle
+    // qui montre tout le parcours. Si la piste est pres d'un bord, le point vise glisse vers le centre de la carte.
+    const c = box.getCenter(new THREE.Vector3()), R = Math.max(1000, box.getSize(new THREE.Vector3()).length() / 2);
+    const fov = 40, az = (kind === 'aerial' ? 225 : 45) * Math.PI / 180, el = (kind === 'aerial' ? 58 : 65) * Math.PI / 180;
+    const hfov = 2 * Math.atan(Math.tan(fov * Math.PI / 360) * W / H), half = Math.min(fov * Math.PI / 360, hfov / 2);
+    const dFull = R / Math.sin(half) * 0.82;
+    const dir = new THREE.Vector3(Math.cos(az) * Math.cos(el), Math.sin(az) * Math.cos(el), Math.sin(el));
+    const map = new THREE.Box3().setFromObject(colMesh || decorGroup);
+    const cam = new THREE.PerspectiveCamera(fov, W / H, 10, 1e7);
+    const place = (t, d) => { cam.position.copy(t).addScaledVector(dir, d); cam.up.set(0, 0, 1); cam.lookAt(t); cam.updateMatrixWorld(); };
+    if (map.isEmpty()) { place(c, dFull); cam.near = Math.max(10, dFull / 2000); cam.far = dFull * 6; return cam; }
+    const sx = (map.max.x - map.min.x) * 0.02, sy = (map.max.y - map.min.y) * 0.02;
+    const inMap = (x, y) => x > map.min.x + sx && x < map.max.x - sx && y > map.min.y + sy && y < map.max.y - sy;
+    const z0 = c.z, plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -z0), rc = new THREE.Raycaster(), hit = new THREE.Vector3();
+    cam.updateProjectionMatrix();
+    const fits = (t, d) => {
+      place(t, d);
+      for (const [x, y] of [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, 1], [0, -1], [1, 0], [-1, 0]]) {
+        rc.setFromCamera(new THREE.Vector2(x, y), cam);
+        if (!rc.ray.intersectPlane(plane, hit) || !inMap(hit.x, hit.y)) return false;
+      }
+      return true;
+    };
+    const mc = map.getCenter(new THREE.Vector3()); mc.z = z0;
+    let best = null;
+    for (const f of [0, 0.25, 0.5, 0.75, 1]) {               // point vise : de la piste vers le centre de la carte
+      const t = c.clone().lerp(mc, f);
+      let lo = 200, hi = dFull;
+      if (!fits(t, lo)) continue;
+      if (fits(t, hi)) lo = hi;
+      else for (let i = 0; i < 28; i++) { const m = (lo + hi) / 2; if (fits(t, m)) lo = m; else hi = m; }
+      if (!best || lo > best[1] * 1.15) best = [t, lo];
+      if (lo >= dFull) break;
+    }
+    const [t, d] = best || [c, dFull];
+    place(t, d); cam.near = Math.max(10, d / 2000); cam.far = d * 6;
+    return cam;
+  }
+  if (/^road\d$/.test(kind)) { if (!pcRoad.length) pcRollRoad(); return pcRoadCam(pcRoad[+kind[4]], W, H); }
+  if (kind === 'start') return pcAlong(0, 0, 3, 40, 62, W, H);       // derriere la ligne, hauteur d'un kart surele
+  if (kind === 'chase') return pcAlong(0.42, 30, 16, 45, 60, W, H);  // en l'air, derriere un point du milieu du parcours
+  throw new Error('cadrage inconnu');
+}
+// Choix du cadrage avec 6 apercus. opts : {W, H, title, pick: 'many' (cases a cocher) | 'one' (une seule vue), go}
+function postcardPicker(opts) {
+  const many = opts.pick === 'many';
+  const ov = overlayCard(`<div style="margin-bottom:8px"><b>📷 ${esc(opts.title || 'Carte postale')}</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">${many ? 'Coche les vues à enregistrer (une image par vue).' : 'Clique la vue à utiliser.'}</div>
+    <div id="pcgrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px"></div>
+    ${opts.sizes ? `<label style="display:block;font-size:12px;margin-bottom:6px">Taille <select id="pcsize" style="width:100%">
+      <option value="1920x1080">1920 × 1080 (Full HD)</option><option value="2560x1440">2560 × 1440</option><option value="3840x2160">3840 × 2160 (4K)</option></select></label>` : ''}
+    <label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:10px"><input type="checkbox" id="pcclean" checked> Masquer les repères de l'éditeur (parcours, zones, poignées, caisses, fruits Wumpa)</label>
+    ${opts.note ? `<div style="font-size:11px;color:var(--muted);margin-bottom:10px">${opts.note}</div>` : ''}
+    <div class="btns" style="justify-content:flex-end"><button id="pcroll" title="Tire 4 nouvelles vues au bord de la route" style="margin-right:auto">↻ Régénérer</button><button id="pcno">Annuler</button><button id="pcyes" class="primary">${esc(opts.ok || 'OK')}</button></div>`, 760);
+  const q = s => ov.querySelector(s), chosen = new Set(many ? PC_VIEWS.map(v => v[0]) : ['road0']);
+  const tw = 300, th = Math.max(60, Math.round(tw * opts.H / opts.W));
+  const paint = () => {
+    q('#pcgrid').innerHTML = PC_VIEWS.map(([k, label]) => {
+      let src = '', ok = true;
+      try { src = renderPostcard(k, tw, th, q('#pcclean').checked, 'image/jpeg'); } catch (e) { ok = false; }
+      const on = chosen.has(k) && ok;
+      return `<div class="pccell" data-k="${k}" data-ok="${ok ? 1 : 0}" style="cursor:${ok ? 'pointer' : 'default'};border:2px solid ${on ? 'var(--accent,#4da3ff)' : 'var(--line)'};border-radius:6px;padding:3px;opacity:${ok ? 1 : 0.45}">
+        <div style="aspect-ratio:${opts.W}/${opts.H};background:#1d2026;display:flex;align-items:center;justify-content:center;border-radius:4px;overflow:hidden">
+          ${ok ? `<img src="${src}" style="width:100%;height:100%;object-fit:contain">` : '<span style="font-size:11px;color:var(--muted)">indisponible (pas de parcours)</span>'}</div>
+        <div style="font-size:11px;margin-top:3px;display:flex;gap:4px;align-items:center">${many ? `<input type="checkbox" ${on ? 'checked' : ''} ${ok ? '' : 'disabled'} tabindex="-1">` : ''}<span>${esc(label)}</span></div></div>`;
+    }).join('');
+    ov.querySelectorAll('.pccell').forEach(c => c.onclick = () => {
+      if (c.dataset.ok !== '1') return;
+      const k = c.dataset.k;
+      if (many) { if (chosen.has(k)) chosen.delete(k); else chosen.add(k); } else { chosen.clear(); chosen.add(k); }
+      paint();
+    });
+    // vues indisponibles retirees du choix
+    ov.querySelectorAll('.pccell[data-ok="0"]').forEach(c => chosen.delete(c.dataset.k));
+    if (!many && !chosen.size) { const f = ov.querySelector('.pccell[data-ok="1"]'); if (f) { chosen.add(f.dataset.k); paint(); } }
+  };
+  q('#pcclean').onchange = paint;
+  q('#pcroll').onclick = () => { pcRollRoad(); q('#pcgrid').querySelectorAll('img').forEach(i => i.style.opacity = 0.4); setTimeout(paint, 0); };
+  if (!pcRoad.length) pcRollRoad();
+  setTimeout(paint, 0);                                      // la fenetre s'affiche d'abord, les apercus ensuite
+  q('#pcgrid').innerHTML = '<div style="grid-column:1/-1;font-size:12px;color:var(--muted)">Préparation des aperçus…</div>';
+  q('#pcno').onclick = () => ov.remove();
+  q('#pcyes').onclick = () => {
+    const views = PC_VIEWS.map(v => v[0]).filter(k => chosen.has(k));
+    if (!views.length) { status('Choisis au moins une vue', 'err'); return; }
+    let W = opts.W, H = opts.H;
+    if (opts.sizes) [W, H] = q('#pcsize').value.split('x').map(Number);
+    const clean = q('#pcclean').checked;
+    ov.remove();
+    opts.go(views, W, H, clean);
+  };
+  return ov;
+}
+function openPostcard() {
+  postcardPicker({ W: 1920, H: 1080, pick: 'many', sizes: true, title: 'Carte postale', ok: '📷 Créer les images',
+    note: 'Les images sont enregistrées dans le dossier « captures », à côté de tes sauvegardes.',
+    go: async (views, W, H, clean) => {
+      try {
+        const paths = [];
+        for (let i = 0; i < views.length; i++) {
+          status(`Création de la carte postale ${i + 1} / ${views.length}…`);
+          await new Promise(r => setTimeout(r, 0));
+          const png = renderPostcard(views[i], W, H, clean);
+          const r = await api('/api/capture_save', { track, png, kind: views[i] });
+          paths.push(r.path);
+        }
+        status(views.length === 1 ? `Carte postale enregistrée : ${paths[0]}`
+          : `${views.length} cartes postales enregistrées dans ${paths[0].replace(/[\\/][^\\/]*$/, '')}`, 'ok');
+      } catch (e) { status('Erreur : ' + e.message, 'err'); }
+    } });
+}
+function renderPostcard(kind, W, H, clean, mime = 'image/png') {
+  const cam = postcardCamera(kind, W, H);
+  cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+  const helpers = [root, markers, gizmo, startGroup, crateGroup, boostGroup, fallGroup, camGroup, gravGroup, respawnGroup, tpGroup,
+                   portalGroup, flyGroup, baseMarks, measureGroup, lightGroup, creator?.itemGroup, creator?.manyBoxes, creator?.farPlane,   // + caisses, fruits, boosters et grand sol sable de la Creation
+                   ...decorGroup.children.filter(m => m.userData.obj?.invisible)].filter(Boolean);   // murs invisibles aussi
+  const noWx = kind === 'top' || kind === 'aerial' || kind === 'aerial2';   // vues lointaines : pas de pluie autour de la camera
+  if (noWx && weatherFx) helpers.push(weatherFx.group);
+  const hide = (clean ? helpers : [gizmo, measureGroup, ...(noWx && weatherFx ? [weatherFx.group] : [])]).map(o => [o, o.visible]);
+  hide.forEach(([o]) => o.visible = false);
+  const skyAt = skyMesh ? skyMesh.position.clone() : null, wxAt = weatherFx ? weatherFx.group.position.clone() : null;
+  if (skyMesh) skyMesh.position.copy(cam.position);          // le ciel et la meteo suivent la camera de la carte
+  if (weatherFx) weatherFx.group.position.copy(cam.position);
+  const rt = new THREE.WebGLRenderTarget(W, H, { samples: 4 }); rt.texture.colorSpace = THREE.SRGBColorSpace;
+  try {
+    instPrepare(); renderer.setRenderTarget(rt); renderer.render(scene, cam);
+    const px = new Uint8Array(W * H * 4); renderer.readRenderTargetPixels(rt, 0, 0, W, H, px);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d'), id = ctx.createImageData(W, H);
+    for (let r = 0; r < H; r++) id.data.set(px.subarray((H - 1 - r) * W * 4, (H - r) * W * 4), r * W * 4);
+    for (let i = 3; i < id.data.length; i += 4) id.data[i] = 255;            // image opaque (fond du ciel)
+    ctx.putImageData(id, 0, 0);
+    return mime === 'image/png' ? cv.toDataURL('image/png') : cv.toDataURL(mime, 0.85);
+  } finally {
+    renderer.setRenderTarget(null); instRestore(); hide.forEach(([o, v]) => o.visible = v); rt.dispose();
+    if (skyAt) skyMesh.position.copy(skyAt);
+    if (wxAt) weatherFx.group.position.copy(wxAt);
+  }
+}
+// ---- outil Mesure (2026-11-20) : deux clics dans la vue -> distance, ecart horizontal, hauteur, pente ----
+let measureArmed = false, measureA = null;
+const measureGroup = new THREE.Group(); measureGroup.renderOrder = 10; scene.add(measureGroup);
+const MEASURE_MAT = new THREE.LineBasicMaterial({ color: 0xffd23a, depthTest: false, transparent: true });
+function armMeasure(on) {
+  measureArmed = on; measureA = null;
+  $('measurebtn').classList.toggle('on', on);
+  renderer.domElement.style.cursor = on ? 'crosshair' : '';
+  if (on) { if (boxArmed) armBoxSelect(false); status('Mesure : clique le 1er point dans la vue 3D, puis le 2e · Échap : quitter'); }
+  else { measureGroup.clear(); status('Mesure terminée'); }
+}
+$('measurebtn').onclick = () => armMeasure(!measureArmed);
+function measurePick(e) {
+  const r = renderer.domElement.getBoundingClientRect(), rc = new THREE.Raycaster();
+  rc.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), camera);
+  const targets = [colMesh, ...decorGroup.children.filter(m => m.visible)].filter(Boolean);
+  const h = rc.intersectObjects(targets, false)[0];
+  if (h) return h.point.clone();
+  // rien sous la souris (base pas encore generee...) : plan horizontal a la hauteur du pivot de la camera
+  const p = new THREE.Vector3();
+  return rc.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -orbit.target.z), p) ? p : null;
+}
+function measureLabel(text, at) {
+  const c = document.createElement('canvas'), g = c.getContext('2d'), fs = 34;
+  g.font = `bold ${fs}px sans-serif`; c.width = Math.ceil(g.measureText(text).width) + 24; c.height = fs + 18;
+  g.font = `bold ${fs}px sans-serif`; g.fillStyle = '#1d2026e6'; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = '#ffd23a'; g.textBaseline = 'middle'; g.fillText(text, 12, c.height / 2);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true }));
+  const k = Math.max(200, camera.position.distanceTo(at) * 0.04);
+  sp.scale.set(k * c.width / c.height, k, 1); sp.position.copy(at); sp.renderOrder = 11;
+  return sp;
+}
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (!measureArmed || e.button !== 0) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  const p = measurePick(e); if (!p) return;
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(40, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffd23a, depthTest: false }));
+  dot.position.copy(p); dot.renderOrder = 11;
+  if (!measureA) { measureGroup.clear(); measureGroup.add(dot); measureA = p; status('Mesure : clique le 2e point · Échap : quitter'); return; }
+  const a = measureA, d = p.distanceTo(a), dh = Math.hypot(p.x - a.x, p.y - a.y), dz = p.z - a.z;
+  const slope = dh > 1 ? Math.atan2(Math.abs(dz), dh) * 180 / Math.PI : 90;
+  const fmt = v => (v / 39.37).toFixed(1).replace('.', ',');
+  const L = w => window.CTR_I18N?.t(w) ?? w;               // etiquette dessinee : mots traduits ici
+  const txt = `${fmt(d)} m · ${L('horizontal')} ${fmt(dh)} m · ${L('hauteur')} ${dz >= 0 ? '+' : '−'}${fmt(Math.abs(dz))} m · ${L('pente')} ${slope.toFixed(0)}°`;
+  measureGroup.add(dot, new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, p]), MEASURE_MAT),
+                   new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, new THREE.Vector3(p.x, p.y, a.z), p]),
+                                  new THREE.LineDashedMaterial({ color: 0xffd23a, dashSize: 60, gapSize: 40, depthTest: false, transparent: true, opacity: 0.6 })),
+                   measureLabel(txt, a.clone().add(p).multiplyScalar(0.5).add(new THREE.Vector3(0, 0, 120))));
+  measureGroup.children.forEach(o => { if (o.isLine) o.computeLineDistances?.(); o.renderOrder = 11; });
+  measureA = null;
+  status('Mesure : ' + txt + ' — clique pour une nouvelle mesure · Échap : quitter', 'ok');
+}, true);
 // ---- lumieres ajoutees (lights.py) : lampadaires, torches... dans le _Lighting de la piste ------------------------
 // Marqueur = boule de la couleur de la lumiere ; selectionnee : portee en fil de fer, poignee de deplacement.
 const lightGroup = new THREE.Group(); lightGroup.visible = false; scene.add(lightGroup);
@@ -7696,6 +8231,16 @@ function syncDispMenu() {
 for (const id of ['vbprops', 'vbwater', 'vbground'])
   $(id).onchange = () => { creator.previewParts({ props: $('vbprops').checked, water: $('vbwater').checked, ground: $('vbground').checked }); setBasePreview(true, true); };
 $('dispmenu').onclick = e => e.stopPropagation();
+// rubriques repliables du menu Affichage (2026-11-20) : ouvertes / fermees comme la derniere fois
+document.querySelectorAll('#dispmenu details.dsec').forEach(dt => {
+  try { const v = localStorage.getItem('ctr_dsec_' + dt.dataset.sec); dt.open = v == null ? dt.dataset.sec === 'race' : v === '1'; } catch (e) {}
+  dt.addEventListener('toggle', () => { try { localStorage.setItem('ctr_dsec_' + dt.dataset.sec, dt.open ? '1' : '0'); } catch (e) {} });
+});
+// sol sable de la Creation (2026-11-20) : decoche de base ; reste touchable par la souris (peinture, pose) meme cache
+try { $('vsand').checked = localStorage.getItem('ctr_vsand') === '1'; } catch (e) {}
+const applySand = () => { if (creator?.farPlane) creator.farPlane.visible = $('vsand').checked; };
+$('vsand').onchange = () => { try { localStorage.setItem('ctr_vsand', $('vsand').checked ? '1' : '0'); } catch (e) {} applySand(); };
+setTimeout(applySand, 0);                                 // apres la creation de l'onglet Creation (plus bas)
 addEventListener('click', () => { $('dispmenu').hidden = true; });
 $('tstop').onclick = stopTour;
 $('tplay').onclick = () => { tour.playing = !tour.playing; $('tplay').textContent = tour.playing ? '⏸' : '▶'; };
@@ -8788,6 +9333,7 @@ const MENUS = [
       { label: '🎵 Musique de la piste…', create: true, run: openMusic },
       { label: '⏱ Temps des reliques et des fantômes…', create: true, run: openTimes }] },
     { label: '🎥 Visite virtuelle', run: clickId('tour') },
+    { label: '📷 Carte postale (image de la piste)…', run: () => openPostcard() },
     { label: '⟳ Actualiser la vue', run: clickId('refresh3d') },
     { label: '🗺 Parcours vu de dessus', only: 'race', enabled: () => !!lastRoute,
       run: () => showRoutePreview(lastRoute.r, lastRoute.source, lastRoute.opt) },
@@ -9596,12 +10142,13 @@ async function openMenuAssets() {
         ${im.shared ? `<div style="color:var(--muted);font-size:11px;margin-top:4px">Image commune à toutes les pistes du jeu (un seul exemplaire, au nom de Crash Cove) : non modifiable pour une piste créée.${k === 'intro' ? ' L\'icône de ta piste en course suit sa vignette.' : ''}</div>` : `<div class="btns" style="margin-top:4px"><label class="btnlike" style="cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:#262a32">Choisir une image…
           <input type="file" accept="image/*" data-k="${k}" class="mfile" hidden></label>
           ${k === 'outline' ? '<button data-gen="1">Générer depuis le parcours</button>' : ''}
+          <button data-pc="${k}" title="Une vue de la piste rendue par l'éditeur, au format de cette image">📷 Carte postale…</button>
           <button data-orig="${k}">Remettre l'original</button></div>`}
         <div id="mst_${k}" style="color:var(--muted);font-size:11px;margin-top:2px"></div></div></div>`).join('');
   ov.innerHTML = `<div class="card" style="max-width:640px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:6px"><b>Nom et images de la piste</b> <span style="color:var(--muted);font-size:12px">(menus du jeu ; aucun fichier renommé)</span></div>
     <div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:12px">Nom affiché</b>
-      <button id="msame" title="Recopie le nom français dans toutes les langues">Même nom partout</button></div>
+      ${r.names.fr ? '<button id="msame" title="Recopie le nom français dans toutes les langues">Même nom partout</button>' : ''}</div>
     ${names}
     <div style="margin:10px 0 2px"><b style="font-size:12px">Images</b></div>
     <div style="font-size:12px;color:var(--muted)">Le fond est recadré pour remplir l'écran ; vignette et emblème : de préférence une forme blanche sur fond transparent (PNG), comme celles du jeu.
@@ -9612,7 +10159,7 @@ async function openMenuAssets() {
     <div class="btns" style="justify-content:flex-end;margin-top:8px"><button id="mno">Annuler</button><button id="myes" class="primary">Appliquer</button></div></div>`;
   document.body.appendChild(ov);
   const q = s => ov.querySelector(s);
-  q('#msame').onclick = () => { const v = q('.mname[data-lg="fr"]')?.value || ''; ov.querySelectorAll('.mname').forEach(i => i.value = v); };
+  if (q('#msame')) q('#msame').onclick = () => { const v = q('.mname[data-lg="fr"]')?.value || ''; ov.querySelectorAll('.mname').forEach(i => i.value = v); };
   ov.querySelectorAll('.mfile').forEach(inp => inp.onchange = () => {
     const f = inp.files[0]; if (!f) return;
     const rd = new FileReader();
@@ -9620,6 +10167,19 @@ async function openMenuAssets() {
     rd.readAsDataURL(f);
   });
   ov.querySelector('[data-gen]')?.addEventListener('click', () => { changes.images.outline = 'generate'; q('#mst_outline').textContent = 'sera généré depuis le parcours enregistré'; });
+  ov.querySelectorAll('[data-pc]').forEach(b => b.onclick = () => {   // carte postale comme image de menu (2026-11-20)
+    const k = b.dataset.pc, im = r.images[k], f = Math.min(1, 4096 / Math.max(im.size[0], im.size[1]));
+    const W = Math.max(16, Math.round(im.size[0] * f)), H = Math.max(16, Math.round(im.size[1] * f));
+    const pk = postcardPicker({ W, H, pick: 'one', title: 'Carte postale : ' + im.label, ok: 'Utiliser cette vue',
+      go: (views, W2, H2, clean) => {
+        try {
+          const url = renderPostcard(views[0], W2, H2, clean);
+          changes.images[k] = url; q('#mimg_' + k).src = url;
+          q('#mst_' + k).textContent = 'nouvelle image : carte postale (' + pcLabel(views[0]) + ')';
+        } catch (e) { status('Erreur : ' + e.message, 'err'); }
+      } });
+    pk.style.zIndex = 11;                                    // au-dessus de la fenetre Nom et images
+  });
   ov.querySelectorAll('[data-orig]').forEach(b => b.onclick = () => { changes.images[b.dataset.orig] = null; q('#mst_' + b.dataset.orig).textContent = 'sera remise à l\'original'; });
   q('#mno').onclick = () => ov.remove();
   q('#myes').onclick = async () => {
@@ -9653,6 +10213,7 @@ function previewAmbiance(v, orig) {
   scene.background = new THREE.Color(...v.fog_color).multiplyScalar(0.35);
 }
 async function loadAmbiancePreview() {
+  loadSkyAndWeather();                                     // ciel et meteo de l'editeur (2026-11-20)
   try { const r = await api('/api/ambiance_info', { track }); const has = Object.keys(r.values).length;
         previewAmbiance(has ? { ...r.original, ...r.values } : null, r.original); } catch (e) { /* apercu facultatif */ }
 }
@@ -10084,6 +10645,34 @@ api('/api/menu_layout').then(d => labelTracks(d.tracks)).catch(() => {});   // n
 resize();
 loadAmbiancePreview();
 checkForUpdate().catch(() => {});                      // sans internet : rien
+// Historique a l'ancien format (versions d'avant le 2026-11-20 : une copie de chaque fichier par etape) : au lancement,
+// proposer de le compresser en montrant la place gagnee ; « Plus tard » : reproposee au prochain lancement
+const fmtSize = b => { const fr = (window.CTR_I18N?.lang || 'fr') === 'fr';      // unites dans la langue (Go / GB)
+  return b >= 1e9 ? `${(b / 1e9).toFixed(1).replace('.', fr ? ',' : '.')} ${fr ? 'Go' : 'GB'}` : `${Math.max(1, Math.round(b / 1e6))} ${fr ? 'Mo' : 'MB'}`; };
+async function offerHistoryCompression() {
+  let r;
+  try { r = await api('/api/history_old'); } catch (e) { return; }
+  if (!r.steps || r.size < 20e6) return;                  // presque rien a gagner : on ne derange pas
+  // fenetre de mise a jour ou de bienvenue ouverte : attendre qu'elle soit fermee (2 min au plus)
+  for (let k = 0; k < 120 && (document.getElementById('updyes') || document.getElementById('wnok')); k++)
+    await new Promise(res => setTimeout(res, 1000));
+  const gain = r.size - r.after;
+  const ov = overlayCard(`<div style="margin-bottom:6px"><b>🗜 Compresser l'historique des pistes ?</b></div>
+    <div style="font-size:13px;margin-bottom:8px"><span>L'historique des enregistrements (Annuler, retour en arrière) prend</span> <b>${fmtSize(r.size)}</b>
+      <span>sur le disque</span> (${r.tracks} <span>piste(s)</span>, ${r.steps} <span>étape(s)</span>).</div>
+    <div style="font-size:13px;margin-bottom:8px"><span>Compressé, il prendrait environ</span> <b>${fmtSize(r.after)}</b> : <b style="color:var(--ok)">≈ ${fmtSize(gain)}</b> <span>libérés</span>.</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Toutes les étapes sont gardées, rien ne change dans tes pistes. Quelques secondes à quelques minutes. Sinon, chaque piste est compressée toute seule à son prochain enregistrement.</div>
+    <div class="btns" style="justify-content:flex-end"><button id="hcno">Plus tard</button><button id="hcyes" class="primary">🗜 Compresser maintenant</button></div>`, 520);
+  ov.querySelector('#hcno').onclick = () => ov.remove();
+  ov.querySelector('#hcyes').onclick = async () => {
+    ov.remove();
+    try {
+      const c = await api('/api/history_compress', {});
+      status(`Historique compressé : ${fmtSize(c.before)} → ${fmtSize(c.after)} (${fmtSize(Math.max(0, c.before - c.after))} libérés, ${c.steps} étape(s) gardées)`, 'ok');
+    } catch (e) { status('Erreur : ' + e.message, 'err'); }
+  };
+}
+setTimeout(() => offerHistoryCompression().catch(() => {}), 3000);
 
 // ---- « Nouvelle interface » (2026-11-17) : une fois apres la mise a jour (puis Aide › Nouveautés de l'interface), pour
 // les utilisateurs des versions a deux onglets / modes Course et Decor : ou est passe chaque chose ----

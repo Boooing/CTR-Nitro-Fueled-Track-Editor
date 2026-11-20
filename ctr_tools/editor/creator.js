@@ -5139,7 +5139,7 @@ export function initCreator(ctx) {
     renderItems(); writeDraft();
     return true;
   }
-  return { open, close, tick, rehide, undo, redo, saveNow, applyPatch, preview, dropItems, surfaces, loadQuiet, previewPropAt, editProp,
+  return { itemGroup, manyBoxes, farPlane: far, open, close, tick, rehide, undo, redo, saveNow, applyPatch, preview, dropItems, surfaces, loadQuiet, previewPropAt, editProp,
            extSelect, extDeselect, extInfo, extDelete, extDuplicate, extSet,
            get generated() { return S.loadedTrack === getTrack() && !!S.generated; },
            get hasRoute() { return S.loadedTrack === getTrack() && S.points?.length > 1; },

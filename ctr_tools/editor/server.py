@@ -256,6 +256,32 @@ def load_track(track):
 # Visibles et modifiables dans l'editeur (mode Course) : un raccourci pris au-dessus d'une zone « sans sol a cote de
 # la route » faisait reapparaitre le kart (T901 Boo Lake). Boite alignee sur les axes, centree sur l'entite,
 # _dimensions = tailles completes. Supprimer = ecarter sous la carte (FAR_BELOW), comme les zones auto en trop.
+def _zone_yaw(dz, ent):
+    """Cap d'une zone (boite de declenchement) : rotation Z de la transformation de son entite (+0x68, comme les
+    transitions), 0 sans transformation."""
+    tr = dz.deref(ent + 0x30)
+    return round(struct.unpack_from('<f', *dz._loc(tr + 0x68))[0], 5) if tr is not None else 0.0
+
+
+def _set_zone_yaw(dz, ent, yaw):
+    """Cap d'une zone (2026-11-20, zones de chute / gravite / camera tournees dans l'editeur) : la boite suit la
+    transformation de l'entite comme celle d'une transition (zones d'Oxide Station : 12 sur 13 en ont une). Entite sans
+    transformation (zones de chute de Crash Cove) : creee comme celles du jeu (animated.set_pose), seulement si yaw != 0."""
+    yaw = float(yaw or 0.0)
+    tr = dz.deref(ent + 0x30)
+    if tr is None:
+        if abs(yaw) < 1e-5:
+            return
+        tr = dz.new_object('igEntityTransform')
+        struct.pack_into('<4f', *dz._loc(tr + 0x10), 0.0, 0.0, 0.0, 1.0)
+        struct.pack_into('<16f', *dz._loc(tr + 0x20), 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+        struct.pack_into('<f', *dz._loc(tr + 0x6C), 1.0)
+        struct.pack_into('<3f', *dz._loc(tr + 0x70), 1.0, 1.0, 1.0)
+        dz.set_ptr(ent + 0x30, tr)
+    struct.pack_into('<f', *dz._loc(tr + 0x68), yaw)
+    struct.pack_into('<I', *dz._loc(tr + 0x7C), 1)                       # _isDirty
+
+
 def read_fall_zones(track):
     """[{name, pos, dims, points}] des zones de chute en place (pas celles ecartees sous la carte)."""
     try:
@@ -276,7 +302,9 @@ def read_fall_zones(track):
         lst = dz.deref(rt + _field(dz, 'CRespawnTriggerComponentData', '_respawnPoints'))
         points = [h[0] for h in dz.handle_list(lst) if h]               # (nom, espace)
         out.append({'name': name, 'pos': pos, 'dims': [round(v, 1) for v in dz.vec3(dz.find_field(box, '_dimensions')[0])],
-                    'points': points})
+                    'yaw': _zone_yaw(dz, ent), 'points': points,
+                    # boite desactivee (RespawnTrigger_01 de Crash Cove : _bitfield 0) : ne fait jamais reapparaitre
+                    'enabled': bool(dz.u32(dz.find_field(box, '_bitfield')[0]) & 1)})
     return out
 
 
@@ -298,6 +326,7 @@ def write_fall_zones(track, zones):
             continue
         struct.pack_into('<3f', *dz._loc(ent + 0x20), *[float(c) for c in z['pos']])
         struct.pack_into('<3f', *dz._loc(dz.find_field(box, '_dimensions')[0]), *[max(100.0, float(c)) for c in z['dims']])
+        _set_zone_yaw(dz, ent, z.get('yaw'))
         moved += 1
     open(saved_path(logical), 'wb').write(dz.to_bytes())
     return [f'zones de chute : {moved} placée(s)' + (f', {removed} supprimée(s)' if removed else '')]
@@ -342,7 +371,8 @@ def read_cam_zones(track):
         pos = [round(v, 1) for v in dz.vec3(ent + 0x20)]
         if not boxes or pos[2] < FAR_BELOW / 2:
             continue
-        out.append({'name': name, 'pos': pos, 'dims': [round(v, 1) for v in dz.vec3(dz.find_field(boxes[0], '_dimensions')[0])]})
+        out.append({'name': name, 'pos': pos, 'dims': [round(v, 1) for v in dz.vec3(dz.find_field(boxes[0], '_dimensions')[0])],
+                    'yaw': _zone_yaw(dz, ent)})
     return out
 
 
@@ -384,6 +414,7 @@ def write_cam_zones(track, zones):
             moved += 1
         struct.pack_into('<3f', *dz._loc(ent + 0x20), *[float(c) for c in z['pos']])
         dz.set_field(boxes[0], '_dimensions', [max(CAM_MIN, float(c)) for c in z['dims']])
+        _set_zone_yaw(dz, ent, z.get('yaw'))
     if added:
         dz.add_tdep([CAM_TDEP])
     open(saved_path(logical), 'wb').write(dz.to_bytes())
@@ -505,7 +536,7 @@ def read_grav_zones(track):
             continue
         g = _grav_value_offset(dz, ent)
         out.append({'name': name, 'pos': pos, 'dims': [round(v, 1) for v in dz.vec3(dz.find_field(boxes[0], '_dimensions')[0])],
-                    'gravity': round(dz.f32(g), 3) if g is not None else 0.5})
+                    'yaw': _zone_yaw(dz, ent), 'gravity': round(dz.f32(g), 3) if g is not None else 0.5})
     return out
 
 
@@ -544,6 +575,7 @@ def write_grav_zones(track, zones):
         box = _components_of(dz, ent, 'CTriggerVolumeBoxComponentData')[0]
         struct.pack_into('<3f', *dz._loc(ent + 0x20), *[float(c) for c in z['pos']])
         dz.set_field(box, '_dimensions', [max(CAM_MIN, float(c)) for c in z['dims']])
+        _set_zone_yaw(dz, ent, z.get('yaw'))
         g = _grav_value_offset(dz, ent)
         if g is None:
             raise ValueError(f'{ent:#x} : paramètre de gravité introuvable dans le script copié')
@@ -2462,6 +2494,20 @@ def sky_catalog():
     return _sky_cache
 
 
+def sky_info(track):
+    """GET /api/sky_info : ciel et meteo a montrer dans l'editeur (2026-11-20) : {model (chemin 'sky/...igz' ou None),
+    weather: {preset, density} | {}}. Ciel choisi dans Ambiance, sinon celui du manifeste de la piste."""
+    sky = ambiance_sky(track)
+    model = sky['model'] if sky else None
+    if not model:
+        try:
+            rows = pkg_manifest.entries(base_file(track, pkg_manifest.manifest_logical(track))[0])
+        except Exception:  # noqa: BLE001 - manifeste illisible : pas de ciel
+            rows = []
+        model = next((p for ty, p in rows if ty == 'sky_model'), None)
+    return {'model': model, 'weather': weather_settings(track)}
+
+
 def ambiance_sky(track):
     """Ciel choisi (entree de sky_catalog) ou None (ciel d'origine de la piste)."""
     p = ambiance_path(track)
@@ -2901,7 +2947,8 @@ def model_preview_binary(track, file_name):
     """u32 nb sommets, nb indices, nb groupes ; float32 positions[3n], uv[2n] ; uint32 indices[m] ;
     groupes (u32 debut, nb, 1 + indice de texture ou 0) ; u32 longueur + JSON [{ns, decal}] des textures."""
     # skin d'acteur (objets animes) : chemin logique direct 'actors/...igz', pose de repos
-    logical = file_name if file_name.lower().startswith('actors/') else model_logical_path(file_name)
+    # (ciel : 'sky/...igz', 2026-11-20 : affiche dans l'editeur)
+    logical = file_name if file_name.lower().startswith(('actors/', 'sky/')) else model_logical_path(file_name)
     if logical not in _preview_cache and wall_mesh(track, logical):           # mur invisible : sa collision, sans texture
         pos, tris = wall_mesh(track, logical)
         P, I = np.asarray(pos, '<f4').reshape(-1, 3), np.asarray(tris, '<u4').reshape(-1)
@@ -3587,34 +3634,250 @@ def music_import(track, kinds, names):
     return sorted(set(done))
 
 
+# -- stockage de l'historique (2026-11-20, demande utilisateur « le dossier history est enorme ») -------------------
+# Avant : chaque etape = un dossier avec une copie (ou un lien physique) de chaque fichier suivi ; un fichier reecrit a
+# l'identique etait recopie, rien n'etait compresse (T922 : 4,6 Go affiches, 0,53 Go reels pour 75 etapes).
+# Maintenant : chaque contenu est range UNE fois, compresse (zlib 1 : ~3,6 fois plus petit, 0,1 s pour 20 Mo), dans
+# history/<piste>/blobs/<sha1>.z ; une etape = un snapshot.json {label, v: 2, files: {nom: sha1 | null (absent)}}.
+# Les etapes de l'ancien format (fichiers dans le dossier de l'etape) restent lisibles et sont converties au
+# prochain enregistrement de la piste (_migrate_history).
+import hashlib  # noqa: E402
+import zlib  # noqa: E402
+
+HISTORY_FORMAT = 2
+
+
+def _blob_dir(track):
+    return os.path.join(history_dir(track), 'blobs')
+
+
+def _put_blob(track, data):
+    """Contenu -> sha1 ; ecrit compresse s'il n'est pas deja range."""
+    h = hashlib.sha1(data).hexdigest()
+    p = os.path.join(_blob_dir(track), h + '.z')
+    if not os.path.exists(p):
+        os.makedirs(_blob_dir(track), exist_ok=True)
+        tmp = p + f'.tmp{os.getpid()}_{threading.get_ident()}'
+        with open(tmp, 'wb') as f:
+            f.write(zlib.compress(data, 1))
+        os.replace(tmp, p)
+    return h
+
+
+def _blob_bytes(track, h):
+    return zlib.decompress(open(os.path.join(_blob_dir(track), h + '.z'), 'rb').read())
+
+
+def _snap_meta(track, d):
+    return json.load(open(os.path.join(history_dir(track), d, 'snapshot.json')))
+
+
+def _snap_ref(track, d, meta, name):
+    """Contenu d'un fichier dans une etape : 'inconnu' (pas suivi a ce moment), None (absent), ('blob', sha1) ou
+    ('file', chemin) (ancien format)."""
+    if name not in meta['files']:
+        return 'inconnu'
+    v = meta['files'][name]
+    if meta.get('v') == HISTORY_FORMAT:
+        return ('blob', v) if v else None
+    return ('file', os.path.join(history_dir(track), d, name)) if v else None
+
+
+def _ref_bytes(track, ref):
+    return _blob_bytes(track, ref[1]) if ref[0] == 'blob' else open(ref[1], 'rb').read()
+
+
+_hash_memo = {}
+_snap_memo = {}                      # (piste, chemin, taille, date) -> sha1 deja range
+
+
+def _ref_key(track, ref):
+    """Identite du contenu (sha1) pour comparer deux etats ; None = absent."""
+    if ref is None or ref == 'inconnu':
+        return ref
+    if ref[0] == 'blob':
+        return ref[1]
+    st = os.stat(ref[1])
+    k = (ref[1], st.st_size, st.st_mtime_ns)
+    if k not in _hash_memo:
+        _hash_memo[k] = hashlib.sha1(open(ref[1], 'rb').read()).hexdigest()
+    return _hash_memo[k]
+
+
+def _write_live(p, data):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + '.tmp_retour'
+    with open(tmp, 'wb') as f:
+        f.write(data)
+    os.replace(tmp, p)
+
+
+def _migrate_history(track):
+    """Etapes de l'ancien format -> contenus ranges et compresses (une fois par piste). -> nombre d'etapes converties."""
+    root = history_dir(track)
+    n = 0
+    # conversion interrompue (application fermee) : etat remis d'aplomb avant de continuer
+    for x in os.listdir(root) if os.path.isdir(root) else []:
+        base, ext = os.path.splitext(x)
+        if ext not in ('.old', '.conv'):
+            continue
+        dst = os.path.join(root, base)
+        if ext == '.old' and not os.path.exists(dst):
+            os.rename(os.path.join(root, x), dst)          # nouvelle pas encore en place : l'ancienne revient
+        elif ext == '.conv' and not os.path.exists(dst) and os.path.exists(os.path.join(root, x, 'snapshot.json')):
+            os.rename(os.path.join(root, x), dst)          # ancienne deja mise de cote : la nouvelle prend sa place
+        else:
+            shutil.rmtree(os.path.join(root, x), ignore_errors=True)
+    dirs = [x for x in os.listdir(root) if x.isdigit() or x == 'retour_en_cours'] if os.path.isdir(root) else []
+    for d in dirs:
+        f = os.path.join(root, d, 'snapshot.json')
+        if not os.path.exists(f):
+            continue
+        meta = json.load(open(f))
+        if meta.get('v') == HISTORY_FORMAT:
+            continue
+        if not n:
+            progress.step('historique : conversion au format compact (une seule fois)')
+        files = {}
+        for name, present in meta['files'].items():
+            p = os.path.join(root, d, name)
+            files[name] = _put_blob(track, open(p, 'rb').read()) if present and os.path.exists(p) else None
+        t = os.path.getmtime(f)
+        tmp = os.path.join(root, d + '.conv')
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp)
+        json.dump({'label': meta['label'], 'v': HISTORY_FORMAT, 'files': files}, open(os.path.join(tmp, 'snapshot.json'), 'w'), indent=1)
+        os.utime(os.path.join(tmp, 'snapshot.json'), (t, t))       # date de l'etape gardee (liste de l'historique)
+        # echange sans fenetre de perte : ancienne etape mise de cote, nouvelle a sa place, puis ancienne effacee
+        # (interruption a n'importe quel moment : reprise au prochain passage, voir le debut de la fonction)
+        os.rename(os.path.join(root, d), os.path.join(root, d + '.old'))
+        os.rename(tmp, os.path.join(root, d))
+        shutil.rmtree(os.path.join(root, d + '.old'), ignore_errors=True)
+        n += 1
+    return n
+
+
+def _gc_blobs(track):
+    """Contenus que plus aucune etape n'utilise : supprimes."""
+    root, bd = history_dir(track), _blob_dir(track)
+    if not os.path.isdir(bd):
+        return
+    used = set()
+    for d in os.listdir(root):
+        f = os.path.join(root, d, 'snapshot.json')
+        if os.path.exists(f):
+            meta = json.load(open(f))
+            if meta.get('v') == HISTORY_FORMAT:
+                used.update(v for v in meta['files'].values() if v)
+    for b in os.listdir(bd):
+        if b.endswith('.z') and b[:-2] not in used:
+            try:
+                os.remove(os.path.join(bd, b))
+            except OSError:
+                pass
+
+
+HISTORY_RATIO = 0.22      # taille apres / avant, mesuree sur 31 pistes (3,90 -> 0,77 Go) : estimation proposee a l'utilisateur
+
+
+def _unique_size(path):
+    """Taille reelle d'un dossier (liens physiques comptes une fois)."""
+    seen, tot = set(), 0
+    for d, _, fs in os.walk(path):
+        for f in fs:
+            try:
+                st = os.stat(os.path.join(d, f))
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) not in seen:
+                seen.add((st.st_dev, st.st_ino))
+                tot += st.st_size
+    return tot
+
+
+def history_old_status():
+    """GET /api/history_old : historique encore a l'ancien format (toutes pistes) -> {tracks, steps, size, after}
+    (after : taille estimee une fois compresse, size : taille reelle de ces etapes)."""
+    root = os.path.join(OUT_DIR, 'history')
+    tracks = steps = size = 0
+    for t in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        tdir = os.path.join(root, t)
+        old = []
+        for d in os.listdir(tdir) if os.path.isdir(tdir) else []:
+            f = os.path.join(tdir, d, 'snapshot.json')
+            try:
+                if os.path.exists(f) and json.load(open(f)).get('v') != HISTORY_FORMAT:
+                    old.append(d)
+            except (OSError, ValueError):
+                continue
+        if old:
+            tracks += 1
+            steps += len(old)
+            seen, n = set(), 0
+            for d in old:
+                for dd, _, fs in os.walk(os.path.join(tdir, d)):
+                    for f in fs:
+                        st = os.stat(os.path.join(dd, f))
+                        if (st.st_dev, st.st_ino) not in seen:
+                            seen.add((st.st_dev, st.st_ino))
+                            n += st.st_size
+            size += n
+    return {'tracks': tracks, 'steps': steps, 'size': size, 'after': int(size * HISTORY_RATIO)}
+
+
+def history_compress_all(req=None):
+    """POST /api/history_compress : tout l'historique a l'ancien format converti (toutes pistes). -> {tracks, steps,
+    before, after} (tailles reelles des dossiers d'historique de ces pistes)."""
+    root = os.path.join(OUT_DIR, 'history')
+    todo = []
+    for t in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        tdir = os.path.join(root, t)
+        for d in os.listdir(tdir) if os.path.isdir(tdir) else []:
+            f = os.path.join(tdir, d, 'snapshot.json')
+            try:
+                if os.path.exists(f) and json.load(open(f)).get('v') != HISTORY_FORMAT:
+                    todo.append(t)
+                    break
+            except (OSError, ValueError):
+                continue
+    before = after = steps = 0
+    for k, t in enumerate(todo):
+        progress.step(f'historique de {t} ({k + 1}/{len(todo)})', k / max(1, len(todo)))
+        tdir = os.path.join(root, t)
+        before += _unique_size(tdir)
+        steps += _migrate_history(t)
+        _gc_blobs(t)
+        after += _unique_size(tdir)
+    return {'tracks': len(todo), 'steps': steps, 'before': before, 'after': after}
+
+
 def snapshot_saved(track, label):
-    """Copie des fichiers enregistres AVANT une operation qui les modifie (absents notes comme tels)."""
+    """Etat des fichiers enregistres AVANT une operation qui les modifie (absents notes comme tels)."""
     root = history_dir(track)
     os.makedirs(root, exist_ok=True)
+    if _migrate_history(track):
+        _gc_blobs(track)
     n = max([int(d) for d in os.listdir(root) if d.isdigit()] + [0]) + 1
     snap = os.path.join(root, f'{n:06d}')
-    prev = os.path.join(root, f'{n - 1:06d}')
-    prev_t = os.path.getmtime(os.path.join(prev, 'snapshot.json')) if os.path.exists(os.path.join(prev, 'snapshot.json')) else 0
-    os.makedirs(os.path.join(snap, 'models'))
-    present = {}
+    files = {}
     for name, p in _tracked_files(track):
-        present[name] = os.path.exists(p)
-        if present[name]:
-            # modele importe inchange depuis la copie precedente : lien vers elle (les copies ne sont jamais
-            # modifiees) au lieu de recopier des dizaines de Mo a chaque enregistrement
-            old = os.path.join(prev, name)
-            # (tous les fichiers : avec 100 copies, recopier les fichiers inchanges prendrait des Go)
-            if os.path.exists(old) and os.path.getmtime(p) < prev_t \
-                    and os.path.getsize(old) == os.path.getsize(p):
-                try:
-                    os.link(old, os.path.join(snap, name))
-                    continue
-                except OSError:
-                    pass
-            shutil.copyfile(p, os.path.join(snap, name))
-    json.dump({'label': label, 'files': present}, open(os.path.join(snap, 'snapshot.json'), 'w'), indent=1)
-    for old in sorted(d for d in os.listdir(root) if d.isdigit())[:-HISTORY_KEEP]:
-        shutil.rmtree(os.path.join(root, old), ignore_errors=True)
+        if not os.path.exists(p):
+            files[name] = None
+            continue
+        # fichier inchange depuis la derniere copie (meme taille, meme date) et deja range : pas relu (modeles importes)
+        st = os.stat(p)
+        k = (track, p, st.st_size, st.st_mtime_ns)
+        h = _snap_memo.get(k)
+        if not h or not os.path.exists(os.path.join(_blob_dir(track), h + '.z')):
+            h = _snap_memo[k] = _put_blob(track, open(p, 'rb').read())
+        files[name] = h
+    os.makedirs(snap)
+    json.dump({'label': label, 'v': HISTORY_FORMAT, 'files': files}, open(os.path.join(snap, 'snapshot.json'), 'w'), indent=1)
+    old = sorted(d for d in os.listdir(root) if d.isdigit())[:-HISTORY_KEEP]
+    for d in old:
+        shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+    if old:
+        _gc_blobs(track)
 
 
 def _history_snaps(track):
@@ -3623,7 +3886,7 @@ def _history_snaps(track):
 
 
 def history_list(track):
-    return [json.load(open(os.path.join(history_dir(track), d, 'snapshot.json')))['label'] for d in _history_snaps(track)]
+    return [_snap_meta(track, d)['label'] for d in _history_snaps(track)]
 
 
 def history_entries(track):
@@ -3642,7 +3905,7 @@ def undo_saves(track, count):
     count = int(count)
     if not 1 <= count <= len(snaps):
         raise RuntimeError(f'retour impossible : {len(snaps)} enregistrement(s) dans l\'historique')
-    target = json.load(open(os.path.join(history_dir(track), snaps[-count], 'snapshot.json')))['label']
+    target = _snap_meta(track, snaps[-count])['label']
     snapshot_saved(track, f'Retour avant « {target} »')
     root = history_dir(track)
     keep = _history_snaps(track)[-1]
@@ -3651,10 +3914,11 @@ def undo_saves(track, count):
     os.rename(os.path.join(root, keep), hold)             # mise de cote pendant le retour (undo_save prend la derniere)
     try:
         for _ in range(count):
-            undo_save(track)
+            undo_save(track, gc=False)
     finally:
         n = max([int(d) for d in _history_snaps(track)] + [0]) + 1
         os.rename(hold, os.path.join(root, f'{n:06d}'))
+        _gc_blobs(track)
     return {'undone': target, 'steps': count, 'remaining': len(_history_snaps(track))}
 
 
@@ -3674,44 +3938,37 @@ def _same_file(a, b):
 
 
 def _step_change(track, index):
-    """Fichiers changes par l'enregistrement n° index (0 = plus ancien) : {nom: (avant, apres, actuel)}
-    (chemins, None = absent) et noms des enregistrements suivants qui ont retouche les memes fichiers."""
+    """Fichiers changes par l'enregistrement n° index (0 = plus ancien) : {nom: contenu d'avant (ref, None = absent)}
+    et noms des enregistrements suivants qui ont retouche les memes fichiers."""
     snaps = _history_snaps(track)
     if not 0 <= index < len(snaps):
         raise RuntimeError('etape inconnue')
-    root, current = history_dir(track), dict(_tracked_files(track))
+    current = dict(_tracked_files(track))
+    metas = [_snap_meta(track, d) for d in snaps]
 
-    def state(i):                     # i = len(snaps) : etat actuel
+    def ref(i, name):                 # i = len(snaps) : etat actuel
         if i == len(snaps):
-            return None
-        d = os.path.join(root, snaps[i])
-        return d, json.load(open(os.path.join(d, 'snapshot.json')))
-
-    def path_in(i, name):
-        st = state(i)
-        if st is None:
             p = _live_path(track, name, current)
-            return p if os.path.exists(p) else None
-        d, meta = st
-        if name not in meta['files']:
-            return 'inconnu'
-        return os.path.join(d, name) if meta['files'][name] else None
+            return ('file', p) if os.path.exists(p) else None
+        return _snap_ref(track, snaps[i], metas[i], name)
 
-    names = set(state(index)[1]['files'])
+    def key(r):
+        return _ref_key(track, r)
+
+    names = set(metas[index]['files'])
     if index + 1 < len(snaps):
-        names |= set(state(index + 1)[1]['files'])
+        names |= set(metas[index + 1]['files'])
     changed, later = {}, []
     for name in sorted(names):
-        before, after = path_in(index, name), path_in(index + 1, name)
-        if 'inconnu' in (before, after) or _same_file(before, after):
+        before, after = ref(index, name), ref(index + 1, name)
+        if 'inconnu' in (before, after) or key(before) == key(after):
             continue
-        now = path_in(len(snaps), name)
-        changed[name] = (before, after, now)
-        if not _same_file(after, now):
+        changed[name] = before
+        if key(after) != key(ref(len(snaps), name)):
             for j in range(index + 1, len(snaps)):        # quels enregistrements suivants l'ont retouche
-                a, b = path_in(j, name), path_in(j + 1, name)
-                if 'inconnu' not in (a, b) and not _same_file(a, b):
-                    lab = state(j)[1]['label']
+                a, b = ref(j, name), ref(j + 1, name)
+                if 'inconnu' not in (a, b) and key(a) != key(b):
+                    lab = metas[j]['label']
                     if lab not in later:
                         later.append(lab)
     return changed, later
@@ -3731,16 +3988,15 @@ def remove_step(track, index):
         raise RuntimeError('des enregistrements suivants ont modifie les memes fichiers : ' + ', '.join(f'« {l} »' for l in later))
     if not changed:
         raise RuntimeError('cette etape ne change plus rien')
-    label = json.load(open(os.path.join(history_dir(track), _history_snaps(track)[index], 'snapshot.json')))['label']
+    label = _snap_meta(track, _history_snaps(track)[index])['label']
+    # contenus d'avant lus AVANT la nouvelle copie (une conversion de l'ancien format deplace les fichiers)
+    datas = {name: (_ref_bytes(track, before) if before else None) for name, before in changed.items()}
     snapshot_saved(track, f'Suppression de l\'étape « {label} »')
     current = dict(_tracked_files(track))
-    for name, (before, _after, _now) in changed.items():
+    for name, data in datas.items():
         p = _live_path(track, name, current)
-        if before:
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            tmp = p + '.tmp_retour'
-            shutil.copyfile(before, tmp)
-            os.replace(tmp, p)
+        if data is not None:
+            _write_live(p, data)
         elif os.path.exists(p) and not name.startswith('models/'):
             os.remove(p)
     _visual_cache.clear()
@@ -3761,24 +4017,25 @@ def with_history(track, label, fn):
         raise
 
 
-def undo_save(track):
+def undo_save(track, gc=True):
     """Restaure les fichiers enregistres d'avant la derniere operation (puis oublie cette copie)."""
     root = history_dir(track)
-    snaps = sorted(d for d in os.listdir(root) if d.isdigit()) if os.path.isdir(root) else []
+    snaps = _history_snaps(track)
     if not snaps:
         raise RuntimeError('aucun enregistrement a annuler')
     snap = os.path.join(root, snaps[-1])
-    meta = json.load(open(os.path.join(snap, 'snapshot.json')))
+    meta = _snap_meta(track, snaps[-1])
     current = dict(_tracked_files(track))
-    for name, was in meta['files'].items():
-        p = current.get(name) or (os.path.join(OUT_DIR, 'models', name[len('models/'):]) if name.startswith('models/')
-                                  else os.path.join(OUT_DIR, name))
-        if was:
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            shutil.copyfile(os.path.join(snap, name), p)
+    for name in meta['files']:
+        p = _live_path(track, name, current)
+        r = _snap_ref(track, snaps[-1], meta, name)
+        if r:
+            _write_live(p, _ref_bytes(track, r))
         elif os.path.exists(p) and not name.startswith('models/'):
             os.remove(p)                       # fichier qui n'existait pas encore (les modeles restent sur le disque)
     shutil.rmtree(snap, ignore_errors=True)
+    if gc:
+        _gc_blobs(track)
     _visual_cache.clear()
     _model_cache.clear()
     _preview_cache.clear()
@@ -6503,6 +6760,20 @@ def extra_decor_files(track):
     return _extra_maps_cache[track]
 
 
+def capture_save(req):
+    """POST /api/capture_save {track, png (base64), kind} : « carte postale » de la piste (2026-11-20) enregistree dans
+    out/captures/<piste>_<date>_<kind>.png, a cote des sauvegardes. -> {path, size}"""
+    data = base64.b64decode(req['png'].split(',', 1)[-1])
+    if data[:8] != bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]):
+        raise ValueError('image PNG invalide')
+    folder = os.path.join(os.path.dirname(OUT_DIR), 'captures')
+    os.makedirs(folder, exist_ok=True)
+    kind = re.sub(r'[^a-z0-9]', '', str(req.get('kind') or 'vue'))[:10] or 'vue'
+    path = os.path.join(folder, f"{req['track']}_{time.strftime('%Y%m%d-%H%M%S')}_{kind}.png")
+    open(path, 'wb').write(data)
+    return {'path': path, 'size': len(data)}
+
+
 def export_obj(req):
     """Reference Blender : req = {track, collision: bool, splines: bool, decor: 'none'|'boxes'|'full',
     files: [fichiers _Art] (defaut : tous), extra: bool (autres fichiers de carte avec des modeles, defaut oui),
@@ -6770,6 +7041,13 @@ def menu_info(track):
         p = saved_path(logical)
         names[lg] = {'label': label, 'original': menu_assets.read_name(orig),
                      'name': menu_assets.read_name(open(p, 'rb').read() if os.path.exists(p) else orig)}
+    # piste creee (Nouvelle map, Fichier > Nouvelle piste) : pas de fichiers de nom zoneInfo a elle ; le nom affiche
+    # en jeu est celui de l'enregistrement des pistes creees (custom_category, le meme dans toutes les langues).
+    # 2026-11-20 : « je ne peux pas modifier le nom de T922 » (aucun champ n'etait propose)
+    created = _created_track(track)
+    if created and not names:
+        names['all'] = {'label': 'Toutes les langues', 'original': 'Custom Track', 'name': created.get('display') or '',
+                        'created': True}
     for k, (label, _) in menu_assets.IMAGES.items():
         # piste creee : fond et vignette a elle (copies installees par custom_category) ; embleme de l'intro et
         # trace = ceux de sa source, partages (lecture seule ici : les modifier changerait aussi Crash Cove)
@@ -6793,6 +7071,16 @@ def menu_info(track):
             'video': os.path.basename(v) if os.path.exists(v) or os.path.exists(v + VIDEO_OFF) else None}
 
 
+def _created_track(track):
+    """Entree de la piste dans l'enregistrement des pistes creees ({id, display, source...}) ou None."""
+    import custom_category
+    try:
+        st = custom_category.read_state(ARCHIVES) or {}
+    except Exception:  # noqa: BLE001 - enregistrement illisible : piste du jeu
+        return None
+    return next((t for t in st.get('tracks', []) if t.get('id') == track), None)
+
+
 def apply_menu(req):
     """req = {track, names: {langue: nom | null (origine)}, images: {cle: data URL | 'generate' (trace) | null
     (origine)}} : fichiers enregistres (installes dans toutes les archives qui les contiennent)."""
@@ -6807,7 +7095,15 @@ def apply_menu(req):
             os.makedirs(OUT_DIR, exist_ok=True)
             json.dump(st, open(menu_settings_path(track), 'w'))
             report.append('vidéo du menu : ' + ('mise de côté à l\'installation' if st['hide_video'] else 'gardée'))
-    for lg, name in (req.get('names') or {}).items():
+    names_req = dict(req.get('names') or {})
+    if 'all' in names_req:                              # piste creee : nom unique, ecrit dans l'enregistrement du jeu
+        import custom_category
+        created = _created_track(track)
+        new = (names_req.pop('all') or '').strip() or 'Custom Track'
+        if created and new != (created.get('display') or ''):
+            custom_category.rename_track(ARCHIVES, track, new[:40])
+            report.append(f'nom affiché : « {new[:40]} » (enregistré dans le jeu tout de suite)')
+    for lg, name in names_req.items():
         orig, logical = _menu_original(track, files.get(f'name_{lg}', ''))
         if orig is None:
             continue
@@ -7723,13 +8019,105 @@ def preinstall_check(track):
             add('attention', 'Réapparitions', f'{len(lost)} point(s) sans sol dessous : {", ".join(lost[:5])}', fix='falls')
         else:
             add('ok', 'Réapparitions', f'{len(poses)} point(s) au-dessus du sol')
+    # 3b) checkpoints, teleporteurs, zones de chute, IA dans les murs (2026-11-20, demande utilisateur)
+    progress.step('checkpoints, téléporteurs, zones de chute', 0.6)
+    live_t = {t['name']: t for t in tr['transitions'] if t['increment_lap'] or t['position'][2] > FAR_BELOW + 1}
+    nxt_t = {}                                         # spline de position -> transitions qui la terminent
+    for t in live_t.values():
+        for p in t['previous_position'] or []:
+            nxt_t.setdefault(p, []).append(t['name'])
+    if fin:
+        seen, todo, closed = set(), [fin[0]['name']], False
+        while todo:
+            n = todo.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            for sp in live_t[n]['next_position'] or []:
+                for m in nxt_t.get(sp, []):
+                    closed |= m == fin[0]['name']
+                    todo.append(m)
+        orphans = sorted(set(live_t) - seen)
+        if not closed:
+            add('erreur', 'Checkpoints', 'le tour ne revient pas à la ligne d’arrivée : une section ne mène à aucun checkpoint '
+                                         'suivant → « Recréer le parcours depuis cette ligne »', ui='mkroute')
+        if orphans:
+            add('attention', 'Checkpoints', f'{len(orphans)} checkpoint(s) jamais atteint(s) depuis le départ : '
+                                            f'{", ".join(orphans[:4])}{" …" if len(orphans) > 4 else ""}')
+        if closed and not orphans:
+            add('ok', 'Checkpoints', f'{len(live_t)} checkpoint(s), tous atteints dans l’ordre, le tour se referme')
+    tps = tr.get('teleporters') or {}
+    bad_tp = []
+    for tn, tp in tps.items():
+        t = live_t.get(tn)
+        if not t or not tp.get('pos'):
+            continue
+        sp = next((n for n in t['next_position'] or [] if n in dense), None)
+        if sp is None:
+            continue
+        P = dense[sp]
+        d = np.linalg.norm(P[:, :2] - np.asarray(tp['pos'][:2]), axis=1)
+        k = int(d.argmin())
+        if d[k] > 1600:
+            bad_tp.append(f'{tn} : arrivée à {d[k] / 39.37:.0f} m de la section suivante')
+            continue
+        nt = [live_t[m] for m in nxt_t.get(sp, []) if m in live_t]
+        if nt:
+            kn = int(np.linalg.norm(P[:, :2] - np.asarray(nt[0]['position'][:2]), axis=1).argmin())
+            if k >= kn:
+                bad_tp.append(f'{tn} : arrivée après le checkpoint suivant ({nt[0]["name"]}) — le kart le saute')
+        if ground.at(tp['pos'][0], tp['pos'][1], tp['pos'][2], window=800.0) is None:
+            bad_tp.append(f'{tn} : arrivée sans sol dessous')
+    if bad_tp:
+        add('attention', 'Téléporteurs', ' · '.join(bad_tp[:4]) + (' …' if len(bad_tp) > 4 else '') + ' → place l’anneau violet '
+                                         'entre le portail et le checkpoint suivant')
+    elif tps:
+        add('ok', 'Téléporteurs', f'{len(tps)} téléporteur(s), arrivée avant le checkpoint suivant')
+    try:
+        fzs = read_fall_zones(track)
+    except Exception:  # noqa: BLE001 - piste sans _Design lisible
+        fzs = []
+    on_route = []
+    for z in [z for z in fzs if z.get('enabled', True)]:
+        c, s_, co = np.asarray(z['pos']), math.sin(-(z.get('yaw') or 0.0)), math.cos(-(z.get('yaw') or 0.0))
+        half = np.asarray(z['dims']) / 2
+        hit = 0
+        for P in (dense[n] for n in pos if n in dense):
+            q = P - c
+            x, y = q[:, 0] * co - q[:, 1] * s_, q[:, 0] * s_ + q[:, 1] * co
+            inside = np.nonzero((np.abs(x) < half[0]) & (np.abs(y) < half[1]) & (np.abs(q[:, 2]) < half[2]))[0]
+            # seulement la ou le kart roule (sol a moins de 7,5 m sous le parcours) : pas au-dessus d'un vide (saut)
+            for i in inside:
+                top = ground.top(P[i, 0], P[i, 1], P[i, 2])
+                hit += top is not None and P[i, 2] - top < 300
+        if hit:
+            on_route.append(z['name'])
+    if on_route:
+        add('attention', 'Zones de chute', f'{len(on_route)} zone(s) de chute traversée(s) par le parcours (le kart '
+                                           f'réapparaît en roulant normalement) : {", ".join(on_route[:4])}{" …" if len(on_route) > 4 else ""} '
+                                           '→ réduis-la, déplace-la ou supprime-la (sauf au-dessus d’un vrai vide)')
+    elif fzs:
+        add('ok', 'Zones de chute', f'{len(fzs)} zone(s), aucune sur le parcours')
+    progress.step('splines IA contre les murs', 0.65)
+    obs, walls = ai_gen.Obstacles(ground), []
+    for n in [x['name'] for x in edited if x['kind'] == 'ai_paths' and x['name'] in dense]:   # splines du jeu : fiables
+        P = dense[n][::2]
+        hits = sum(1 for a, b in zip(P[:-1], P[1:]) if obs.crosses(a, b))
+        if hits:
+            walls.append(f'{n} ({hits})')
+    if walls:
+        add('attention', 'Splines IA', f'{len(walls)} spline(s) IA traversent un mur ou un rocher à hauteur de kart : '
+                                       f'{", ".join(walls[:4])}{" …" if len(walls) > 4 else ""} → « ✏ Dessiner les splines IA » '
+                                       'ou « Régénérer toutes les splines IA »', ui='regenall')
     # 4) caisses et boosters
     crates = tr.get('crates') or []
     box = [c for c in crates if c['kind'] != 'boost']
-    buried, floating = [], []
+    buried, floating, void = [], [], []
     for c in box:
         top = ground.top(c['pos'][0], c['pos'][1], c['pos'][2])
         if top is None:
+            if not ground.heights(c['pos'][0], c['pos'][1]):   # rien du tout dessous : au-dessus du vide
+                void.append(c['name'])
             continue
         dz = c['pos'][2] - top - (powerup.lift_of(c['kind']) - powerup.LIFT)      # fruit : origine en son centre
         if dz < -10:
@@ -7740,7 +8128,10 @@ def preinstall_check(track):
         add('erreur', 'Caisses', f'{len(buried)} caisse(s) enfoncée(s) dans le sol → « Tout poser au sol »', fix='crates')
     if floating:
         add('attention', 'Caisses', f'{len(floating)} caisse(s) en l\'air (plus de 4 m) → « Tout poser au sol » si ce n\'est pas voulu', fix='crates')
-    if box and not buried and not floating:
+    if void:
+        add('attention', 'Caisses', f'{len(void)} caisse(s) au-dessus du vide (pas de sol dessous) : les karts ne peuvent pas '
+                                    f'les prendre, sauf pendant un saut')
+    if box and not buried and not floating and not void:
         add('ok', 'Caisses', f'{len(box)} caisse(s) posées sur le sol')
     boosts = [c for c in crates if c['kind'] == 'boost']
     if boosts:
@@ -8741,6 +9132,40 @@ LOAD_LIMIT = {'models': 1104, 'files': 2612}
 def load_estimate(counts):
     """Charge memoire estimee au chargement de la piste, en % de la limite mesuree (100 % = plantage probable)."""
     return round(100 * max(counts.get(k, 0) / v for k, v in LOAD_LIMIT.items()))
+
+
+_weight_live_cache = {}
+
+
+def weight_live(track):
+    """GET /api/weight_live : charge memoire ESTIMEE en direct (pastille de la barre d'etat, 2026-11-20), sans preparer
+    l'installation (map_weight : ~10 s et reecrit des fichiers) : modeles de l'archive d'origine + modeles du decor
+    enregistre qui n'y sont pas (bibliotheque, imports) ; fichiers = archive + ~2,2 par modele ajoute (materiaux,
+    textures) non compte. En memoire tant que les fichiers de decor enregistres ne changent pas."""
+    arts = list(art_files(track))
+    key = (track, tuple((a, os.path.getmtime(saved_path(a)) if os.path.exists(saved_path(a)) else 0) for a in arts))
+    if key in _weight_live_cache:
+        return _weight_live_cache[key]
+    arc = os.path.join(ARCHIVES, track_pak(track))
+    view = pak_tool.original_archive(arc)
+    names = {k.lower().replace('\\', '/') for k in (view[1] if view else pak_tool.cached_archive(arc)[1])}
+    orig = {n for n in names if n.startswith('models/')}
+    used = set()
+    for a in arts:
+        try:
+            for o in DecorFile(base_file(track, a)[0]).objects():
+                if o.get('model'):
+                    used.add(model_logical_path(o['model']).lower().replace('\\', '/'))
+        except Exception:  # noqa: BLE001 - fichier illisible : ignore
+            continue
+    added = {m for m in used if m.startswith('models/') and m not in orig}
+    # charge d'apres les modeles seuls : le nombre de fichiers installes depend du nettoyage fait a l'installation
+    # (fichiers d'origine inutilises retires), et les modeles sont la limite atteinte en premier (T922 : 54 % / 45 %)
+    models = len(orig) + len(added)
+    out = {'models': models, 'added': len(added), 'load': load_estimate({'models': models}), 'models_max': MODELS_MAX}
+    _weight_live_cache.clear()
+    _weight_live_cache[key] = out
+    return out
 
 
 def rare_models(track, n=15):
@@ -10159,6 +10584,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {'error': 'introuvable'})
             elif u.path == '/api/progress':
                 self._send(200, progress.get())
+            elif u.path == '/api/sky_info':                   # ciel et meteo montres dans l'editeur
+                self._send(200, sky_info(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/weight_live':                # charge memoire estimee (pastille de la barre d'etat)
+                self._send(200, weight_live(parse_qs(u.query)['track'][0]))
+            elif u.path == '/api/history_old':                # historique a l'ancien format : proposer la compression
+                self._send(200, history_old_status())
             elif u.path == '/api/update_status':              # nouvelle version sur GitHub ? (une fois par lancement)
                 self._send(200, updater.public_status(force='force' in parse_qs(u.query)))
             elif u.path == '/api/archives':
@@ -10268,7 +10699,7 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._send(500, {'error': repr(e)})
 
-    PROGRESS_LABELS = {'/api/update_download': 'Mise à jour', '/api/update_apply': 'Mise à jour', '/api/octr_export': 'Export pour le PC (OCTR)', '/api/pack_export': 'Export des maps', '/api/pack_import': 'Import des maps',
+    PROGRESS_LABELS = {'/api/history_compress': "Compression de l'historique", '/api/update_download': 'Mise à jour', '/api/update_apply': 'Mise à jour', '/api/octr_export': 'Export pour le PC (OCTR)', '/api/pack_export': 'Export des maps', '/api/pack_import': 'Import des maps',
                        '/api/save': 'Enregistrement de la course', '/api/install': 'Installation dans le jeu',
                        '/api/test_in_game': 'Tester en jeu', '/api/create_build': 'Création de la piste', '/api/creator_props_apply': 'Décor de la Création',
                        '/api/uninstall': 'Désinstallation', '/api/restore_all': 'Retour au jeu d\'origine', '/api/reset': "Retour à l'original",
@@ -10337,6 +10768,7 @@ class Handler(BaseHTTPRequestHandler):
                                                                   lambda: import_texture(req)),
                       '/api/newmap': lambda: with_history(req['track'], 'nouvelle map', lambda: apply_newmap(req)),
                       '/api/undo_save': lambda: undo_save(req['track']),
+                      '/api/history_compress': lambda: history_compress_all(req),
                       '/api/history': lambda: {'labels': history_list(req['track']), 'entries': history_entries(req['track'])},
                       '/api/undo_saves': lambda: undo_saves(req['track'], req['count']),
                       '/api/remove_step_check': lambda: remove_step_check(req['track'], req['index']),
@@ -10379,6 +10811,7 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/apply_light': lambda: with_history(req['track'], 'alléger la map', lambda: apply_light(req)),
                       '/api/import_folder': lambda: with_history(req['track'], f"import du dossier {req.get('folder') or 'map'}",
                                                                  lambda: import_folder(req)),
+                      '/api/capture_save': lambda: capture_save(req),
                       '/api/export_obj': lambda: export_obj(req),
                       '/api/scene_points': lambda: scene_points(req),
                       '/api/archives': lambda: choose_archives(req),
