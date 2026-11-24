@@ -105,6 +105,7 @@ def main():
            '--add-data', f'{os.path.join(HERE, "index.html")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "i18n.js")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "creator.js")}{sep}.',      # onglet Creation (oublie avant le 2026-11-13)
+           '--add-data', f'{os.path.join(HERE, "clay.js")}{sep}.',         # sol en pate a modeler (2026-11-24)
            '--add-data', f'{os.path.join(HERE, "vendor")}{sep}vendor',
            '--hidden-import', 'server', '--hidden-import', 'updater',
            '--collect-submodules', 'webview', '--hidden-import', 'webview.platforms.qt']

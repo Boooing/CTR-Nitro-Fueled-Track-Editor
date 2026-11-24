@@ -184,10 +184,20 @@ def base_file(track, logical):
     return pak_tool.read_latest(ARCHIVES, logical, track_pak(track))
 
 
+# sol gris decode, garde par empreinte du fichier de collision (2026-11-21 : relu ~10 fois par generation, 1,2 s chaque
+# fois ; meme fichier = meme resultat, jamais perime)
+_col_memo = {}
+
+
 def load_collision(track):
     col = {'positions': [], 'indices': []}
     try:
         hk, _ = base_file(track, collision_file(track))          # collision modifiee si enregistree
+        import hashlib
+        key = (track, hashlib.md5(hk).digest())
+        hit = _col_memo.get(key)
+        if hit is not None:
+            return {'positions': hit[0], 'indices': hit[1], 'pending': collision_pending(track)}
         pf = Packfile(hk)
         comp = next(o for o, c in pf.objects.items() if c == 'hknpStaticCompoundShape')
         inst, n = pf.array(comp + 0x60)
@@ -203,6 +213,9 @@ def load_collision(track):
                 col['positions'] += [round(c * HAVOK_TO_GAME, 1) for c in transform(m, sc, v)]
             for t in tris:
                 col['indices'] += [base + t[0], base + t[1], base + t[2]]
+        if len(_col_memo) >= 4:
+            _col_memo.pop(next(iter(_col_memo)))
+        _col_memo[key] = (col['positions'], col['indices'])
     except Exception:  # noqa: BLE001
         traceback.print_exc()
     col['pending'] = collision_pending(track)      # sol affiche en retard sur le decor jusqu'a « Enregistrer »
@@ -1428,7 +1441,7 @@ def imported_road_objects(track):
     return out
 
 
-def route_objects(track):
+def route_objects(track, name_has=None):
     """Morceaux de route possibles pour « Creer le parcours » : objets importes du decor enregistre (modeles importes
     et objets de la bibliotheque), la route d'abord. -> {objects: [{file, id, name, road, size_m}], checked: [ids
     pre-coches : route memorisee, sinon objets dont le materiau est « road »]}."""
@@ -1438,6 +1451,9 @@ def route_objects(track):
     out, checked = [], []
     for art in art_files(track):
         for o in DecorFile(base_file(track, art)[0]).objects():
+            # name_has (2026-11-21, vitesse) : seuls ces objets (generation : la route) -> taille calculee pour eux seuls
+            if name_has and name_has not in (o['name'] or ''):
+                continue
             lk = links.get(art, {}).get(str(o['id']))
             if not (isinstance(lk, dict) and 'custom' in lk):
                 continue
@@ -2827,7 +2843,9 @@ def apply_newmap(req):
         report.append('piste sans ciel : ciel et éclairage de Crash Cove ajoutés (modifiable : Ambiance › Ciel)')
     for art in art_files(track):
         was, now = art in (before.get('strip_art') or []), art in s['strip_art']
-        if was == now and not now and not remove[art]:
+        # deja dans cet etat et rien a retirer : rien a reecrire (2026-11-21, vitesse : a chaque generation, les fichiers
+        # deja vides etaient reconstruits pour un resultat identique)
+        if was == now and not remove[art] and (not now or os.path.exists(saved_path(art))):
             continue
         df = DecorFile(base_file(track, art)[0])
         n0 = len(df.objects())
@@ -2840,6 +2858,10 @@ def apply_newmap(req):
         msg = remove_boosters(track, measure=not req.get('no_measure'))   # (fichiers de decor : ids remappes)
         if msg:
             report.append(msg)
+    # « Vider aussi la base » (2026-11-20) : la derniere generation n'est plus sur la map -> sa recette retiree, sinon la
+    # base videe etait jugee « modifiee, pas encore generee » (suivi par l'historique : « ↶ Annuler » la remet)
+    if req.get('clear_base') and os.path.exists(creator_path(track)):
+        os.remove(creator_path(track))
     report.append(defer_collision(track))
     return {'report': report, 'settings': s, 'remaining': remaining_elements(track)}
 
@@ -3161,7 +3183,9 @@ def load_links(track):
 
 def save_links(track, links):
     os.makedirs(OUT_DIR, exist_ok=True)
-    json.dump(links, open(links_path(track), 'w'), indent=1)
+    # sans indentation (2026-11-21) : fichier de ~1 Mo ecrit une dizaine de fois par generation
+    with open(links_path(track), 'w') as f:            # json.dumps : encodeur en C (json.dump : en Python, ~10 x plus lent)
+        f.write(json.dumps(links, separators=(',', ':')))
 
 
 # -- historique des enregistrements (« Annuler le dernier enregistrement ») ---------------------
@@ -3191,6 +3215,8 @@ def _tracked_files(track):
             (f'{track}_light.json', light_path(track)),
             (f'{track}_menu.json', menu_settings_path(track)),
             (f'{track}_lights.json', lights_path(track)),
+            (f'{track}_animated.json', animated_path(track)),
+            (f'{track}_groups.json', groups_path(track)),
             (f'{track}_ambiance.json', ambiance_path(track)),
             (f'{track}_weather.json', weather_path(track)),
             (f'{track}_camera.json', camera_path(track)),
@@ -3873,7 +3899,10 @@ def snapshot_saved(track, label):
         files[name] = h
     os.makedirs(snap)
     json.dump({'label': label, 'v': HISTORY_FORMAT, 'files': files}, open(os.path.join(snap, 'snapshot.json'), 'w'), indent=1)
-    old = sorted(d for d in os.listdir(root) if d.isdigit())[:-HISTORY_KEEP]
+    # menage par paquets de 10 (2026-11-21, vitesse) : avant, chaque copie au-dela de 100 retirait la plus ancienne et
+    # parcourait toutes les donnees gardees (~3 800 fichiers, 1 a 2 s) ; on garde ainsi 100 a 110 copies
+    snaps = sorted(d for d in os.listdir(root) if d.isdigit())
+    old = snaps[:-HISTORY_KEEP] if len(snaps) > HISTORY_KEEP + 10 else []
     for d in old:
         shutil.rmtree(os.path.join(root, d), ignore_errors=True)
     if old:
@@ -4005,9 +4034,14 @@ def remove_step(track, index):
     return {'removed': label, 'files': len(changed)}
 
 
+_hist_local = threading.local()          # skip : requete du pipeline (nohist), sans copie pour « Annuler »
+
+
 def with_history(track, label, fn):
     """Copie des fichiers enregistres, puis l'operation ; si elle echoue, les fichiers sont remis comme avant
     (rien de a moitie ecrit) et la copie est consommee."""
+    if getattr(_hist_local, 'skip', False):
+        return fn()
     progress.step('copie pour « Annuler »')
     snapshot_saved(track, label)
     try:
@@ -4058,7 +4092,8 @@ def custom_models(track):
 
 def save_custom_models(track, reg):
     os.makedirs(OUT_DIR, exist_ok=True)
-    json.dump(reg, open(os.path.join(OUT_DIR, f'{track}_custom_models.json'), 'w'), indent=1)
+    with open(os.path.join(OUT_DIR, f'{track}_custom_models.json'), 'w') as f:   # compact, encodeur en C (2026-11-21, vitesse)
+        f.write(json.dumps(reg, separators=(',', ':')))
 
 
 # -- murs invisibles : collision seule ---------------------------------------------------------
@@ -4634,7 +4669,7 @@ def create_texture(track, name, image, source=None, alpha=None, size=1024):
         if hit:                       # autre transparence / taille : refaite sur place (memes noms)
             _write_texture_files(track, hit, image, alpha, size)
             reg[hit].update(alpha=alpha, size=size)
-            json.dump(reg, open(custom_textures_path(track), 'w'), indent=1)
+            open(custom_textures_path(track), 'w').write(json.dumps(reg, separators=(',', ':')))
             return {'name': hit, 'id': reg[hit]['material_id'], 'label': f'Image : {hit}', 'reused': True, 'upgraded': True}
     name = _clean_name(name, 'Texture')
     base, n = name, 1
@@ -4647,7 +4682,7 @@ def create_texture(track, name, image, source=None, alpha=None, size=1024):
     if source:
         reg[name]['source'] = source
     os.makedirs(OUT_DIR, exist_ok=True)
-    json.dump(reg, open(custom_textures_path(track), 'w'), indent=1)
+    open(custom_textures_path(track), 'w').write(json.dumps(reg, separators=(',', ':')))
     return {'name': name, 'id': reg[name]['material_id'], 'label': f'Image : {name}'}
 
 
@@ -4735,7 +4770,7 @@ def set_alpha_textures(track, wanted):
         info['alpha'] = bool(want)
         (on if want else off).append(name)
     if on or off:
-        json.dump(reg, open(custom_textures_path(track), 'w'), indent=1)
+        open(custom_textures_path(track), 'w').write(json.dumps(reg, separators=(',', ':')))
     return {'report': [f'transparence activée sur {len(on)} texture(s), retirée sur {len(off)}'
                        + (f' ({", ".join((on + off)[:10])}{"…" if len(on + off) > 10 else ""})' if on or off else '')]}
 
@@ -4939,7 +4974,7 @@ def _glow_texture(track, reg, name, on):
         info['glow'] = True
     else:
         info.pop('glow', None)
-    json.dump(reg, open(custom_textures_path(track), 'w'), indent=1)
+    open(custom_textures_path(track), 'w').write(json.dumps(reg, separators=(',', ':')))
 
 
 def set_custom_material(req):
@@ -5385,8 +5420,75 @@ def library_catalog():
     return _library_cache
 
 
+_libfiles_memo = {}      # (archive de la piste, modele, archive) -> (pak_tool.epoch, resultat) : lectures du jeu seules
+
+
 def library_files(track, model, pak):
     """[(type, chemin, archive ou None si deja disponible en course)] des fichiers du modele."""
+    key = (ARCHIVES, track_pak(track), model.lower(), pak)
+    hit = _libfiles_memo.get(key)
+    if hit and hit[0] == pak_tool.epoch:                # 2026-11-21 : 246 modeles relus a chaque generation (~5 s)
+        return list(hit[1])
+    disk = _libfiles_disk()
+    dk = '|'.join((track_pak(track), model.lower(), pak))
+    if dk in disk['data']:
+        out = [tuple(x) for x in disk['data'][dk]]
+    else:
+        out = _library_files(track, model, pak)
+        disk['data'][dk] = [list(x) for x in out]
+        disk['dirty'] = True
+    _libfiles_memo[key] = (pak_tool.epoch, tuple(out))
+    return out
+
+
+# memoire sur disque des fichiers des objets de la bibliotheque (2026-11-21, vitesse : 1re generation d'une session) :
+# <sauvegardes>/cache/library_files.json, valable pour un etat des archives (taille et date de chaque fichier du dossier)
+_libdisk = {}
+
+
+def _archives_signature():
+    import hashlib
+    h = hashlib.sha1(os.path.abspath(ARCHIVES).lower().encode())
+    for n in sorted(pak_tool.listdir(ARCHIVES)):
+        try:
+            st = os.stat(pak_tool.real(os.path.join(ARCHIVES, n)))
+            h.update(f'{n.lower()}:{st.st_size}:{st.st_mtime_ns};'.encode())
+        except OSError:
+            pass
+    return h.hexdigest()
+
+
+def _libfiles_disk():
+    if _libdisk.get('epoch') == pak_tool.epoch and _libdisk.get('archives') == ARCHIVES:
+        return _libdisk
+    sig = _archives_signature()
+    p = os.path.join(OUT_DIR, 'cache', 'library_files.json')
+    data = {}
+    try:
+        d = json.load(open(p, encoding='utf-8'))
+        if d.get('sig') == sig:
+            data = d.get('data') or {}
+    except (OSError, ValueError):
+        pass
+    _libdisk.clear()
+    _libdisk.update(epoch=pak_tool.epoch, archives=ARCHIVES, sig=sig, path=p, data=data, dirty=False)
+    return _libdisk
+
+
+def _libfiles_flush():
+    if not _libdisk.get('dirty'):
+        return
+    try:
+        os.makedirs(os.path.dirname(_libdisk['path']), exist_ok=True)
+        tmp = _libdisk['path'] + '.tmp'
+        open(tmp, 'w', encoding='utf-8').write(json.dumps({'sig': _libdisk['sig'], 'data': _libdisk['data']}, separators=(',', ':')))
+        os.replace(tmp, _libdisk['path'])
+        _libdisk['dirty'] = False
+    except OSError:
+        pass
+
+
+def _library_files(track, model, pak):
     read = lambda lg: read_game_file(track, lg, (pak,))
     out = []
     for typ, lg in library.dependencies(read, model):
@@ -5424,6 +5526,7 @@ def place_library_many(track, items, tag):
         fl.pop(oid, None)
     for model, pak in {(it['model'], it['pak']) for it in items}:
         library_files(track, model, pak)                    # erreur ici si un fichier manque : rien n'est ecrit
+    _libfiles_flush()                                       # memoire sur disque a jour (sessions suivantes)
     specs, used, tmpl = [], set(df.names.values()), template_object(track, art)
     kept_looks = 0
     for it in items:
@@ -6214,7 +6317,7 @@ def apply_light(req):
         info['size'] = int(size)
         changed.append(f'{name} ({size})')
     if changed:
-        json.dump(reg, open(custom_textures_path(track), 'w'), indent=1)
+        open(custom_textures_path(track), 'w').write(json.dumps(reg, separators=(',', ':')))
         report.append(f'{len(changed)} texture(s) refaite(s) : ' + ', '.join(changed[:8]) + (' …' if len(changed) > 8 else ''))
     if req.get('cleanup'):
         progress.step('nettoyage des modèles inutilisés', 0.5)
@@ -6271,15 +6374,29 @@ def simplify_tris(T, cell):
 
 
 def _simplify_tris(T, cell):
+    # (2026-11-21, vitesse x3,6) cases et triangles numerotes par un entier au lieu de np.unique(axis=0) sur des lignes :
+    # meme groupement, memes egalites, autre numerotation sans effet sur le resultat (moyennes et ordre d'origine) ;
+    # verifie identique sur 115 cas reels (scratchpad simplify_test.py)
     V = T.reshape(-1, 3)
-    uk, inv = np.unique(np.floor(V / cell).astype(np.int64), axis=0, return_inverse=True)
+    Q = np.floor(V / cell).astype(np.int64)
+    Q = Q - Q.min(0)
+    span = Q.max(0) + 1
+    if float(span[0]) * float(span[1]) * float(span[2]) < 2 ** 62:
+        uk, inv = np.unique((Q[:, 0] * span[1] + Q[:, 1]) * span[2] + Q[:, 2], return_inverse=True)
+    else:
+        uk, inv = np.unique(Q, axis=0, return_inverse=True)
     inv = inv.reshape(-1)
-    rep = np.zeros((len(uk), 3))
+    n = len(uk)
+    rep = np.zeros((n, 3))
     np.add.at(rep, inv, V)
-    rep /= np.bincount(inv, minlength=len(uk))[:, None]
+    rep /= np.bincount(inv, minlength=n)[:, None]
     F = inv.reshape(-1, 3)
     F = F[(F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 0] != F[:, 2])]
-    _, first = np.unique(np.sort(F, axis=1), axis=0, return_index=True)
+    S = np.sort(F, axis=1)
+    if float(n) ** 3 < 2 ** 62:
+        _, first = np.unique((S[:, 0] * n + S[:, 1]) * n + S[:, 2], return_index=True)
+    else:
+        _, first = np.unique(S, axis=0, return_index=True)
     P = rep[F[np.sort(first)]]
     return P[np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1) > 1e-2]
 
@@ -6308,13 +6425,15 @@ def race_point_grid(track, cell=100 * 39.37):
     """Points des traces de course (splines de position et d'IA, tous les ~2 m), ranges par cases (x, y) de `cell` po :
     {(i, j): tableau (n, 2)}. None si la piste n'a pas de trace lisible (alors rien n'est retire)."""
     import hashlib
+    road = _generated_road_newer(track)
     try:
-        key = (track, float(cell), hashlib.md5(base_file(track, race_file(track))[0]).hexdigest())
+        src = open(creator_path(track), 'rb').read() if road else base_file(track, race_file(track))[0]
+        key = (track, float(cell), 'road' if road else 'race', hashlib.md5(src).hexdigest())
     except Exception:  # noqa: BLE001 - fichier de course illisible : calcul normal (et sans memoire)
         key = None
     if key is not None and _race_grid_memo.get('key') == key:
         return _race_grid_memo['grid']
-    grid = _race_point_grid(track, cell)
+    grid = _race_point_grid(track, cell, road)
     if key is not None:
         _race_grid_memo.update(key=key, grid=grid)
     return grid
@@ -6323,9 +6442,31 @@ def race_point_grid(track, cell=100 * 39.37):
 _race_grid_memo = {}       # derniere grille (cle : piste, case, empreinte du fichier de course) : 2,2 s de relecture evites
 
 
-def _race_point_grid(track, cell):
+def _generated_road_newer(track):
+    """Route generee (onglet Creation) plus recente que le parcours enregistre : generation en cours, le parcours n'est pas
+    encore refait sur la nouvelle route (2026-11-21 : la collision du decor etait triee d'apres le parcours de l'ANCIENNE
+    piste -> ~450 objets pres de la nouvelle route sans collision sur T915)."""
+    cp = creator_path(track)
+    if not os.path.exists(cp):
+        return False
+    rp = saved_path(race_file(track))
+    return not os.path.exists(rp) or os.path.getmtime(cp) > os.path.getmtime(rp)
+
+
+def _race_point_grid(track, cell, road=False):
     try:
-        splines = load_track(track)['splines']
+        pad = 0.0
+        if road:                                        # route generee : son trace (boucle fermee) sert de parcours
+            rp = json.load(open(creator_path(track))).get('points') or []
+            P = [p[:2] for p in rp]
+            splines = [{'control_points': P + P[:1]}] if len(P) >= 2 else []
+            # voies IA jusqu'a une demi-largeur du milieu : tri elargi d'autant (jamais moins d'objets gardes)
+            pad = max([float(p[3]) / 2 for p in rp if len(p) > 3] or [0.0])
+        else:
+            # traces seuls (2026-11-21) : avant, toute la piste (load_track : collision, caisses, zones...) etait relue
+            data, _ = base_file(track, race_file(track))
+            rs = RaceSystem(data, file_ns=race_ns(track)).decode()
+            splines = [s for k in ('position_paths', 'ai_paths') for s in rs[k]]
     except Exception:  # noqa: BLE001
         return None
     pts = []
@@ -6343,13 +6484,14 @@ def _race_point_grid(track, cell):
     grid = defaultdict(list)
     for (i, j), p in zip(np.floor(P / cell).astype(np.int64).tolist(), P):
         grid[(i, j)].append(p)
-    return {'cell': cell, 'cells': {k: np.asarray(v) for k, v in grid.items()}}
+    return {'cell': cell, 'cells': {k: np.asarray(v) for k, v in grid.items()}, 'pad': pad}
 
 
 def far_from_race(G, T, reach=DECOR_COLLISION_REACH):
     """La boite (x, y) des triangles T est-elle a plus de `reach` po de tout point des traces ?"""
     if G is None or not len(T):
         return False
+    reach += G.get('pad', 0.0)
     V = T.reshape(-1, 3)
     lo, hi = V[:, :2].min(0), V[:, :2].max(0)
     c = G['cell']
@@ -8300,6 +8442,38 @@ def animated_report(track):
     return out
 
 
+def groups_path(track):
+    return os.path.join(OUT_DIR, f'{track}_groups.json')
+
+
+def groups_load(track):
+    """Groupes d'objets du decor (2026-11-23, editeur seulement : rien ne change en jeu) :
+    [{name, members: [{file, name, model, pos}]}] (out/editor/<piste>_groups.json). Membre retrouve par son nom dans
+    son fichier, sinon par modele + position (copie pas encore enregistree au moment du groupement)."""
+    p = groups_path(track)
+    try:
+        g = json.load(open(p, encoding='utf-8')) if os.path.exists(p) else []
+        return g if isinstance(g, list) else []
+    except ValueError:
+        return []
+
+
+def groups_save(req):
+    """POST /api/decor_groups {track, groups} -> {groups}"""
+    track = req['track']
+    clean = []
+    for g in req.get('groups') or []:
+        mem = [{'file': str(m.get('file') or ''), 'name': m.get('name') or None, 'model': str(m.get('model') or ''),
+                'pos': [float(v) for v in (m.get('pos') or [0, 0, 0])[:3]]} for m in g.get('members') or []]
+        if len(mem) >= 2:
+            clean.append({'name': str(g.get('name') or 'Groupe')[:60], 'members': mem})
+    os.makedirs(OUT_DIR, exist_ok=True)
+    tmp = groups_path(track) + '.tmp'
+    json.dump(clean, open(tmp, 'w', encoding='utf-8'), ensure_ascii=False)
+    os.replace(tmp, groups_path(track))
+    return {'groups': clean}
+
+
 def animated_path(track):
     return os.path.join(OUT_DIR, f'{track}_animated.json')
 
@@ -9454,6 +9628,8 @@ def creator_ground_save(track, gnd):
     more = {}
     if len(gnd) > 6:
         more = {'roof': gnd[5] if gnd[5] is not None else np.zeros(0, bool), 'wet': gnd[6] if gnd[6] is not None else np.zeros(0, bool)}
+    if len(gnd) > 7 and gnd[7] is not None:              # sol en pate (essai 2026-11-24) : zone et champ des retouches
+        more.update(clay_hide=gnd[7]['hide'], clay_D=gnd[7]['D'], clay_o=np.asarray(gnd[7]['o']))
     os.makedirs(os.path.dirname(creator_ground_file(track)), exist_ok=True)
     np.savez_compressed(creator_ground_file(track), xs=xs, ys=ys, H=H, hole=hole, C=C, **more)
 
@@ -9469,7 +9645,8 @@ def creator_ground_load(track, full=False):
             g = (z['xs'], z['ys'], z['H'], z['hole'], z['C'])
             if 'wet' in z.files:
                 roof, wet = z['roof'], z['wet']
-                return g + (roof if roof.size else None, wet if wet.size else None)
+                clay = {'hide': z['clay_hide'], 'D': z['clay_D'], 'o': tuple(int(v) for v in z['clay_o'])} if 'clay_D' in z.files else None
+                return g + (roof if roof.size else None, wet if wet.size else None, clay)
             if not full:
                 return g
         if not os.path.exists(creator_path(track)):
@@ -9651,6 +9828,7 @@ def create_build(req):
     -> {report, road: [{file, id}], guide, exact, start, yaw, killz}
     pour « Créer le parcours » (page)."""
     track = req['track']
+    track_creator.CACHE_DIR = os.path.join(OUT_DIR, 'cache', 'creator_tex')   # textures et fondus deja calcules (2026-11-21)
     pts = req.get('points') or []
     if len(pts) < 8:
         raise ValueError('tracé trop court : roule un peu plus avec le paveur')
@@ -9692,10 +9870,11 @@ def create_build(req):
         prev = None
     route_changed = not prev or len(prev) != len(pts) or any(
         abs(float(a) - float(b)) > 1.0 for p, q in zip(prev, pts) for a, b in zip(p[:3], q[:3]))
-    json.dump({'points': pts, 'closed': bool(req.get('closed')), 'ground_z': ground_z, 'kit': kit, 'terrain': terrain,
-               'barriers': barriers, 'marks': marks, 'signs': req.get('signs') or {}, 'props': req.get('props') or [], 'waters': waters,
-               'water_falls': info['water_falls']},              # zones de chute de l'eau profonde (auto_falls)
-              open(creator_path(track), 'w'))
+    with open(creator_path(track), 'w') as f:                # json.dumps : encodeur en C (2026-11-21, vitesse)
+        f.write(json.dumps({'points': pts, 'closed': bool(req.get('closed')), 'ground_z': ground_z, 'kit': kit, 'terrain': terrain,
+                            'barriers': barriers, 'marks': marks, 'signs': req.get('signs') or {}, 'props': req.get('props') or [],
+                            'waters': waters, 'water_falls': info['water_falls']},   # zones de chute de l'eau profonde (auto_falls)
+                           separators=(',', ':')))
     # map vide : tout le decor et le sol d'origine retires, creation precedente supprimee ; wipe (« Repartir de
     # zéro ») : aussi tous les ajouts faits dans Edition (imports, objets de la bibliotheque, copies)
     progress.step('nouvelle map (vider la piste)', 0.05)
@@ -9713,7 +9892,18 @@ def create_build(req):
                       'move_away': [k for k, _, _ in MOVE_AWAY_GROUPS], 'no_measure': True,
                       'remove': [g['key'] for g in added_groups(track) if req.get('wipe') or g['key'].startswith(prefix)]})
     reseated = []
-    if not req.get('wipe'):
+    if req.get('wipe'):
+        # piste aleatoire « Retirer mes ajouts » (2026-11-23, « les objets de l'ancienne scene doivent etre supprimes ») :
+        # aussi les lumieres, les objets animes et les groupes d'objets poses pour l'ancienne piste
+        if read_lights(track):
+            write_lights(track, [])
+            reseated.append("lumières de l'ancienne piste retirées")
+        if animated_load(track):
+            animated_save({'track': track, 'items': []})
+            reseated.append("objets animés de l'ancienne piste retirés")
+        if os.path.exists(groups_path(track)):
+            os.remove(groups_path(track))
+    else:
         progress.step('ajouts d\'Édition reposés sur le nouveau sol', 0.3)
         reseated = creator_reseat(track, old_ground, info['_ground'], kept_crates)
     surf = {m: {'collision': s is not None, 'surface': s if s is not None else 'none'}
@@ -9745,7 +9935,7 @@ def create_build(req):
     items += sign_items
     with progress.span(0.85, 1.0, 'décor semé'):
         sown = place_library_many(track, items, 'creator')
-    road = [{'file': o['file'], 'id': o['id']} for o in route_objects(track)['objects']
+    road = [{'file': o['file'], 'id': o['id']} for o in route_objects(track, 'CreatorRoad')['objects']
             if 'CreatorRoad' in (o['name'] or '')]               # nom prefixe du lot : « Createur_CreatorRoad »
     if not road:
         raise ValueError('route générée introuvable dans le décor après l\'import')
@@ -10648,6 +10838,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, library_catalog())
             elif u.path == '/api/animated_catalog':          # objets animes du jeu (acteurs a skin)
                 self._send(200, animated_catalog())
+            elif u.path == '/api/decor_groups':              # groupes d'objets du decor (editeur seulement)
+                self._send(200, groups_load(parse_qs(u.query)['track'][0]))
             elif u.path == '/api/animated':                  # objets animes poses sur la piste
                 self._send(200, animated_load(parse_qs(u.query)['track'][0]))
             elif u.path == '/api/anim_list':                 # apercu anime : animations d'un acteur
@@ -10681,6 +10873,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, kart_texture(parse_qs(u.query)['ns'][0]), 'image/png')
             elif u.path == '/creator.js':                    # onglet Creation : paveur (module de la page)
                 self._send(200, open(os.path.join(HERE, 'creator.js'), 'rb').read(), 'text/javascript; charset=utf-8')
+            elif u.path == '/clay.js':                       # sol en pate a modeler (essai 2026-11-24)
+                self._send(200, open(os.path.join(HERE, 'clay.js'), 'rb').read(), 'text/javascript; charset=utf-8')
             elif u.path == '/api/route_start':               # depart propose : objet Start / Finish, sinon damier
                 self._send(200, route_start_guess(parse_qs(u.query)['track'][0]))
             elif u.path == '/api/music':                      # musique de la piste : etat
@@ -10800,6 +10994,7 @@ class Handler(BaseHTTPRequestHandler):
                       '/api/creator_props_apply': lambda: creator_props_apply(req) if req.get('dry')
                       else with_history(req['track'], 'décor de la Création appliqué', lambda: creator_props_apply(req)),
                       '/api/animated_save': lambda: animated_save(req),
+                      '/api/decor_groups': lambda: groups_save(req),
                       '/api/camera_settings': lambda: set_camera_settings(req) if 'values' in req
                       else {'values': camera_settings(req['track']), 'original': camera_original(req['track'])},
                       '/api/recolor': lambda: with_history(req['track'], 'couleur d\'un objet', lambda: recolor(req)),
@@ -10843,9 +11038,12 @@ class Handler(BaseHTTPRequestHandler):
                 # (recalcul de la collision ~5 s) partait sans le .hkx pas encore ecrit
                 with WRITE_LOCK:
                     progress.begin(self.PROGRESS_LABELS.get(self.path, 'Opération'))
+                    # piste generee d'une traite (pipeline, 2026-11-21) : pas de copie pour « Annuler » (nohist)
+                    _hist_local.skip = bool(req.get('nohist'))
                     try:
                         result = routes[self.path]()
                     finally:
+                        _hist_local.skip = False
                         progress.end()
                 self._send(200, result)
             else:
@@ -10910,6 +11108,7 @@ def clear_caches():
         if name.startswith('_') and (name.endswith('_cache') or name in ('_aggressive_ok', '_surface_params')) \
                 and isinstance(v, (dict, list)):
             v.clear()
+    pak_tool.invalidate_cache()          # (2026-11-21) lectures gardees et memoires liees a pak_tool.epoch perimees aussi
     with pak_tool._cache_lock:
         pak_tool._cache.clear()
     pak_tool._orig_cache.clear()

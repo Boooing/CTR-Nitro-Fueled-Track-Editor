@@ -13,6 +13,8 @@ from collections import defaultdict
 
 import numpy as np
 
+import clay_terrain
+
 from track_creator_extra import EXTRA as _EXTRA, HIDDEN as HIDDEN_MODELS, LABELS as _EXTRA_LABELS
 
 INCH = 39.37
@@ -1766,7 +1768,7 @@ def water_texture(size=512, kind='clear'):
     hi = np.clip((w - 0.9) * 3, 0, 1) * (0.4 if kind == 'mud' else 1.0)   # reflets
     rgb = np.stack([r + 0.5 * hi, g + 0.4 * hi, bl + 0.3 * hi], -1)
     buf = io.BytesIO()
-    Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8), 'RGB').save(buf, 'PNG')
+    Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8), 'RGB').save(buf, 'PNG', compress_level=1)
     return buf.getvalue()
 
 
@@ -1907,7 +1909,10 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
     # juste au-dessus de la route, sans collision (on roule sur la route dessous)
     if not gap[0]:
         ob.obj('CreatorStartLine', 'StartLine')
-        t3 = np.array([T[0, 0], T[0, 1], 0.0]) * (START_ROWS * START_CELL / 2)
+        # pente de la route au depart (2026-11-24 : damier horizontal, en l'air ou enterre dans une pente)
+        ia, ib = (len(C) - 1 if closed else 0), 1
+        sz = (road_z[ib] - road_z[ia]) / max(1e-6, float(np.linalg.norm(C[ib, :2] - C[ia, :2])))
+        t3 = np.array([T[0, 0], T[0, 1], sz]) * (START_ROWS * START_CELL / 2)
         lift = np.array([0.0, 0.0, START_LIFT])
         w = float(np.linalg.norm(left[0, :2] - right[0, :2])) / (2 * START_CELL)      # repetitions (2 cases) en largeur
         v = START_ROWS / 2
@@ -1939,6 +1944,9 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
     NAMES = [m[0] for m in MATS] + [_mix_name(*x) for x in mixes]
     per = max(1, int(round(GROUND_TILE / cell)))
     rep = K['ground_repeat']
+    # sol en pate (essai 2026-11-24) : la ou il a ete etire / creuse en volume, la pate remplace les cases du relief
+    clay = clay_terrain.clay_patch((terrain or {}).get('clay'), xs, ys, H)
+    clay_hide = clay['hide'] if clay else None
     used = set()
     tile = 0
     for ta in range(0, len(xs) - 1, per):
@@ -1951,7 +1959,8 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
             for m in np.unique(CM[ja:jb, ia:ib]):         # matieres presentes dans le carreau seulement (100+ peintures)
                 m = int(m)
                 name = NAMES[m]
-                cells = [(a, b) for b in range(ja, jb) for a in range(ia, ib) if CM[b, a] == m and not hole[b, a]]
+                cells = [(a, b) for b in range(ja, jb) for a in range(ia, ib) if CM[b, a] == m and not hole[b, a]
+                         and not (clay_hide is not None and clay_hide[b, a])]
                 if not cells:
                     continue
                 used.add(m)
@@ -1981,6 +1990,13 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
                     ids = [v(*corners[k]) if k2 is None else ve(corners[k], corners[k2], t) for k, k2, t in pts]
                     if len(ids) >= 3:
                         ob.poly(ids)
+
+    n_clay = 0
+    if clay is not None and len(clay['tris']):           # pate : memes matieres que le relief (texture, collision)
+        for a, b in np.unique(clay['cells'], axis=0):
+            used.add(int(CM[b, a]))
+        clay_terrain.emit(ob, clay, lambda a, b: NAMES[int(CM[b, a])], rep)
+        n_clay = int(len(clay['tris']))
 
     # eau des creux (outil du Relief « Remplir d'eau », 2026-11-12) : surface plane au niveau, sans collision
     n_water, water_falls, water_rep, water_kinds, wet = _water(ob, xs, ys, H, waters, hole, terrain, C)
@@ -2047,8 +2063,9 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
             'mix_surfaces': {_mix_name(*x): MATS[x[1] if x[2] > 2 else x[0]][3] for x in mix_used},
             'marks': mark_used, 'bridges': int(n_bridges), 'tunnel_cells': int(n_roof), 'jumps': int(np.count_nonzero(gap & ~np.roll(gap, 1))), 'walls_m': round(n_walls * STEP),
             'min_z': float(min(H.min(), road_z.min())) * INCH,
+            'clay_tris': n_clay,
             'waters': int(n_water), 'water_falls': water_falls, 'water_report': water_rep, 'water_kinds': sorted(water_kinds),
-            '_ground': (xs, ys, H, hole, C, roof, wet),                # sol genere (metres) : hauteur des objets semes
+            '_ground': (xs, ys, H, hole, C, roof, wet, clay),          # sol genere (metres) : hauteur des objets semes
             '_sign_spots': sign_spots(C, T, L, left, right, closed, gap)}   # panneaux de virage (create_build)
     return ob.text(MTL_NAME), mtl, info
 
@@ -2084,7 +2101,19 @@ def ground_height(ground, x, y):
     b = min(len(ys) - 2, int((my - ys[0]) // (ys[1] - ys[0])))
     if hole[b, a]:
         return None
-    return float(_mesh_height(xs, ys, H, mx, my)) * INCH
+    z = float(_mesh_height(xs, ys, H, mx, my))
+    clay = ground[7] if len(ground) > 7 else None
+    if clay is not None and clay['hide'][b, a] and clay_terrain.edited_at(clay, mx, my):   # pate : surface la plus proche de la hauteur de pose (ground[8], pouces)
+        hint = ground[8] / INCH if len(ground) > 8 and ground[8] is not None else z
+        zc = clay_terrain.surface_z(clay, xs, ys, H, mx, my, hint)
+        if zc is not None:
+            z = zc
+        # objet sans hauteur de pose sous de la matiere (tunnel, voute) : sur la surface du dessus
+        if not (len(ground) > 8 and ground[8] is not None) and clay_terrain.covered(clay, xs, ys, H, mx, my, z):
+            zt = clay_terrain.top_z(clay, xs, ys, H, mx, my)
+            if zt is not None:
+                z = zt
+    return z * INCH
 
 
 def foot_share(kind):
@@ -2179,6 +2208,7 @@ def props_items(kit, props, ground, dims):
     Chaque objet peut venir d'un autre theme (p['k'], sinon kit).
     dims(theme) -> {type: [{'r', 'zmin', 'zmax'} (metres) par modele]}. -> (items, nb ecartes)."""
     props = migrate_props(props, kit)                    # objets d'avant le reclassement du decor (2026-11-17)
+    ground0 = ground
     C = ground[4]
     roof = ground[5] if len(ground) > 5 else None
     xs, ys = ground[0], ground[1]
@@ -2206,6 +2236,12 @@ def props_items(kit, props, ground, dims):
         return bool(len(jj) and (np.hypot(ii + a0 - ci, jj + b0 - cj) * c <= rad).any())
     out, dropped = [], 0
     for p in props or []:
+        # pate (essai 2026-11-24) : chaque objet se pose sur la pate la plus proche de sa hauteur de pose (cz)
+        ground = ground0
+        if len(ground0) > 7 and ground0[7] is not None:
+            # centre : recherche complete (hauteur de pose, matiere au-dessus) une fois ; l'emprise suit cette hauteur
+            zc = ground_height(ground0[:8] + (p.get('cz'),), p['x'], p['y'])
+            ground = ground0[:8] + (zc if zc is not None else p.get('cz'),)
         if not p.get('road') and under_roof(p['x'], p['y']):
             dropped += 1
             continue
@@ -2327,6 +2363,48 @@ def _mix_noise(size):
     return _mix_noises[size]
 
 
+# cache des images calculees (2026-11-21, vitesse) : cle = empreinte des donnees d'entree (jamais perime), en memoire et,
+# si CACHE_DIR est donne (serveur : <sauvegardes>/cache/creator_tex), sur disque pour les sessions suivantes
+CACHE_DIR = None
+_img_cache = {}
+_IMG_CACHE_MAX = 400
+
+
+def _cache_key(*parts):
+    import hashlib
+    h = hashlib.sha1(b'v1')
+    for p in parts:
+        h.update(p if isinstance(p, (bytes, bytearray)) else repr(p).encode())
+        h.update(b'|')
+    return h.hexdigest()
+
+
+def _cache_get(key):
+    import os
+    hit = _img_cache.get(key)
+    if hit is None and CACHE_DIR:
+        f = os.path.join(CACHE_DIR, key + '.png')
+        if os.path.exists(f):
+            hit = open(f, 'rb').read()
+            _img_cache[key] = hit
+    return hit
+
+
+def _cache_put(key, data):
+    import os
+    if len(_img_cache) >= _IMG_CACHE_MAX:
+        _img_cache.pop(next(iter(_img_cache)))
+    _img_cache[key] = data
+    if CACHE_DIR:
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            tmp = os.path.join(CACHE_DIR, key + f'.tmp{os.getpid()}')
+            open(tmp, 'wb').write(data)
+            os.replace(tmp, os.path.join(CACHE_DIR, key + '.png'))
+        except OSError:
+            pass
+
+
 def mix_textures(textures, mixes):
     """Images de fondu : {'MixL_H_n.png': octets}. textures : {image: octets PNG} ; mixes : info['mixes']. Decoupe irreguliere et
     douce : 3 niveaux empiles passent de l'un a l'autre sans marche visible sur la grille de 8 m."""
@@ -2340,11 +2418,17 @@ def mix_textures(textures, mixes):
             cache[key] = np.asarray(im.resize((size, size), Image.BILINEAR) if size and im.size != (size, size) else im, np.float32)
         return cache[key]
     for name, lo, hi, level in mixes:
+        key = _cache_key('mix', 1024, level, textures[lo], textures[hi])   # memes images, meme niveau : meme fondu
+        hit = _cache_get(key)
+        if hit is not None:
+            out[name + '.png'] = hit
+            continue
         A = load(lo, 1024)
         k = np.clip((level / 4 - _mix_noise(A.shape[0])) / 0.8 + 0.5, 0, 1)[..., None]
         buf = io.BytesIO()
-        Image.fromarray((A * (1 - k) + load(hi, A.shape[0]) * k + 0.5).astype(np.uint8)).save(buf, 'PNG')
+        Image.fromarray((A * (1 - k) + load(hi, A.shape[0]) * k + 0.5).astype(np.uint8)).save(buf, 'PNG', compress_level=1)
         out[name + '.png'] = buf.getvalue()
+        _cache_put(key, out[name + '.png'])
     return out
 
 
@@ -2373,10 +2457,16 @@ def kit_textures(read, kit='sable', size=1024, used=None):
     out = {}
     extra = [(m[2], m[1], KITS[m[6]]['pak']) for m in paint_materials(kit)[len(K['materials']):] if m[0] in (used or ())]
     for logical, fname, pak in [(K['road'], 'road.png', K['pak'])] + [(tex, png, K['pak']) for _, png, tex, *_ in K['materials']] + extra:
-        rgba, _ = preview.decode_texture(read(logical, pak), max_size=size)
-        buf = io.BytesIO()
-        Image.fromarray(np.asarray(rgba)[..., :3].astype(np.uint8)).save(buf, 'PNG')
-        out[fname] = buf.getvalue()
+        raw = read(logical, pak)
+        key = _cache_key('kit', size, raw)                          # meme fichier du jeu : meme image decodee
+        hit = _cache_get(key)
+        if hit is None:
+            rgba, _ = preview.decode_texture(raw, max_size=size)
+            buf = io.BytesIO()
+            Image.fromarray(np.asarray(rgba)[..., :3].astype(np.uint8)).save(buf, 'PNG', compress_level=1)
+            hit = buf.getvalue()
+            _cache_put(key, hit)
+        out[fname] = hit
     # damier du depart (2 x 2 cases par repetition), dessine ici : aucun fichier du jeu
     cell = np.indices((2, 2)).sum(0) % 2
     img = (np.kron(cell, np.ones((64, 64)))[..., None].repeat(3, 2) * 225 + 18).astype(np.uint8)

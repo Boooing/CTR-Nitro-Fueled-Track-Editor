@@ -10,7 +10,64 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 
 ---
 
-## What's new in v0.7.5
+## What's new in v0.8
+
+### Modelling-clay ground: caves, tunnels and earth bridges
+- The ground of tracks built in the editor is now **modelling clay**: a real 3D volume, not just a height map.
+- New **✋ Stretch** tool (Relief): grab the clay and pull it sideways like dough. When it touches the other side, both parts merge into one block, so you can make **caves, arches and overhangs**.
+- **Raise, Dig, Flatten and Smooth** also work in 3D on stretched parts (walls, arches, cave roofs).
+- Scenery sits on the clay: on top of hills, never buried, never stuck between the two layers of a tunnel.
+- After digging, **pieces of clay that no longer touch the ground are removed automatically**.
+- The clay **can never be less than 15 m above the road**: anything placed or stretched there is cut back.
+- In the game, the track keeps its usual ground and the clay is added **only where you edited it**, with the same materials and collision.
+- **Random track**: new chip **Earth bridges and tunnels**:
+  - tunnels through hills on the road, with thick walls and a solid floor;
+  - **underground tunnels** (the road dives into a deep trench and the ground is put back over it);
+  - earth bridges and tunnels in the scenery;
+  - more relief overall.
+- The start line now follows the slope of the road.
+
+### Building
+- **New pieces**: ↩ **Hairpin**, 🎢 **Dip** and ➰ **Loop-over** (a 270° climb that passes over its own entry). Dips and hairpins can also come up in random tracks (new chips).
+- **Random track**:
+  - **second theme** (part of the lap painted with another theme's grounds and scenery);
+  - **🧹 Remove the old scene** (the previous map's scenery, lights, animated objects and groups);
+  - **🌦 Sky and weather** chosen from the code.
+- **↔ Repeat along the road** (object panel): N copies every X m, parallel to the road, set on the ground, in one undo step.
+- **Groups of scenery objects**: **🔗 Group** a selection. A click selects the whole group (Alt+click: one object), and groups are listed in **Scene › Groups**.
+- **Empty the map** can also empty the base.
+
+### In the 3D view
+- **Virtual tour**:
+  - the real kart of the game;
+  - a chase camera that never sinks into the ground at high speed, and no more jitter;
+  - respawn markers hidden;
+  - the Scene panel closed at start.
+- **Weather stays visible** while using the base tools (Road, Edges, Bridge…).
+- **Invisible walls are easier to work with**:
+  - a clear outline, with the part behind other objects shown faded;
+  - several selected walls stay visible (orange);
+  - no more red highlight drawn over everything when one wall is selected.
+- **Postcards**: no longer under the map or badly framed on large custom maps, and the previews are faster.
+
+### Faster
+- **Editor much more responsive with clay**: only the edited parts are drawn as clay (770,000 → 72,000 triangles on a random track).
+- Random track 10.9 s → 3.7 s; placing scenery on clay 4.3 s → 0.08 s (and 108 s → 0.7 s at generation).
+- **Saving and generation faster again**:
+  - collision encoder reworked (same files, built faster);
+  - textures of the themes and the list of game files cached;
+  - collision read once per generation.
+
+### Fewer antivirus false positives
+- The Windows app now carries **version details** (Properties › Details) and is never UPX-compressed.
+- Its launcher is compiled for this project instead of the generic one shared with many other programs.
+
+### Fixes
+- **Drop to ground (G)** on an invisible wall said "no ground under the selection".
+- The green start circle stayed visible after leaving the base tools.
+- The tour could stop after a few seconds the first time on a track.
+
+## What was new in v0.7.5
 
 ### Smaller history, same undo
 - **The save history (`out/editor/history`) is now stored compactly**: each file content is kept once, compressed, and every step only points to it. Undo, *Go back to this step* and *Remove a step* work as before. On a real set of 31 tracks: **11.3 GB shown / 3.9 GB on disk → 0.77 GB**.
@@ -278,6 +335,55 @@ Third-party: [three.js](https://threejs.org) (MIT, `ctr_tools/editor/vendor/thre
 Importe ta map (OBJ / COLLADA) ou **construis-la de zéro dans l'éditeur**, transforme-la en course jouable en quelques clics et ajoute-la au jeu comme **nouvelle piste** ou à la place d'une piste existante : IA, caisses, boosters, réapparitions, mini-carte, images de menu, ta propre musique, lumières et même téléporteurs.
 
 Ce dossier contient l'éditeur seul. **CTR Track Installer**, l'appli à part pour les joueurs, n'en fait pas partie.
+
+### Nouveautés de la v0.8
+
+- **Sol en pâte à modeler : caves, tunnels et ponts de terre**
+  - Le sol des pistes construites dans l'éditeur est maintenant un vrai volume 3D.
+  - Nouvel outil **✋ Étirer** (Relief) : on attrape la pâte et on la tire sur le côté. Au contact de l'autre bord, les deux parties fusionnent en un seul bloc, ce qui permet de faire des **caves, arches et surplombs**.
+  - **Monter, Creuser, Aplanir et Lisser** marchent aussi en 3D sur les parties étirées.
+  - Le décor se pose sur la pâte, en haut des collines, jamais enterré ni coincé entre deux couches d'un tunnel.
+  - Après un creusement, **les morceaux qui ne tiennent plus au sol sont retirés automatiquement**.
+  - La pâte **ne peut jamais se trouver à moins de 15 m au-dessus de la route**.
+  - En jeu, le sol habituel est gardé et la pâte ajoutée **seulement là où elle a été retouchée**, avec les mêmes matières et la même collision.
+  - **Piste aléatoire** : nouvelle puce **Ponts de terre et tunnels** :
+    - tunnels sur la route à travers des collines, parois épaisses et sol plein ;
+    - **tunnels souterrains** (la route plonge dans une tranchée, le terrain est remis par-dessus) ;
+    - ponts de terre et tunnels dans le décor ;
+    - plus de relief.
+  - Le damier de départ suit la pente.
+- **Construction**
+  - Nouvelles pièces **↩ Épingle**, **🎢 Plongeon**, **➰ Boucle par-dessus**. Plongeons et épingles aussi dans la piste aléatoire.
+  - Piste aléatoire :
+    - **deuxième thème** ;
+    - **🧹 Retirer l'ancienne scène** (décor, lumières, objets animés, groupes de la map d'avant) ;
+    - **🌦 Ciel et météo** tirés d'après le code.
+  - **↔ Répéter le long de la route** (N copies tous les X m, posées au sol, une seule étape d'annulation).
+  - **Groupes d'objets** : **🔗 Grouper**. Un clic prend tout le groupe (Alt+clic : un seul objet), et les groupes sont listés dans **Scène › Groupes**.
+  - **Vider la map** peut aussi vider la base.
+- **Vue 3D**
+  - **Visite virtuelle** :
+    - vrai kart du jeu ;
+    - caméra de poursuite qui ne rentre plus dans le sol, kart qui ne sautille plus ;
+    - points de réapparition cachés ;
+    - panneau Scène fermé au départ.
+  - **Météo visible** dans les outils de base.
+  - **Murs invisibles plus lisibles** :
+    - contour net, partie cachée derrière un objet montrée pâle ;
+    - plusieurs murs sélectionnés restent visibles (orange) ;
+    - plus de rouge par-dessus tout quand un mur est sélectionné.
+  - **Cartes postales** plus sous la map ni mal cadrées sur les grandes maps, aperçus plus rapides.
+- **Plus rapide**
+  - Éditeur bien plus réactif avec la pâte : seules les parties retouchées sont dessinées en pâte (770 000 → 72 000 triangles).
+  - Piste aléatoire 10,9 s → 3,7 s ; pose du décor sur la pâte 4,3 s → 0,08 s (108 s → 0,7 s à la génération).
+  - Enregistrement et génération encore accélérés (encodeur de collision revu, textures des thèmes et liste des fichiers du jeu gardées en cache).
+- **Moins de faux positifs d'antivirus**
+  - L'appli Windows porte ses informations de version et n'est plus jamais compressée avec UPX.
+  - Son lanceur est compilé pour le projet.
+- **Corrections**
+  - **Poser au sol (G)** sur un mur invisible disait « pas de sol sous la sélection ».
+  - Le cercle vert du départ restait affiché hors des outils de base.
+  - La visite pouvait s'arrêter au bout de quelques secondes la 1re fois.
 
 ### Nouveautés de la v0.7.5
 

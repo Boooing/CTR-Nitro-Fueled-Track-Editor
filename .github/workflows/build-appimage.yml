@@ -103,7 +103,7 @@ jobs:
           file "$APPIMAGE"
           # fichiers de l'editeur bien embarques (onglet Creation, traductions, page)
           "$APPIMAGE" --appimage-extract >/dev/null
-          for f in index.html i18n.js creator.js; do
+          for f in index.html i18n.js creator.js clay.js; do
             if ! find squashfs-root -name "$f" | grep -q .; then
               echo "ERROR: $f missing from the AppImage"
               exit 1

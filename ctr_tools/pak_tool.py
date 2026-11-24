@@ -272,6 +272,41 @@ def invalidate_cache(path=None):
             hit = _cache.pop(p, None)
             if hit:
                 hit[1].f.close()
+    with _rl_lock:                                   # lectures d'origine gardees (read_latest) : oubliees aussi
+        _views.clear(); _data.clear()
+        global _data_bytes, epoch
+        _data_bytes = 0
+        epoch += 1                                   # memoires des appelants (server.library_files...) perimees
+
+
+epoch = 0                                            # change a chaque ecriture d'archive (voir invalidate_cache)
+
+
+# lectures « d'origine » de read_latest (2026-11-21, vitesse : ~1 500 lectures et ~50 000 acces disque par generation) :
+# vue de chaque archive (archive ouverte, index, sauvegarde) gardee _VIEW_TTL s, contenus decompresses gardes (256 Mo au
+# plus) tant que l'archive ouverte est la meme. Toute ecriture d'archive passe par invalidate_cache, qui vide tout.
+import time as _time
+from collections import OrderedDict as _OD
+_VIEW_TTL = 2.0
+_DATA_MAX, _DATA_ONE = 256 << 20, 8 << 20
+_rl_lock = threading.Lock()
+_views, _data, _data_bytes = {}, _OD(), 0
+
+
+def _orig_view(p):
+    now = _time.monotonic()
+    with _rl_lock:
+        hit = _views.get(p)
+    if hit and now - hit[0] < _VIEW_TTL:
+        return hit[1]
+    v = None
+    if exists(p):
+        view = original_archive(p)
+        arc, index, lock = view if view else cached_archive(p)
+        v = (arc, index, lock, _backup_info(p) if not view else None)
+    with _rl_lock:
+        _views[p] = (now, v)
+    return v
 
 
 def archives_with(archives_dir, logical_name, track_pak=None):
@@ -344,6 +379,38 @@ def read_latest(archives_dir, logical_name, track_pak=None, original=True):
     ajoute par le mod n'existe donc pas dans cette vue.
     """
     names = ([] if original else [LAYER_ARCHIVE]) + list(UPDATE_ARCHIVES) + ([track_pak] if track_pak else [])
+    if original:                                     # chemin rapide : vues et contenus gardes (voir _orig_view)
+        global _data_bytes
+        low = logical_name.lower()
+        for n in names:
+            p = os.path.join(archives_dir, n)
+            v = _orig_view(p)
+            if v is None:
+                continue
+            arc, index, lock, info = v
+            e = index.get(low)
+            if e is None:
+                continue
+            saved = info['entries'].get(str(e.index)) if info and info.get('version', 1) == 1 else None
+            if saved:                                        # ancienne sauvegarde : entrees seulement
+                a, b, size, blk = struct.unpack('<IIII', bytes.fromhex(saved))
+                e = Entry(e.index, e.name, e.logical_name, a | ((b & 0xff) << 32), b >> 8, size,
+                          blk >> 28, blk & 0x0FFFFFFF, e.name_hash)
+            key = (p, id(arc), e.index, saved)
+            with _rl_lock:
+                hit = _data.get(key)
+                if hit is not None and hit[0] is arc:
+                    _data.move_to_end(key)
+                    return hit[1], p
+            with lock:                               # le fichier ouvert est partage entre threads
+                data = arc.read(e)
+            if len(data) <= _DATA_ONE:
+                with _rl_lock:
+                    _data[key] = (arc, data); _data_bytes += len(data)
+                    while _data_bytes > _DATA_MAX and _data:
+                        _data_bytes -= len(_data.popitem(last=False)[1][1])
+            return data, p
+        raise KeyError(logical_name)
     for n in names:
         p = os.path.join(archives_dir, n)
         if not exists(p):

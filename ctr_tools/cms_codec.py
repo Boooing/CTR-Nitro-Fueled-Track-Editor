@@ -139,6 +139,19 @@ def _aabb(points):
     return [min(c) for c in cols], [max(c) for c in cols]
 
 
+def _prim_box(v):
+    """_aabb(v) pour 3 ou 4 sommets, sans zip : memes min / max (memes elements, meme ordre) -> memes valeurs."""
+    a, b, c = v[0], v[1], v[2]
+    if len(v) == 3:
+        return ([min(a[0], b[0], c[0]), min(a[1], b[1], c[1]), min(a[2], b[2], c[2])],
+                [max(a[0], b[0], c[0]), max(a[1], b[1], c[1]), max(a[2], b[2], c[2])])
+    if len(v) == 4:
+        d = v[3]
+        return ([min(a[0], b[0], c[0], d[0]), min(a[1], b[1], c[1], d[1]), min(a[2], b[2], c[2], d[2])],
+                [max(a[0], b[0], c[0], d[0]), max(a[1], b[1], c[1], d[1]), max(a[2], b[2], c[2], d[2])])
+    return _aabb(v)
+
+
 def _union(boxes):
     return ([min(c) for c in zip(*[b[0] for b in boxes])], [max(c) for c in zip(*[b[1] for b in boxes])])
 
@@ -168,11 +181,12 @@ def _section_cut(n, cap=MAX_PRIMS):
     return (k // 2) * cap if k >= 2 else n // 2
 
 
-def _sections(prims, pkeys, box_of_prim, cap, full=False):
+def _sections(prims, pkeys, box_of_prim, cap, full=False, centers=None):
     """Decoupe spatiale jusqu'a `cap` primitives et MAX_VERTS sommets par section. full : sections pleines (moins
     nombreuses mais plus etendues, donc sommets compresses un peu moins precis : ~2,2 cm au lieu de ~1,2 sur la route)."""
     groups, stack = [], [list(range(len(prims)))]
-    centers = [_center(box_of_prim(i)) for i in range(len(prims))]
+    if centers is None:
+        centers = [_center(box_of_prim(i)) for i in range(len(prims))]
     C = None
     if len(prims) >= BIG_SPLIT:
         import numpy as np
@@ -198,7 +212,7 @@ def _sections(prims, pkeys, box_of_prim, cap, full=False):
 
 
 # gros groupes (debut du decoupage d'une grande carte) : meme coupe que _split, en numpy (2026-11-17)
-BIG_SPLIT = 4096
+BIG_SPLIT = 256
 
 
 def _split_np(items, C, h=None):
@@ -217,29 +231,40 @@ def _split_np(items, C, h=None):
 
 
 def _build_tree(leaves, box_of, root_box, node_size, encode_leaf, encode_internal):
-    """Arbre binaire en profondeur : gauche = i+1, droite = i + 2*(feuilles a gauche). Renvoie (octets, {feuille: indice})."""
+    """Arbre binaire en profondeur : gauche = i+1, droite = i + 2*(feuilles a gauche). Renvoie (octets, {feuille: indice}).
+    (essai 2026-11-21) deux passes : 1) coupes (memes que l'ancienne version : elles ne dependent que des centres) et
+    boite de chaque noeud tiree de ses deux enfants (avant : union de toutes ses feuilles, recomptee a chaque niveau) ;
+    2) noeuds ecrits dans le meme ordre. Memes valeurs min / max -> memes quartets, memes octets."""
     nodes, where = [], {}
     boxes = {i: box_of(i) for i in leaves}                    # boites et centres calcules une seule fois
-    box_of = boxes.__getitem__
+    box_get = boxes.__getitem__
     center_of = {i: _center(b) for i, b in boxes.items()}.__getitem__
 
-    def rec(items, parent_box, is_root):
-        box = _union([box_of(i) for i in items])
+    def build(items):
+        if len(items) == 1:
+            return (items[0], None, None, boxes[items[0]], 1)
+        left, right = _split(items, box_get, center_of=center_of)
+        L, R = build(left), build(right)
+        (l0, l1), (r0, r1) = L[3], R[3]
+        box = ([l0[0] if l0[0] <= r0[0] else r0[0], l0[1] if l0[1] <= r0[1] else r0[1], l0[2] if l0[2] <= r0[2] else r0[2]],
+               [l1[0] if l1[0] >= r1[0] else r1[0], l1[1] if l1[1] >= r1[1] else r1[1], l1[2] if l1[2] >= r1[2] else r1[2]])
+        return (None, L, R, box, len(left))
+
+    def emit(node, parent_box, is_root):
         if is_root:
             q, dec = b'\0\0\0', parent_box
         else:
-            q, dec = _quant_bounds(box, parent_box)
+            q, dec = _quant_bounds(node[3], parent_box)
         idx = len(nodes)
         nodes.append(None)
-        if len(items) == 1:
-            nodes[idx] = q + encode_leaf(items[0])
-            where[items[0]] = idx
+        if node[0] is not None:
+            nodes[idx] = q + encode_leaf(node[0])
+            where[node[0]] = idx
             return
-        left, right = _split(items, box_of, center_of=center_of)
-        rec(left, dec, False)
-        nodes[idx] = q + encode_internal(len(left))    # enfant droit a i + 2*len(left)
-        rec(right, dec, False)
-    rec(list(leaves), root_box, True)
+        emit(node[1], dec, False)
+        nodes[idx] = q + encode_internal(node[4])    # enfant droit a i + 2*len(left)
+        emit(node[2], dec, False)
+    emit(build(list(leaves)), root_box, True)
     return b''.join(nodes), where
 
 
@@ -378,10 +403,11 @@ def mesh_key(mesh):
     from array import array
     h = hashlib.blake2b(digest_size=20)
     h.update(struct.pack('<d', float(mesh.radius)))
-    coords, meta = array('d'), array('i')
-    for p in mesh.prims:
-        coords.extend(c for v in p.verts for c in v)
-        meta.extend((len(p.verts), int(p.value), int(bool(p.flat)), int(bool(p.interior[0])), int(bool(p.interior[1]))))
+    # (2026-11-21) memes nombres dans le meme ordre, assembles en une fois (avant : un extend par primitive) -> memes octets
+    prims = mesh.prims
+    coords = array('d', [c for p in prims for v in p.verts for c in v])
+    meta = array('i', [x for p in prims for x in (len(p.verts), int(p.value), int(bool(p.flat)),
+                                                     int(bool(p.interior[0])), int(bool(p.interior[1])))])
     h.update(coords.tobytes())
     h.update(meta.tobytes())
     return h.hexdigest()
@@ -405,24 +431,33 @@ def encode_mesh(mesh):
 def _encode_mesh(mesh):
     """Encodage complet d'un Mesh (voir encode_mesh)."""
     prims = mesh.prims
-    allv = [v for p in prims for v in p.verts]
-    dlo, dhi = _aabb(allv)
+    boxes = [_prim_box(p.verts) for p in prims]
+    box_of_prim = boxes.__getitem__
+    # domaine tire des boites (min des min, max des max) : meme 1re valeur rencontree dans le meme ordre que _aabb(tous
+    # les sommets), donc memes valeurs (zero signe compris)
+    dlo = [min(c) for c in zip(*[b[0] for b in boxes])]
+    dhi = [max(c) for c in zip(*[b[1] for b in boxes])]
     ext = [max(dhi[k] - dlo[k], 1e-6) for k in range(3)]
-    box_of_prim = [_aabb(p.verts) for p in prims].__getitem__
+    centers = [[(l[0] + h[0]) / 2, (l[1] + h[1]) / 2, (l[2] + h[2]) / 2] for l, h in boxes]   # = _center
 
     # 1) sections : decoupe spatiale jusqu'a MAX_PRIMS primitives et MAX_VERTS sommets
     progress.step(f'encodage de la collision : découpage de {len(prims)} primitives')
 
+    kcache = {}                                  # cle d'un sommet calculee une fois (memes arrondis)
+
     def vkey(v):
-        return (round(v[0], 4), round(v[1], 4), round(v[2], 4))
+        k = kcache.get(v)
+        if k is None:
+            k = kcache[v] = (round(v[0], 4), round(v[1], 4), round(v[2], 4))
+        return k
     pkeys = [[vkey(v) for v in p.verts] for p in prims]
-    groups = _sections(prims, pkeys, box_of_prim, MAX_PRIMS)
+    groups = _sections(prims, pkeys, box_of_prim, MAX_PRIMS, centers=centers)
     # carte enorme (2026-11-07, T901 : 32 791 sections) : sections pleines, puis de 127 primitives (maximum des cles)
     for cap in (MAX_PRIMS, 127):
         if len(groups) <= 0x7FFF:
             break
         progress.step(f'encodage de la collision : {len(groups)} sections, nouveau découpage plus serré')
-        groups = _sections(prims, pkeys, box_of_prim, cap, full=True)
+        groups = _sections(prims, pkeys, box_of_prim, cap, full=True, centers=centers)
     # 2) sommets partages = utilises par plusieurs sections (evite les fissures entre sections)
     users = {}
     for si, g in enumerate(groups):
@@ -472,14 +507,18 @@ def _encode_mesh(mesh):
         packed_bin += r['packed']; shidx_bin += r['shidx']; prim_bin += r['prims']; runs_bin += r['runs']
         for p_local, i in enumerate(g):
             p = prims[i]
+            quad = len(p.verts) == 4                    # = p.is_quad (propriete appelee 3 fois par primitive)
             key = si << 8 | p_local << 1
-            n_tris += 2 if p.is_quad else 1
-            max_key = max(max_key, key | (1 if p.is_quad else 0))
+            n_tris += 2 if quad else 1
+            k1 = key | 1 if quad else key
+            if k1 > max_key:
+                max_key = k1
             if p.flat:
                 flat_bits.add(key >> 1)
-            if p.interior[0]:
+            inter = p.interior
+            if inter[0]:
                 int_bits.add(key)
-            if p.is_quad and p.interior[1]:
+            if quad and inter[1]:
                 int_bits.add(key | 1)
         sec_trees.append(r['tree'])
         sections.append({'lo': r['lo'], 'hi': r['hi'], 'codec': r['codec'], 'fp': first_packed,

@@ -9,12 +9,22 @@ Outils dans un environnement a part (.build_venv a la racine du projet), cree au
     set PIP_USE_FEATURE=truststore        (certificats de Windows : un antivirus qui filtre le HTTPS bloquait pip)
     .build_venv\\Scripts\\python -m pip install pyinstaller PySide6-Essentials PySide6-WebEngine numpy pillow
 Fenetre : Qt WebEngine (Chromium embarque, plus besoin d'Edge WebView2 sur le PC).
-Fichiers embarques : index.html, i18n.js, vendor/three (editeur hors ligne), schema/ctr_meta.json (format IGZ).
+Fichiers embarques : index.html, i18n.js, creator.js, clay.js, vendor/three (editeur hors ligne), schema/ctr_meta.json (format IGZ).
 Icone : crash-team-racing-nitro-fueled_j4g2.jpg (racine du projet) s'il existe, fond blanc rendu transparent ;
 sinon drapeau a damier dessine.
 Sauvegardes : out/editor a cote de l'exe, ou dans un dossier parent qui en a deja (voir app.py).
 Le contenu du dossier de sortie autre que l'exe et _internal (ctr_editor_config.json...) est conserve.
+
+Moins de faux positifs d'antivirus (2026-11-23) :
+  - fiche de version Windows (produit, version, description : Proprietes > Details de l'exe) ;
+  - --noupx : jamais de compression UPX (souvent signalee), meme si upx est installe ;
+  - lanceur PyInstaller recompile sur ce PC (empreinte propre, pas celle partagee avec des malwares) :
+        python ctr_tools/editor/build_exe.py --bootloader
+    reinstalle PyInstaller depuis ses sources dans .build_venv en compilant le lanceur (outils C++ de Visual Studio
+    Build Tools necessaires), sans construire l'exe. A refaire seulement apres une mise a jour de PyInstaller.
+    Le script affiche a chaque construction si le lanceur est celui d'origine ou recompile.
 """
+import hashlib
 import os
 import shutil
 import subprocess
@@ -95,23 +105,85 @@ def prune_qt(internal):
                 os.remove(os.path.join(loc, f))
 
 
+# empreinte du lanceur sans console livre par pip (PyInstaller 6.22.3) : lanceur d'origine, pas recompile
+STOCK_RUNW = {'2291f269c3a3804fde1079462239e09a8b32fffbeeaa8f628a531faf5be77d41'}
+
+
+def write_version_file(path):
+    """Fiche de version Windows de l'exe (un exe sans aucune info parait plus suspect aux antivirus)."""
+    import re
+    src = open(os.path.join(HERE, 'updater.py'), encoding='utf-8').read()
+    ver = re.search(r"^VERSION = '([^']+)'", src, re.M).group(1)
+    repo = re.search(r"^REPO = '([^']+)'", src, re.M).group(1)
+    nums = [int(x) for x in ver.split('.') if x.isdigit()][:4]
+    nums += [0] * (4 - len(nums))
+    t = tuple(nums)
+    v = ver
+    txt = f"""VSVersionInfo(
+  ffi=FixedFileInfo(filevers={t}, prodvers={t}, mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0,
+                    date=(0, 0)),
+  kids=[
+    StringFileInfo([StringTable('040C04B0', [
+      StringStruct('CompanyName', 'CTR Nitro-Fueled Track Editor (open source)'),
+      StringStruct('FileDescription', 'CTR Nitro-Fueled Track Editor'),
+      StringStruct('FileVersion', '{v}'),
+      StringStruct('InternalName', 'CTR Track Editor'),
+      StringStruct('LegalCopyright', 'Open source - github.com/{repo}'),
+      StringStruct('OriginalFilename', '{NAME}.exe'),
+      StringStruct('ProductName', 'CTR Nitro-Fueled Track Editor'),
+      StringStruct('ProductVersion', '{v}')])]),
+    VarFileInfo([VarStruct('Translation', [0x040C, 1200])])
+  ]
+)
+"""
+    open(path, 'w', encoding='utf-8').write(txt)
+
+
+def bootloader_state(py):
+    """'recompile' / 'origine' / '?' selon l'empreinte de runw.exe dans l'environnement de construction."""
+    out = subprocess.run([py, '-c', 'import PyInstaller, os; print(os.path.dirname(PyInstaller.__file__))'],
+                         capture_output=True, text=True).stdout.strip()
+    f = os.path.join(out, 'bootloader', 'Windows-64bit-intel', 'runw.exe')
+    if not os.path.exists(f):
+        return '?'
+    h = hashlib.sha256(open(f, 'rb').read()).hexdigest()
+    return 'origine' if h in STOCK_RUNW else 'recompile'
+
+
+def rebuild_bootloader(py):
+    """Reinstalle PyInstaller (meme version) depuis ses sources en compilant le lanceur sur ce PC."""
+    ver = subprocess.run([py, '-c', 'import PyInstaller; print(PyInstaller.__version__)'],
+                         capture_output=True, text=True).stdout.strip()
+    env = dict(os.environ, PYINSTALLER_COMPILE_BOOTLOADER='1', PIP_USE_FEATURE='truststore')
+    subprocess.check_call([py, '-m', 'pip', 'install', '--force-reinstall', '--no-deps', '--no-cache-dir',
+                           '--no-binary', 'pyinstaller', f'pyinstaller=={ver}'], env=env)
+    print('lanceur PyInstaller :', bootloader_state(py))
+
+
 def main():
     global APP_DIR
+    if '--bootloader' in sys.argv:
+        rebuild_bootloader(VENV_PY if os.path.exists(VENV_PY) else sys.executable)
+        return
     if len(sys.argv) > 1:
         APP_DIR = os.path.abspath(sys.argv[1])
     py = VENV_PY if os.path.exists(VENV_PY) else sys.executable
     os.makedirs(BUILD, exist_ok=True)
     icon = os.path.join(BUILD, 'ctr_editor.ico')
     make_icon(icon)
+    vfile = os.path.join(BUILD, 'version_info.txt')
+    write_version_file(vfile)
+    print('lanceur PyInstaller :', bootloader_state(py), '(python build_exe.py --bootloader pour le recompiler)')
     dist = os.path.join(BUILD, 'dist')
     sep = os.pathsep
     cmd = [py, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--windowed', '--name', NAME,
-           '--icon', icon, '--distpath', dist, '--workpath', os.path.join(BUILD, 'work'), '--specpath', BUILD,
+           '--icon', icon, '--version-file', vfile, '--noupx', '--distpath', dist, '--workpath', os.path.join(BUILD, 'work'), '--specpath', BUILD,
            '--paths', TOOLS, '--paths', HERE,
            '--add-data', f'{os.path.join(TOOLS, "schema")}{sep}schema',
            '--add-data', f'{os.path.join(HERE, "index.html")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "i18n.js")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "creator.js")}{sep}.',
+           '--add-data', f'{os.path.join(HERE, "clay.js")}{sep}.',          # sol en pate a modeler (2026-11-24)
            '--add-data', f'{os.path.join(HERE, "vendor")}{sep}vendor',
            '--hidden-import', 'server', '--hidden-import', 'updater', '--hidden-import', 'PySide6.QtWebEngineWidgets',
            '--exclude-module', 'webview',

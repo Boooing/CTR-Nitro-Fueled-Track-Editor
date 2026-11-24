@@ -158,10 +158,23 @@ def available(archives, logical, track_pak):
     return logical.lower() in idx
 
 
+_find_memo = {}       # (archives, fichier, preferees) -> (pak_tool.epoch, archive) : 2026-11-21, vitesse (~1 300 appels / generation)
+
+
 def find_pak(archives, logical, prefer=()):
     """Archive de piste qui contient le fichier d'origine (les archives preferees d'abord), sinon None. Une archive
     installee contient aussi des copies d'objets d'autres pistes, absentes de sa version d'origine, celle que lit
-    read_latest : elles ne comptent pas."""
+    read_latest : elles ne comptent pas. Reponse gardee tant qu'aucune archive n'est reecrite (pak_tool.epoch)."""
+    key = (archives, logical.lower(), tuple(prefer))
+    hit = _find_memo.get(key)
+    if hit and hit[0] == pak_tool.epoch:
+        return hit[1]
+    res = _find_pak(archives, logical, prefer)
+    _find_memo[key] = (pak_tool.epoch, res)
+    return res
+
+
+def _find_pak(archives, logical, prefer=()):
     for pak in list(prefer) + track_paks(archives):
         p = os.path.join(archives, pak)
         if not pak_tool.exists(p):

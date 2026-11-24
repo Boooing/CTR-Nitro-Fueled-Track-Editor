@@ -517,6 +517,7 @@
   <select id="tspeed" title="Vitesse (↑ ↓)"><option value="0.5">×0,5</option><option value="1" selected>×1</option><option value="2">×2</option><option value="4">×4</option></select>
   <input type="range" id="tpos" min="0" max="1000" value="0" title="Position sur le tour (← →)">
   <span class="tinfo" id="tinfo"></span>
+  <label title="Un kart roule sur la ligne de course, la caméra le suit (décoché : vue à hauteur de pilote)"><input type="checkbox" id="tkart" checked> Kart</label>
   <label><input type="checkbox" id="tdecor" checked> Décor</label>
   <label><input type="checkbox" id="tcol"> Collision</label>
   <label><input type="checkbox" id="tmarks"> Repères</label>
@@ -1052,7 +1053,7 @@ function instPrepare() {
   if (shown) {
     const sel = new Set(dMulti), held = gizmo.object;
     for (const m of decorGroup.children) {
-      if (!m.isMesh || !m.visible || m === held || sel.has(m) || m.userData.deleted) continue;
+      if (!m.isMesh || !m.visible || m === held || sel.has(m) || m.userData.deleted || m.userData.obj?.invisible) continue;   // murs : contour a eux
       const k = instKey(m);
       let g = groups.get(k); if (!g) groups.set(k, g = []);
       g.push(m);
@@ -1089,7 +1090,11 @@ const markers = new THREE.Group(); scene.add(markers);
 // (ils seront refaits par la generation) ; caisses et boosters restent
 let raceHiddenByBase = false;
 const routeShown = () => $('vroute').checked && !raceHiddenByBase;   // Affichage › Parcours / splines IA
-const itemsShown = () => $('vobjects').checked;           // Affichage › Objets (caisses, fruits, boosters)
+// freshHidden (2026-11-21) : piste aleatoire pas encore generee qui retirera l'ancienne scene (caisses, boosters, ajouts
+// d'Edition) : ils ne sont plus montres dans l'apercu (« les anciens decors sont toujours la »)
+let freshHidden = false;
+const itemsShown = () => $('vobjects').checked && !freshHidden;   // Affichage › Objets (caisses, fruits, boosters)
+const liveOld = a => freshHidden ? [] : a;                // elements de l'ancienne scene (vides tant qu'elle sera retiree)
 const pointGeo = new THREE.SphereGeometry(1, 12, 8);
 const byName = n => splines.find(s => s.name === n);
 const colorOf = s => s.isNew ? COLORS.new : s.shortcut ? COLORS.shortcut : COLORS[s.kind];
@@ -1329,9 +1334,10 @@ function renderCrateMarkers() {
 // hauteur du sol (collision affichee) sous (x, y), le niveau le plus proche de zHint (ponts, sauts)
 // = la surface la plus HAUTE qui ne depasse pas zHint de plus de 300 po : le dessus de la route, pas un niveau enfoui
 // dessous (sable 1 m sous la route de Mario Circuit 3 : plaque de booster invisible) ; un pont plus haut est ignore
+// apercu de la base (pas encore generee) : son sol et sa route, pas l'ancienne collision
+const groundTargets = () => basePreview ? creator.surfaces() : colMesh ? [colMesh] : [];
 function groundZ(x, y, zHint) {
-  // apercu de la base (pas encore generee) : son sol et sa route, pas l'ancienne collision
-  const targets = basePreview ? creator.surfaces() : colMesh ? [colMesh] : [];
+  const targets = groundTargets();
   if (!targets.length) return null;
   const rc = new THREE.Raycaster(new THREE.Vector3(x, y, (zHint ?? 0) + 3000), new THREE.Vector3(0, 0, -1));
   const hits = rc.intersectObjects(targets, false);               // du plus haut au plus bas
@@ -2784,6 +2790,14 @@ renderer.domElement.addEventListener('pointerup', e => {
   if (hit || box) { setContext('race'); select((hit || box).object); return; }
   if (dHit || mode === 'decor') {
     setContext('decor'); if (lightSel != null) selectLight(null);
+    const grp = dHit && !e.altKey ? groupMeshesOf(dHit.object) : null;     // objet groupe : tout le groupe (Alt : seul)
+    if (grp && grp.length > 1) {
+      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+        const on = grp.every(m => dMulti.includes(m));
+        setDecorSelection(on ? dMulti.filter(m => !grp.includes(m)) : [...new Set([...dMulti, ...grp])]);
+      } else setDecorSelection(grp);
+      return;
+    }
     selectDecor(dHit ? dHit.object : null, e.shiftKey || e.ctrlKey || e.metaKey); return;
   }
   select(null);
@@ -4143,6 +4157,7 @@ async function undo() {
     await loadTrack(track, true);
     await loadDecor(true, false);
     gizmo.detach();
+    await reloadBase();
     status(`Enregistrement « ${r.undone} » annulé — ${r.remaining} autre(s) annulable(s). Réinstalle pour l'appliquer au jeu.`, 'ok');
   } catch (e) { status('Erreur : ' + e.message, 'err'); }
 }
@@ -4165,6 +4180,14 @@ async function reloadAfterHistory() {
   await loadTrack(track, true);
   await loadDecor(true, false);
   gizmo.detach();
+  await reloadBase();
+}
+// base des outils de creation relue (son brouillon a pu etre remis par l'historique : « Vider la map » annule, 2026-11-20)
+async function reloadBase() {
+  if (!creator || creator.active) return;
+  creator.forget();
+  try { await creator.loadQuiet(); } catch (e) { /* apercu facultatif */ }
+  setBasePreview(true, true);
 }
 // choix pour l'etape i : 'back' (retour a l'etat d'avant, les suivantes annulees) ou 'only' (cette etape seule)
 function historyChoice(e, later) {
@@ -4295,6 +4318,26 @@ function textureMaterial({ ns, decal }) {
 }
 // mur invisible : violet translucide (rien n'est affiche en jeu)
 const wallMat = new THREE.MeshBasicMaterial({ color: 0xc040ff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
+// 2026-11-23 (« transparents, on ne sait pas s'ils passent devant ou derriere un objet ») : contour net, cache par ce qui
+// est devant, et partie cachee derriere un objet montree a peine (depthFunc GreaterDepth) -> devant = plein, derriere = pale.
+// Selectionne : orange translucide des deux cotes (selMat, opaque et face avant seule, les rendait invisibles)
+const wallEdgeMat = new THREE.LineBasicMaterial({ color: 0xe9b8ff, transparent: true, opacity: 0.95, depthWrite: false });
+const wallXrayMat = new THREE.MeshBasicMaterial({ color: 0xc040ff, transparent: true, opacity: 0.1, side: THREE.DoubleSide,
+                                                  depthWrite: false, depthFunc: THREE.GreaterDepth });
+const selWallMat = new THREE.MeshBasicMaterial({ color: 0xffa726, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false });
+const wallEdgeGeo = new WeakMap();
+function syncWallFx(m) {
+  const want = !!m.userData.obj?.invisible, fx = m.userData.wallFx;
+  if (fx && (!want || fx.geo !== m.geometry)) { fx.edges.removeFromParent(); fx.xray.removeFromParent(); m.userData.wallFx = null; }
+  if (!want || m.userData.wallFx) return;
+  let eg = wallEdgeGeo.get(m.geometry);
+  if (!eg) { eg = new THREE.EdgesGeometry(m.geometry, 25); wallEdgeGeo.set(m.geometry, eg); }
+  const edges = new THREE.LineSegments(eg, wallEdgeMat), xray = new THREE.Mesh(m.geometry, wallXrayMat);
+  for (const o of [edges, xray]) { o.raycast = () => {}; o.userData.wallFx = true; m.add(o); }
+  edges.renderOrder = 3; xray.renderOrder = 2;
+  m.userData.wallFx = { geo: m.geometry, edges, xray };
+}
+const selMaterial = m => m.userData.obj?.invisible ? selWallMat : selMat;
 let showWalls = true;
 // texture lumineuse (clic droit > Texture lumineuse) : brille par elle-meme quand les lumieres sont affichees
 const glowMatCache = {};
@@ -4306,12 +4349,13 @@ function glowMaterial(key) {
     return m;
   })();
 }
-const lightsShown = () => $('dltvis').checked;
+const lightsShown = () => $('dltvis').checked && !freshHidden;   // piste aleatoire « Retirer mes ajouts » : cachees
 // modeles importes : le jeu n'affiche que la face avant des triangles (panneau vu de dos : invisible) -> meme rendu
 // ici, sauf s'ils sont « visibles des deux cotes » (faces doublees a la construction)
 const frontMats = new WeakMap();
 const frontOnly = mat => frontMats.get(mat) || (frontMats.set(mat, Object.assign(mat.clone(), { side: THREE.FrontSide })), frontMats.get(mat));
 function baseMaterial(m) {
+  syncWallFx(m);                                         // contour des murs invisibles (ajoute / retire)
   if (m.userData.obj.invisible) return wallMat;
   const g = m.geometry, f = fileMats[m.userData.file];
   if (!showTextures || !g.userData.texKeys?.length) return f;
@@ -4319,7 +4363,7 @@ function baseMaterial(m) {
   return [f, ...g.userData.texKeys.map(k => { const t = (m.userData.obj.glow && lightsShown() ? glowMaterial : textureMaterial)(k); return one ? frontOnly(t) : t; })];
 }
 function refreshMaterials() {
-  for (const m of allDecorMeshes) m.material = dMulti.includes(m) ? selMat : baseMaterial(m);
+  for (const m of allDecorMeshes) m.material = dMulti.includes(m) ? selMaterial(m) : baseMaterial(m);
   if (tintEdit) tintPreview();                           // colorisation en cours : son apercu reste affiche
 }
 $('dtextures').onchange = e => { showTextures = e.target.checked; refreshMaterials(); };
@@ -4328,7 +4372,7 @@ $('dcolvis').onchange = e => { if (colMesh) colMesh.visible = e.target.checked; 
 async function reloadModelGeometry(model) {
   delete geoCache[model];
   const g = await getGeometry(model);
-  for (const m of allDecorMeshes) if (m.userData.obj.model === model) { m.geometry = g; m.material = dMulti.includes(m) ? selMat : baseMaterial(m); }
+  for (const m of allDecorMeshes) if (m.userData.obj.model === model) { m.geometry = g; m.material = dMulti.includes(m) ? selMaterial(m) : baseMaterial(m); syncWallFx(m); }
 }
 function editsOf(file) { return dEdits[file] ??= { moves: {}, duplicates: [], deleted: [] }; }
 // ---- sol gris (collision) tenu a jour ----------------------------------------------------------
@@ -4459,6 +4503,7 @@ async function loadDecor(keepCamera, refreshCol = !!keepCamera) {
   decor = got;
   setTimeout(() => refreshLoadChip(true), 300);              // decor relu (ajout, enregistrement) : jauge memoire a jour
   decorGroup.clear(); allDecorMeshes.clear(); dEdits = {}; dOps = []; selectDecor(null);
+  dGroups = []; dGroupMesh = []; meshGroup.clear();
   scThumbs.clear(); scThumbQueue.length = 0;
   lights = decor.lights || []; lightPresets = decor.light_presets || {}; lightsLoaded = JSON.stringify(lights);
   lightSel = null; renderLights();
@@ -4475,6 +4520,8 @@ async function loadDecor(keepCamera, refreshCol = !!keepCamera) {
   for (const f of decor.files)
     for (const o of f.objects) { const g = await getGeometry(o.model); if (stale()) return false; makeDecorMesh(g, o, f.file); }
   applyFileVisibility(); renderDecorPanel();
+  await loadGroups();                                    // groupes d'objets (2026-11-23)
+  if (stale()) return false;
   resetHistory('decor');
   const n = decor.files.reduce((a, f) => a + f.objects.length, 0);
   status(`Décor : ${n} objets, ${models.length} modèles, ${decor.files.length} fichiers` + (decor.files.some(f => f.saved) ? ' (versions enregistrées)' : ''), 'ok');
@@ -4625,6 +4672,91 @@ function renderDecorPanel() {
 }
 const linkMat = new THREE.MeshBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthTest: false });
 // Selection : dMulti = objets selectionnes ; dSelected = l'objet quand il est seul (null si plusieurs).
+// ---- groupes d'objets du decor (2026-11-23, demande utilisateur ; editeur seulement, rien ne change en jeu) ----
+// Clic sur un objet groupe : tout le groupe (Alt+clic : l'objet seul). Liste Scene > Groupes. Enregistres dans
+// out/editor/<piste>_groups.json ; membre retrouve par son nom dans son fichier, sinon modele + position (copie pas
+// encore enregistree : l'etat du groupe est reecrit juste avant chaque enregistrement du decor).
+let dGroups = [], dGroupMesh = [];
+const meshGroup = new Map();
+function resolveGroups() {
+  meshGroup.clear();
+  const live = decorGroup.children.filter(m => m.userData.obj && !m.userData.deleted), byName = new Map(), used = new Set();
+  for (const m of live) if (!m.userData.isNew && m.userData.obj.name) {
+    const k = m.userData.file + '|' + m.userData.obj.name; if (!byName.has(k)) byName.set(k, []); byName.get(k).push(m);
+  }
+  dGroupMesh = dGroups.map((g, gi) => {
+    const out = [];
+    for (const mb of g.members) {
+      const P = new THREE.Vector3(...mb.pos);
+      let cands = mb.name ? byName.get(mb.file + '|' + mb.name) || [] : [], maxD = Infinity;
+      if (!cands.length) { cands = live.filter(m => m.userData.obj.model === mb.model); maxD = 60; }
+      let best = null, bd = maxD;
+      for (const m of cands) { if (used.has(m)) continue; const dd = m.position.distanceTo(P); if (dd < bd) { bd = dd; best = m; } }
+      if (best) { used.add(best); out.push(best); meshGroup.set(best, gi); }
+    }
+    return out;
+  });
+}
+const groupMember = m => ({ file: m.userData.file, name: m.userData.isNew ? null : (m.userData.obj.name || null), model: m.userData.obj.model,
+                            pos: m.position.toArray().map(v => +v.toFixed(2)) });
+async function saveGroups() {
+  dGroups = dGroups.map((g, i) => ({ name: g.name, members: (dGroupMesh[i] || []).filter(m => !m.userData.deleted).map(groupMember) }))
+                   .filter(g => g.members.length >= 2);
+  try { dGroups = (await api('/api/decor_groups', { track, groups: dGroups })).groups; } catch (e) { status('Groupes : ' + e.message, 'err'); }
+  resolveGroups(); sceneSync();
+}
+async function loadGroups() {
+  const name = track;
+  try { const g = await (await fetch('/api/decor_groups?track=' + encodeURIComponent(name))).json(); if (name === track) dGroups = Array.isArray(g) ? g : []; }
+  catch (e) { dGroups = []; }
+  resolveGroups(); sceneSync();
+  // copies groupees avant leur enregistrement : retrouvees par position, leur nom est maintenant connu -> note
+  if (dGroups.some((g, i) => g.members.some(mb => !mb.name) && dGroupMesh[i].some(m => !m.userData.isNew))) saveGroups();
+}
+const groupMeshesOf = m => { const gi = meshGroup.get(m); return gi == null ? null : dGroupMesh[gi].filter(x => x.visible); };
+function selectionGroup() {                                // index du groupe si la selection est exactement ce groupe
+  const gi = meshGroup.get(dMulti[0]);
+  return gi != null && dMulti.length === dGroupMesh[gi].length && dMulti.every(m => meshGroup.get(m) === gi) ? gi : -1;
+}
+function askText(title, value) {
+  return new Promise(resolve => {
+    const ov = overlayCard(`<div style="margin-bottom:8px"><b>${esc(title)}</b></div>
+      <input id="atxt" type="text" maxlength="60" style="width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:5px 7px">
+      <div class="btns" style="justify-content:flex-end;margin-top:10px"><button id="atno">Annuler</button><button id="atok" class="primary">OK</button></div>`, 380);
+    const i = ov.querySelector('#atxt'); i.value = value; setTimeout(() => { i.focus(); i.select(); }, 0);
+    const done = v => { ov.remove(); resolve(v); };
+    ov.querySelector('#atno').onclick = () => done(null);
+    ov.querySelector('#atok').onclick = () => done(i.value.trim() || value);
+    i.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') done(i.value.trim() || value); if (e.key === 'Escape') done(null); };
+  });
+}
+async function addGroup(name, meshes) {                   // nouveau groupe ; ses objets quittent leur ancien groupe
+  const sel = new Set(meshes);
+  dGroupMesh = dGroupMesh.map(list => list.filter(m => !sel.has(m)));      // un objet n'est que dans un groupe
+  dGroups.push({ name, members: [] }); dGroupMesh.push([...meshes]);
+  await saveGroups();
+}
+async function groupSelection() {
+  if (dMulti.length < 2) return;
+  let n = dGroups.length + 1; while (dGroups.some(g => g.name === 'Groupe ' + n)) n++;
+  const name = await askText('Nom du groupe', 'Groupe ' + n);
+  if (!name) return;
+  await addGroup(name, dMulti);
+  status(`Groupe « ${name} » : ${dMulti.length} objets — un clic sur l'un d'eux sélectionne tout le groupe (Alt+clic : l'objet seul)`, 'ok');
+  renderDecorSel();
+}
+async function ungroupSelection() {
+  const gi = selectionGroup(); if (gi < 0) return;
+  const name = dGroups[gi].name;
+  dGroups.splice(gi, 1); dGroupMesh.splice(gi, 1);
+  await saveGroups(); status(`Groupe « ${name} » défait (les objets restent en place)`, 'ok'); renderDecorSel();
+}
+async function renameGroup() {
+  const gi = selectionGroup(); if (gi < 0) return;
+  const name = await askText('Nom du groupe', dGroups[gi].name);
+  if (!name) return;
+  dGroups[gi].name = name; await saveGroups(); renderDecorSel();
+}
 // Plusieurs objets : poignee sur un pivot au centre du groupe, la transformation du pivot s'applique a chacun.
 let dMulti = [], pivotStart = null, multiStart = [];
 const pivot = new THREE.Object3D(); scene.add(pivot);
@@ -4641,7 +4773,7 @@ function setDecorSelection(list) {
   dMulti = list.filter(Boolean);
   dSelected = dMulti.length === 1 ? dMulti[0] : null;
   if (dMulti.length) lastDecorObjects = dMulti.filter(m => !m.userData.isNew).map(m => ({ file: m.userData.file, id: m.userData.obj.id, name: m.userData.obj.name }));
-  for (const m of dMulti) m.material = selMat;
+  for (const m of dMulti) m.material = selMaterial(m);
   if (dSelected) {
     gizmo.attach(dSelected);
     if (!dSelected.userData.obj.has_transform) gizmo.setMode('translate');
@@ -4671,8 +4803,35 @@ function multiChanged() {
 }
 // Pose au sol (2026-11-07) : chaque objet descend / monte jusqu'a ce que le bas de sa boite touche la surface la plus haute
 // sous son emprise (centre + 4 points a 60 % des bords) : collision de la piste et autres objets visibles (pas ceux qui
-// sont deplaces). Les rayons partent de mi-hauteur de l'objet : sa propre collision au-dessus (tablier, chapeau) n'est
-// pas prise pour le sol ; un objet enterre de plus de la moitie n'est pas remonte.
+// sont deplaces). Les rayons partent de haut et gardent la surface la plus haute sous la mi-hauteur de l'objet : sa
+// propre collision au-dessus (tablier, chapeau) n'est pas prise pour le sol. Objet enterre de plus de la moitie
+// (2026-11-23) : la surface juste au-dessus de son bas sert de sol (il remonte) au lieu de « Pas de sol ».
+// Murs invisibles (2026-11-23) : points tous les ~1 m le long du bas du mur (pas les coins de la boite, a cote du mur) ;
+// le mur se cale sur la hauteur mediane du sol dessous (pente : centre sur la pente, pas sur le haut ou le bas) et le
+// mur genere / ajoute garde ses 2,5 m sous ce sol (comme a sa creation).
+const WALL_SINK = 100;                                     // = walls.SINK (2,5 m)
+function dropSamples(m, box) {
+  const o = m.userData.obj || {};
+  if (o.invisible && m.geometry?.attributes?.position) {
+    const a = m.geometry.attributes.position, v = new THREE.Vector3(), pts = [];
+    let zmin = Infinity;
+    for (let i = 0; i < a.count; i++) zmin = Math.min(zmin, a.getZ(i));
+    for (let i = 0; i < a.count; i++) if (a.getZ(i) - zmin < 1) pts.push(v.fromBufferAttribute(a, i).applyMatrix4(m.matrixWorld).clone());
+    if (pts.length) {                                      // ~1 point par metre le long du bas, 40 au plus (mediane)
+      const cum = [0];
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i - 1].distanceTo(pts[i]));
+      const L = cum[cum.length - 1], n = Math.max(1, Math.min(40, Math.round(L / 40))), out = [];
+      for (let j = 0, i = 1; j <= n; j++) {
+        const t = L * j / n;
+        while (i < pts.length - 1 && cum[i] < t) i++;
+        out.push(pts.length < 2 ? pts[0] : pts[i - 1].clone().lerp(pts[i], Math.min(1, (t - cum[i - 1]) / ((cum[i] - cum[i - 1]) || 1))));
+      }
+      return { wall: true, pts: out };
+    }
+  }
+  const c = box.getCenter(new THREE.Vector3()), hx = (box.max.x - box.min.x) * 0.3, hy = (box.max.y - box.min.y) * 0.3;
+  return { wall: false, pts: [[0, 0], [hx, hy], [-hx, hy], [hx, -hy], [-hx, -hy]].map(([dx, dy]) => new THREE.Vector3(c.x + dx, c.y + dy, box.min.z)) };
+}
 function dropDecorOnGround(list = dMulti) {
   if (!list.length) return;
   const moving = new Set(list), others = decorGroup.children.filter(m => m.visible && !moving.has(m));
@@ -4682,16 +4841,25 @@ function dropDecorOnGround(list = dMulti) {
   for (const m of list) {
     m.updateMatrixWorld(true); box.setFromObject(m);
     if (box.isEmpty()) continue;
-    const c = box.getCenter(new THREE.Vector3()), hx = (box.max.x - box.min.x) * 0.3, hy = (box.max.y - box.min.y) * 0.3;
-    const z0 = (box.min.z + box.max.z) / 2;
-    let top = null;
-    for (const [dx, dy] of [[0, 0], [hx, hy], [-hx, hy], [hx, -hy], [-hx, -hy]]) {
-      rc.set(new THREE.Vector3(c.x + dx, c.y + dy, z0), down);
-      const h = rc.intersectObjects(targets, false).find(x => !moving.has(x.object));
-      if (h && (top === null || h.point.z > top)) top = h.point.z;
+    const zMid = (box.min.z + box.max.z) / 2, { wall, pts } = dropSamples(m, box);
+    let shift = null;
+    const ds = [];
+    for (const p of pts) {
+      rc.set(new THREE.Vector3(p.x, p.y, box.max.z + 4000), down);
+      const hs = rc.intersectObjects(targets, false).filter(x => !moving.has(x.object)).map(x => x.point.z);
+      if (!hs.length) continue;
+      const under = hs.filter(z => z <= zMid);                // surface la plus haute sous la mi-hauteur
+      const g = under.length ? Math.max(...under) : Math.min(...hs.filter(z => z > zMid));   // sinon : enterre, il remonte
+      const d = g - p.z;
+      ds.push(d);
+      if (shift === null || d > shift) shift = d;            // objet : le point le plus haut sert d'appui
     }
-    if (top === null) continue;
-    m.position.z += top - box.min.z;
+    if (shift === null) continue;
+    if (wall) {                                              // mur : hauteur du milieu de la pente sous lui
+      ds.sort((a, b) => a - b); shift = ds[ds.length >> 1];
+      if (['auto', 'manual', 'zone'].includes(m.userData.obj.invisible)) shift -= WALL_SINK;
+    }
+    m.position.z += shift;
     recordDecorEdit(m); n++;
   }
   if (!n) { status('Pas de sol sous la sélection', 'err'); return; }
@@ -5314,7 +5482,9 @@ async function showLinkedCollision(m) {
   m.userData.linkNote = (m.userData.isNew ? 'copie de la collision de l\'objet source : ' : '') + L.note;
   if (dSelected !== m) return;
   renderDecorSel();
-  if (!L.tris.length) return;
+  // mur invisible : sa collision, c'est lui (deja en orange) ; le rouge par-dessus tout cachait s'il etait devant ou
+  // derriere les objets (2026-11-24, retour d'un utilisateur)
+  if (!L.tris.length || m.userData.obj.invisible) return;
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(L.tris, 3));
   const lm = new THREE.Mesh(g, linkMat); lm.renderOrder = 5; lm.raycast = () => {};
@@ -5353,6 +5523,9 @@ function renderMultiSel(valuesOnly) {
     <div class="ins"><h4>Outil</h4><div class="grid2"><button data-m="translate">Déplacer<kbd>W</kbd></button><button data-m="rotate">Tourner<kbd>E</kbd></button></div></div>
     <div class="ins"><h4>Actions</h4>
       <div class="grid2"><button id="dfocus">Centrer la vue</button><button id="ddrop">Poser au sol<kbd>G</kbd></button><button id="ddup" title="Les copies deviennent la sélection : déplace-les tout de suite (W)">Dupliquer<kbd>Ctrl+D</kbd></button><button id="ddel" class="danger">Supprimer</button></div></div>
+    ${(gi => gi >= 0 ? `<div class="ins"><h4><span>Groupe</span> « <span id="dgname"></span> »</h4><div class="grid2"><button id="dgren">Renommer…</button>
+        <button id="dgungroup" title="Les objets restent en place, ils se sélectionnent de nouveau un par un">Dégrouper</button></div></div>`
+      : `<div class="ins"><h4>Groupe</h4><div class="grid2"><button id="dgroup" class="wide" title="Un clic sur l'un des objets sélectionnera tout le groupe (Alt+clic : l'objet seul) ; liste dans Scène › Groupes. Rien ne change en jeu">🔗 Grouper</button></div></div>`)(selectionGroup())}
     <div class="ins"><h4>Disposer</h4>
       <div class="grid2"><button id="dalign" title="Sur la droite qui joint les deux objets les plus éloignés (écarts gardés)">Aligner</button>
         <button id="dspread" title="Sur cette droite, à intervalles égaux entre les deux objets des bouts">Répartir</button>
@@ -5374,6 +5547,8 @@ function renderMultiSel(valuesOnly) {
   $('ddup').onclick = duplicateDecor; $('ddel').onclick = deleteDecor; $('dfocus').onclick = focusSelection;
   $('ddrop').onclick = () => dropDecorOnGround();
   $('dalign').onclick = () => arrangeDecor('line'); $('dspread').onclick = () => arrangeDecor('spread');
+  if ($('dgroup')) $('dgroup').onclick = groupSelection;
+  if ($('dgungroup')) { $('dgungroup').onclick = ungroupSelection; $('dgren').onclick = renameGroup; $('dgname').textContent = dGroups[selectionGroup()].name; }
   $('dsamez').onclick = () => arrangeDecor('height'); $('dalongroad').onclick = () => arrangeDecor('road');
   renderMultiSel(true);
 }
@@ -5432,6 +5607,97 @@ function arrangeDecor(mode) {
   }
   setDecorSelection([...dMulti]); markDirty(); pushHistory(); renderDecorSel();
   status({ line: `${list.length} objet(s) alignés`, spread: `${list.length} objet(s) répartis à intervalles égaux`, height: `${list.length} objet(s) à la même hauteur` }[mode], 'ok');
+}
+// Repeter le long de la route (2026-11-23) : N copies d'un objet tous les X m le long du parcours (tour ferme), au meme
+// ecart lateral que l'objet, cap relatif a la route garde ; « les deux cotes » : copies en miroir de l'autre cote aussi.
+// Copies = duplications ordinaires (Enregistrer, Ctrl+Z), posees au sol, groupees avec l'objet si demande.
+function repeatDialog(m) {
+  return new Promise(resolve => {
+    const fld = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+    const ov = overlayCard(`<div style="margin-bottom:8px"><b>↔ Répéter le long de la route</b></div>
+      <div class="note2" style="margin:0 0 8px">${esc(m.userData.obj.name || 'objet')} : copies au même écart de la route, tournées comme elle, posées au sol.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <label>Nombre de copies<input id="rpn" type="number" min="1" max="200" value="10" style="${fld}"></label>
+        <label>Écart entre deux (m)<input id="rpgap" type="number" min="1" max="500" step="0.5" value="15" style="${fld}"></label>
+        <label>Côté<select id="rpside" style="${fld}"><option value="same">Même côté que l'objet</option><option value="both">Des deux côtés (en miroir)</option><option value="other">De l'autre côté seulement</option></select></label>
+        <label>Sens<select id="rpdir" style="${fld}"><option value="1">Vers l'avant de la course</option><option value="-1">Vers l'arrière</option><option value="0">Des deux sens</option></select></label>
+      </div>
+      <label style="display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" id="rpgroup" checked> Grouper l'objet et ses copies</label>
+      <div class="btns" style="justify-content:flex-end;margin-top:10px"><button id="rpno">Annuler</button><button id="rpok" class="primary">Répéter</button></div>`, 460);
+    const v = id => ov.querySelector('#' + id);
+    try { const o = JSON.parse(localStorage.getItem('ctr_repeat') || '{}'); for (const k of ['rpn', 'rpgap', 'rpside', 'rpdir']) if (o[k] != null) v(k).value = o[k]; if (o.rpgroup != null) v('rpgroup').checked = o.rpgroup; } catch (e) {}
+    const done = r => { ov.remove(); resolve(r); };
+    v('rpno').onclick = () => done(null);
+    v('rpok').onclick = () => {
+      const r = { n: Math.max(1, Math.min(200, Math.round(+v('rpn').value || 0))), gap: Math.max(1, +v('rpgap').value || 0),
+                  side: v('rpside').value, dir: +v('rpdir').value, group: v('rpgroup').checked };
+      try { localStorage.setItem('ctr_repeat', JSON.stringify({ rpn: r.n, rpgap: r.gap, rpside: r.side, rpdir: r.dir, rpgroup: r.group })); } catch (e) {}
+      done(r);
+    };
+    ov.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') done(null); if (e.key === 'Enter') v('rpok').click(); });
+    setTimeout(() => { v('rpn').focus(); v('rpn').select(); }, 0);
+  });
+}
+async function repeatAlongRoad(m) {
+  const R = raceLinePoints();
+  if (R.length < 2) { status('Pas de parcours : crée d’abord le parcours', 'err'); return; }
+  const opt = await repeatDialog(m);
+  if (!opt) return;
+  // ligne parallele a la route, a l'ecart lateral o (tour ferme) : abscisse cumulee, point et cap a l'abscisse s
+  const n = R.length, tanAt = k => { const p = R[(k - 1 + n) % n], q = R[(k + 1) % n]; return Math.atan2(q[1] - p[1], q[0] - p[0]); };
+  const T = R.map((_, k) => tanAt(k));
+  const line = o => {
+    const Q = R.map((p, k) => [p[0] - Math.sin(T[k]) * o, p[1] + Math.cos(T[k]) * o]), cum = [0];
+    for (let k = 1; k < n; k++) cum.push(cum[k - 1] + Math.hypot(Q[k][0] - Q[k - 1][0], Q[k][1] - Q[k - 1][1]));
+    const L = cum[n - 1] + Math.hypot(Q[0][0] - Q[n - 1][0], Q[0][1] - Q[n - 1][1]);
+    const at = s => {
+      s = ((s % L) + L) % L;
+      let k = 1; while (k < n && cum[k] < s) k++;
+      const a = Q[k - 1], b = Q[k % n], f = Math.min(1, Math.max(0, (s - cum[k - 1]) / (((k < n ? cum[k] : L) - cum[k - 1]) || 1)));
+      return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, T[k - 1] + wrapAngle(T[k % n] - T[k - 1]) * f];
+    };
+    return { cum, L, at };
+  };
+  let k0 = 0, d0 = Infinity;
+  R.forEach((q, i) => { const e = Math.hypot(q[0] - m.position.x, q[1] - m.position.y); if (e < d0) { d0 = e; k0 = i; } });
+  const t0 = T[k0];
+  const side = Math.sign(-Math.sin(t0) * (m.position.x - R[k0][0]) + Math.cos(t0) * (m.position.y - R[k0][1])) || 1;
+  const off = side * d0, rel = m.rotation.z - t0, gap = opt.gap * 39.37;
+  const L0 = line(0).L;
+  if (opt.n * gap * (opt.dir === 0 ? 2 : 1) > L0 * 1.02) { status(`Trop de copies : ${opt.n} × ${opt.gap} m dépasse la longueur du tour (${Math.round(L0 / 39.37)} m)`, 'err'); return; }
+  const along = opt.dir === 0 ? [1, -1] : [opt.dir];
+  const sides = { same: [1], both: [1, -1], other: [-1] }[opt.side];
+  const placed = [[m.position.x, m.position.y]], copies = [];
+  let skipped = 0;
+  const put = (x, y, t, sg) => {                           // copie trop pres d'une autre (interieur d'un virage serre) : sautee
+    if (placed.some(([px, py]) => Math.hypot(px - x, py - y) < gap * 0.5)) { skipped++; return; }
+    const c = duplicateOne(m);
+    c.position.x = x; c.position.y = y;
+    if (m.userData.obj.has_transform) c.rotation.z = t + (sg === 1 ? rel : -rel);
+    c.userData.obj.name = m.userData.obj.name || 'objet';
+    recordDecorEdit(c); copies.push(c); placed.push([x, y]);
+  };
+  for (const sg of sides) {
+    const ln = line(off * sg), s0 = ln.cum[k0];
+    if (sg === -1) put(...ln.at(s0), sg);                  // en face de l'objet
+    for (const dr of along) for (let i = 1; i <= opt.n; i++) put(...ln.at(s0 + dr * i * gap), sg);
+  }
+  if (!copies.length) { status('Aucune copie : toutes tombaient sur une autre (écart trop petit ou virage trop serré)', 'err'); return; }
+  dropDecorOnGround(copies);                               // au sol (etape d'annulation commune)
+  const all = [m, ...copies];
+  let gname = null;
+  if (opt.group) {
+    const gi = dGroupMesh.findIndex(list => list.includes(m));
+    if (gi >= 0) { dGroupMesh[gi].push(...copies); gname = dGroups[gi].name; await saveGroups(); }   // copies neuves : dans aucun groupe
+    else {
+      let n = 1; while (dGroups.some(g => g.name === 'Répétition ' + n)) n++;
+      gname = 'Répétition ' + n;
+      await addGroup(gname, all);
+    }
+  }
+  setDecorSelection(all); markDirty(); renderDecorPanel(); renderDecorSel();
+  status(`${copies.length} copie(s) de ${m.userData.obj.name || 'l’objet'} tous les ${opt.gap} m le long de la route` + (gname ? ` (groupe « ${gname} »)` : '')
+    + (skipped ? ` — ${skipped} sautée(s), trop près d'une autre dans un virage serré` : '') + ' — Enregistrer pour les garder, Ctrl+Z pour annuler', 'ok');
 }
 function renderBasePropSel(valuesOnly) {
   const box = $('dsel'), p = creator.extInfo();
@@ -5513,7 +5779,8 @@ function renderDecorSel(valuesOnly) {
       <button data-m="scale" ${obj.has_transform ? '' : 'disabled'}>Échelle<kbd>R</kbd></button></div></div>
     <div class="ins"><h4>Actions</h4>
       <div class="grid2"><button id="dfocus">Centrer la vue</button><button id="ddrop">Poser au sol<kbd>G</kbd></button><button id="ddup" title="Les copies deviennent la sélection : déplace-les tout de suite (W)">Dupliquer<kbd>Ctrl+D</kbd></button><button id="ddel" class="danger">Supprimer</button>
-      ${obj.invisible ? '' : '<button id="dtint" class="wide" title="teinte ou peint les textures de l\'objet ; l\'objet devient un modèle importé"><svg class="ic"><use href="#i-brush"/></svg>Coloriser…</button>'}</div></div>
+      ${obj.invisible ? '' : '<button id="dtint" class="wide" title="teinte ou peint les textures de l\'objet ; l\'objet devient un modèle importé"><svg class="ic"><use href="#i-brush"/></svg>Coloriser…</button>'}
+      <button id="drepeat" class="wide" title="Copies de cet objet à intervalles réguliers le long du parcours, au même écart de la route, tournées comme elle et posées au sol (lampadaires, barrières, arbres…)">↔ Répéter le long de la route…</button></div></div>
     ${sameOf(m).length ? `<div class="ins"><h4>Tous les mêmes objets (${sameOf(m).length + 1})</h4>
       <div class="note2" style="margin:0 0 4px">S'applique à toutes les copies de ce modèle sur la map.</div>
       <div class="grid2">
@@ -5551,6 +5818,7 @@ function renderDecorSel(valuesOnly) {
   });
   $('ddup').onclick = duplicateDecor; $('ddel').onclick = deleteDecor;
   $('ddrop').onclick = () => dropDecorOnGround();
+  $('drepeat').onclick = () => repeatAlongRoad(m);
   $('dfocus').onclick = () => focusOn(m.position.toArray());
   if ($('dtint')) $('dtint').onclick = () => startRecolor(m);
   // tous les memes objets (2026-11-18, demande utilisateur : taille, couleur... appliquees a toutes les copies)
@@ -6171,7 +6439,7 @@ function sceneModel() {
     tag: items[0].mesh.userData.obj.library ? 'bibliothèque' : items[0].mesh.userData.obj.custom_material !== undefined ? 'importé' : '' }))
     .sort((a, b) => a.label.localeCompare(b.label));
   const kinds = {};
-  crates.forEach((c, i) => (kinds[c.kind] ||= []).push({ label: `${crateLabel(c.kind)} ${i + 1}`, sub: crateLabel(c.kind), pos: new THREE.Vector3(...c.pos),
+  liveOld(crates).forEach((c, i) => (kinds[c.kind] ||= []).push({ label: `${crateLabel(c.kind)} ${i + 1}`, sub: crateLabel(c.kind), pos: new THREE.Vector3(...c.pos),
     isSel: () => (selected?.kind === 'crate' && selected.index === i) || (selected?.kind === 'crateGroup' && selected.indices.includes(i)),
     pick: () => { selectCrate(i); focusOn(c.pos); } }));
   const ofGroup = (grp, kind, name, pickFn, selKind) => grp.children.filter(m => m.userData.kind === kind).map(m => ({ label: `${name} ${m.userData.index + 1}`, sub: name, pos: m.position,
@@ -6189,18 +6457,23 @@ function sceneModel() {
     for (const [name, items] of bm) baseGroups.push({ key: 'b:' + name, label: name, items, tag: 'base', pickAll: () => selectBaseMany(items.map(it => it.i)) });
     baseGroups.sort((a, b) => a.label.localeCompare(b.label));
   }
+  // piste aleatoire « Retirer l'ancienne scene » pas encore generee : groupes, lumieres, objets animes, caisses et boosters
+  // de l'ancienne piste plus listes (ils seront retires)
+  const grpCat = liveOld(dGroups).map((g, i) => ({ key: 'g:' + g.name, label: g.name, tag: 'groupe',
+    items: (dGroupMesh[i] || []).filter(m => !m.userData.deleted).map(decorItem) })).filter(g => g.items.length);
   return [
+    ...(grpCat.length ? [{ key: 'groups', label: 'Groupes', color: '#5ee0a0', groups: grpCat }] : []),
     ...(baseGroups.length ? [{ key: 'base', label: 'Décor de la base (pas encore généré)', color: '#ffcc33', groups: baseGroups }] : []),
     { key: 'decor', label: 'Décor', color: '#7fb0d8', groups },
     { key: 'walls', label: 'Murs invisibles', color: '#c58cf0', items: walls },
-    { key: 'lights', label: 'Lumières', color: '#ffd76a', items: lights.map((l, i) => ({ label: `${lightPresets[l.preset]?.label || 'Lumière'} ${i + 1}`, sub: 'lumière',
+    { key: 'lights', label: 'Lumières', color: '#ffd76a', items: liveOld(lights).map((l, i) => ({ label: `${lightPresets[l.preset]?.label || 'Lumière'} ${i + 1}`, sub: 'lumière',
         pos: new THREE.Vector3(...l.pos), light: l, isSel: () => lightSel === i, pick: () => { selectLight(i); focusOn(l.pos); } })) },
     // objets animes (2026-11-18, demande utilisateur) : liste a part (out/editor/<piste>_animated.json), clic = selection
-    { key: 'anims', label: 'Objets animés', color: '#ff9f1c', items: animItems.map((it, i) => ({ label: it.name || it.entity,
+    { key: 'anims', label: 'Objets animés', color: '#ff9f1c', items: liveOld(animItems).map((it, i) => ({ label: it.name || it.entity,
         sub: 'objet animé' + (it.speed != null ? ` · vitesse ${+(+it.speed).toFixed(2)}` : ''), pos: new THREE.Vector3(...it.pos),
         isSel: () => animSel === i, pick: () => selectAnim(i, true) })) },
     { key: 'crates', label: 'Caisses et fruits', color: '#ff8a2a', groups: Object.entries(kinds).map(([k, items]) => ({ key: 'c:' + k, label: (CRATE_KINDS[k] || CRATE_KINDS.question)[2], items })) },
-    { key: 'boosts', label: 'Boosters', color: '#ffb020', items: ofGroup(boostGroup, 'boost', 'booster', selectBoost, 'boost') },
+    { key: 'boosts', label: 'Boosters', color: '#ffb020', items: liveOld(ofGroup(boostGroup, 'boost', 'booster', selectBoost, 'boost')) },
     // base pas encore generee : zones refaites par la generation, ni affichees ni listees
     { key: 'falls', label: 'Zones de chute', color: '#ff6b6b', items: raceHiddenByBase ? [] : ofGroup(fallGroup, 'fallZone', 'zone de chute', selectFallZone, 'fallZone') },
     { key: 'gravs', label: 'Zones de gravité', color: '#9b7bff', items: ofGroup(gravGroup, 'gravZone', 'zone de gravité', selectGravZone, 'gravZone') },
@@ -6246,7 +6519,7 @@ function renderScene() {
     const flat = c.items?.filter(it => hit(it, c.label));
     const all = c.groups ? c.groups.reduce((a, g) => a + g.items.length, 0) : c.items.length;
     const n = groups ? groups.reduce((a, g) => a + g.items.length, 0) : flat.length;
-    total += all; shown += n;
+    if (c.key !== 'groups') { total += all; shown += n; }   // groupes : objets deja comptes dans leur categorie
     if (!all || (q.length && !n)) continue;
     const open = q.length > 0 || scOpen.has(c.key);
     const cr = row('cat' + (open ? ' open' : ''), `<span class="tw">▸</span><span class="dot" style="background:${c.color}"></span><span class="nm"></span><span class="ct">${q.length ? n + ' / ' + all : all}</span>`);
@@ -6280,7 +6553,9 @@ function renderScene() {
 // fiche de l'element selectionne (bas de la liste)
 function renderSceneInfo(cats) {
   const box = $('scinfo');
-  const picked = cats.flatMap(c => c.groups ? c.groups.flatMap(g => g.items) : c.items).filter(it => it.isSel());
+  const seen = new Set();                                 // objet groupe : liste aussi dans sa categorie, compte une fois
+  const picked = cats.flatMap(c => c.groups ? c.groups.flatMap(g => g.items) : c.items).filter(it => it.isSel())
+    .filter(it => !it.mesh || (!seen.has(it.mesh) && seen.add(it.mesh)));
   if (!picked.length) { box.hidden = true; return; }
   box.hidden = false;
   const dl = rows => '<dl>' + rows.filter(Boolean).map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('') + '</dl>';
@@ -6386,6 +6661,7 @@ function setWeatherPreview(preset, density) {
       depthWrite: false, fog: false, blending: L.kind === 'glow' ? THREE.AdditiveBlending : THREE.NormalBlending }));
   }
   obj.frustumCulled = false; group.add(obj); group.visible = $('vweather').checked; scene.add(group);
+  group.userData.keepInCreator = true;                    // Creation : la meteo reste affichee (2026-11-24, demande utilisateur)
   weatherFx = { L, P, seed, obj, group, last: 0, flashAt: 0 };
 }
 function weatherTick(t) {
@@ -6439,10 +6715,13 @@ function pcRollRoad() {                                    // 4 cameras « d'int
     fov: 50 + Math.random() * 18,
   }));
 }
-function pcGround(x, y) {                                  // hauteur du sol (collision) sous un point, sinon celle du pivot
-  if (colMesh) {
+function pcGround(x, y) {                                  // hauteur du sol sous un point, sinon celle du pivot
+  // ce qui est affiche (2026-11-23, « parfois sous la map ») : base pas encore generee -> son sol ; sinon la collision ;
+  // collision pas encore chargee -> le decor visible (avant : hauteur du pivot de la camera, souvent sous le terrain)
+  const gt = groundTargets(), targets = gt.length ? gt : decorGroup.children.filter(m => m.visible && !m.userData.obj?.invisible);
+  if (targets.length) {
     const rc = new THREE.Raycaster(new THREE.Vector3(x, y, 1e6), new THREE.Vector3(0, 0, -1));
-    const h = rc.intersectObject(colMesh, false)[0];
+    const h = rc.intersectObjects(targets, false)[0];
     if (h) return h.point.z;
   }
   return orbit.target.z;
@@ -6467,18 +6746,25 @@ function pcRoadCam(c, W, H) {                              // camera au bord du 
     return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
   };
   const M = 39.37, rc = new THREE.Raycaster();
+  // largeur de la route (2026-11-23, T922 : route de 65 m, cameras a 3-11 m du trace = au milieu de la chaussee, collees
+  // au bitume) : camera au bord de la route, hauteur / distance visee a l'echelle (x1 a x2,5)
+  const rw = mapIsCreation() ? creator?.roadWidth : 0, Wm = (rw || 18 * M) / M, sc = Math.max(1, Math.min(2.5, Math.sqrt(Wm / 18)));
   const blockers = [colMesh, ...decorGroup.children.filter(m => m.visible && !m.userData.obj?.invisible)].filter(Boolean);
   let best = null;
   for (let k = 0; k < 8 && !best; k++) {                   // essais : decaler / rapprocher si un mur cache la route
-    const d0 = c.frac * L + k * 7 * M, side = c.side * (k % 2 ? -1 : 1) * (k >= 4 ? 0.5 : 1);
+    const edge = Wm / 2 * 0.8 + Math.abs(c.side) - 3;      // c.side : 3 a 11 m -> 0 a 8 m au-dela de 80 % de la demi-largeur
+    const d0 = c.frac * L + k * 7 * M * sc, side = Math.sign(c.side) * edge * (k % 2 ? -1 : 1) * (k >= 4 ? 0.6 : 1);
     const p = at(d0), p2 = at(d0 + 4 * M);
     let dx = p2[0] - p[0], dy = p2[1] - p[1]; const n = Math.hypot(dx, dy) || 1; dx /= n; dy /= n;
     const roadZ = pcGround(p[0], p[1]);
     const cx = p[0] - dy * side * M, cy = p[1] + dx * side * M;
-    const cz = Math.max(roadZ, pcGround(cx, cy)) + c.up * M;
-    const f = at(d0 + (c.back ? -1 : 1) * c.ahead * M), fz = pcGround(f[0], f[1]) + 2.5 * M;   // un peu au-dessus de la route : plus de paysage
+    const gz = pcGround(cx, cy);
+    const f = at(d0 + (c.back ? -1 : 1) * c.ahead * M * sc), fz = pcGround(f[0], f[1]) + 2.5 * M * sc;   // un peu au-dessus de la route : plus de paysage
+    // route qui monte devant : camera au moins 4 m (a l'echelle) au-dessus du point vise, sinon elle ne voit que du bitume
+    const cz = Math.max(Math.max(roadZ, gz) + c.up * M * sc, fz + 4 * M * sc);
     const from = new THREE.Vector3(cx, cy, cz), to = new THREE.Vector3(f[0], f[1], fz);
-    if (cz - roadZ > 25 * M) continue;                    // sur une falaise : trop haut
+    if (cz - roadZ > 25 * M * sc) continue;               // sur une falaise : trop haut
+    if (cz < gz + 1.5 * M) continue;                       // jamais sous le sol
     {                                                      // ni le sol ni un objet du decor (rocher...) devant l'objectif
       const dir = to.clone().sub(from), dist = dir.length();
       rc.set(from.clone().addScaledVector(dir.clone().normalize(), -2 * M), dir.normalize()); rc.far = dist * 0.9 + 2 * M;
@@ -6492,7 +6778,7 @@ function pcRoadCam(c, W, H) {                              // camera au bord du 
   }
   if (!best) {                                             // rien de degage : juste au-dessus du trace
     const p = at(c.frac * L), f = at(c.frac * L + c.ahead * M);
-    best = [new THREE.Vector3(p[0], p[1], pcGround(p[0], p[1]) + 6 * M), new THREE.Vector3(f[0], f[1], pcGround(f[0], f[1]) + M)];
+    best = [new THREE.Vector3(p[0], p[1], pcGround(p[0], p[1]) + 6 * M * sc), new THREE.Vector3(f[0], f[1], pcGround(f[0], f[1]) + M * sc)];
   }
   const cam = new THREE.PerspectiveCamera(c.fov, W / H, 10, 2e6);
   cam.position.copy(best[0]); cam.up.set(0, 0, 1); cam.lookAt(best[1]);
@@ -6586,28 +6872,51 @@ function postcardPicker(opts) {
     <div class="btns" style="justify-content:flex-end"><button id="pcroll" title="Tire 4 nouvelles vues au bord de la route" style="margin-right:auto">↻ Régénérer</button><button id="pcno">Annuler</button><button id="pcyes" class="primary">${esc(opts.ok || 'OK')}</button></div>`, 760);
   const q = s => ov.querySelector(s), chosen = new Set(many ? PC_VIEWS.map(v => v[0]) : ['road0']);
   const tw = 300, th = Math.max(60, Math.round(tw * opts.H / opts.W));
-  const paint = () => {
-    q('#pcgrid').innerHTML = PC_VIEWS.map(([k, label]) => {
-      let src = '', ok = true;
-      try { src = renderPostcard(k, tw, th, q('#pcclean').checked, 'image/jpeg'); } catch (e) { ok = false; }
-      const on = chosen.has(k) && ok;
-      return `<div class="pccell" data-k="${k}" data-ok="${ok ? 1 : 0}" style="cursor:${ok ? 'pointer' : 'default'};border:2px solid ${on ? 'var(--accent,#4da3ff)' : 'var(--line)'};border-radius:6px;padding:3px;opacity:${ok ? 1 : 0.45}">
-        <div style="aspect-ratio:${opts.W}/${opts.H};background:#1d2026;display:flex;align-items:center;justify-content:center;border-radius:4px;overflow:hidden">
-          ${ok ? `<img src="${src}" style="width:100%;height:100%;object-fit:contain">` : '<span style="font-size:11px;color:var(--muted)">indisponible (pas de parcours)</span>'}</div>
-        <div style="font-size:11px;margin-top:3px;display:flex;gap:4px;align-items:center">${many ? `<input type="checkbox" ${on ? 'checked' : ''} ${ok ? '' : 'disabled'} tabindex="-1">` : ''}<span>${esc(label)}</span></div></div>`;
-    }).join('');
+  // apercus rendus UNE fois (ouverture, « Masquer les repères », « Régénérer ») ; un clic ne fait que changer la
+  // selection (2026-11-21 : chaque clic redessinait les 6 vues -> attente)
+  const okOf = {};
+  const mark = () => {
+    ov.querySelectorAll('.pccell').forEach(c => {
+      const on = chosen.has(c.dataset.k) && okOf[c.dataset.k];
+      c.style.borderColor = on ? 'var(--accent,#4da3ff)' : 'var(--line)';
+      const cb = c.querySelector('input[type=checkbox]'); if (cb) cb.checked = !!on;
+    });
+  };
+  // cases posees tout de suite, apercus rendus un par un (la fenetre est utilisable pendant ce temps) ; un nouveau rendu
+  // (Masquer les reperes, Regenerer) abandonne celui en cours
+  let paintGen = 0;
+  const paint = async () => {
+    const gen = ++paintGen, clean = q('#pcclean').checked;
+    q('#pcgrid').innerHTML = PC_VIEWS.map(([k, label]) => `<div class="pccell" data-k="${k}" data-ok="1" style="cursor:pointer;border:2px solid var(--line);border-radius:6px;padding:3px">
+        <div class="pcimg" style="aspect-ratio:${opts.W}/${opts.H};background:#1d2026;display:flex;align-items:center;justify-content:center;border-radius:4px;overflow:hidden">
+          <span style="font-size:11px;color:var(--muted)">…</span></div>
+        <div style="font-size:11px;margin-top:3px;display:flex;gap:4px;align-items:center">${many ? '<input type="checkbox" tabindex="-1">' : ''}<span>${esc(label)}</span></div></div>`).join('');
     ov.querySelectorAll('.pccell').forEach(c => c.onclick = () => {
       if (c.dataset.ok !== '1') return;
       const k = c.dataset.k;
       if (many) { if (chosen.has(k)) chosen.delete(k); else chosen.add(k); } else { chosen.clear(); chosen.add(k); }
-      paint();
+      mark();
     });
-    // vues indisponibles retirees du choix
-    ov.querySelectorAll('.pccell[data-ok="0"]').forEach(c => chosen.delete(c.dataset.k));
-    if (!many && !chosen.size) { const f = ov.querySelector('.pccell[data-ok="1"]'); if (f) { chosen.add(f.dataset.k); paint(); } }
+    PC_VIEWS.forEach(([k]) => { okOf[k] = true; });
+    mark();
+    for (const [k] of PC_VIEWS) {
+      await new Promise(r => setTimeout(r, 0));
+      if (gen !== paintGen || !ov.isConnected) return;
+      let src = '', ok = true;
+      try { src = renderPostcard(k, tw, th, clean, 'image/jpeg'); } catch (e) { ok = false; }
+      okOf[k] = ok;
+      const c = ov.querySelector(`.pccell[data-k="${k}"]`); if (!c) continue;
+      c.dataset.ok = ok ? '1' : '0'; c.style.cursor = ok ? 'pointer' : 'default'; c.style.opacity = ok ? 1 : 0.45;
+      c.querySelector('.pcimg').innerHTML = ok ? `<img src="${src}" style="width:100%;height:100%;object-fit:contain">`
+        : '<span style="font-size:11px;color:var(--muted)">indisponible (pas de parcours)</span>';
+      const cb = c.querySelector('input'); if (cb && !ok) cb.disabled = true;
+      if (!ok) chosen.delete(k);
+      if (!many && !ok && !chosen.size) { const f = PC_VIEWS.find(([k2]) => okOf[k2]); if (f) chosen.add(f[0]); }
+      mark();
+    }
   };
   q('#pcclean').onchange = paint;
-  q('#pcroll').onclick = () => { pcRollRoad(); q('#pcgrid').querySelectorAll('img').forEach(i => i.style.opacity = 0.4); setTimeout(paint, 0); };
+  q('#pcroll').onclick = () => { pcRollRoad(); paint(); };
   if (!pcRoad.length) pcRollRoad();
   setTimeout(paint, 0);                                      // la fenetre s'affiche d'abord, les apercus ensuite
   q('#pcgrid').innerHTML = '<div style="grid-column:1/-1;font-size:12px;color:var(--muted)">Préparation des aperçus…</div>';
@@ -6888,6 +7197,7 @@ async function saveDecor(opts = {}) {
   status(opts.defer ? 'Enregistrement des modifications en attente…'
                     : 'Enregistrement du décor et recalcul de la collision… (jusqu\'à quelques minutes sur une grande map)');
   try {
+    if (dGroups.length) await saveGroups();               // copies groupees : leur position, pour les retrouver apres
     const r = await api('/api/decor_save', { track, files, ops: dOps, lights: lightsChanged ? lights : undefined, defer: !!opts.defer });
     creator.applyPatch(r.creator_patch);                         // retouches du decor genere -> brouillon de la Creation
     // boosters (mode Course) suivent leurs plaques, map entiere deplacee : piste rechargee (sol gris compris) ;
@@ -8019,6 +8329,9 @@ $('dnewmap').onclick = () => {
     <div style="font-size:12px;margin-bottom:6px">${added.length ? added.map(g => `<label style="display:block"><input type="checkbox" class="nmadd" value="${esc(g.key)}">
       ${{ import: '📥', library: '📚', copies: '⧉' }[g.kind]} ${g.kind === 'import' ? '<span>Import :</span> ' : ''}${esc(g.label)} <span style="opacity:.6">(${g.count} objet${g.count > 1 ? 's' : ''})</span></label>`).join('')
       : '<span style="color:var(--muted)">Rien d\'ajouté pour l\'instant.</span>'}</div>
+    ${creator?.hasBase ? `<div style="margin:10px 0 4px;font-weight:600">Base (outils de création)</div>
+    <label style="display:block;font-size:12px;margin-bottom:6px"><input type="checkbox" id="nmbase" checked> <b>Vider aussi la base</b> :
+      route, relief, peinture, eau, décor semé et caisses de la piste aléatoire. Sinon elle reste affichée sur la map tant qu'elle n'est pas générée</label>` : ''}
     <div style="margin:10px 0 4px;font-weight:600">Scène de course</div>
     <label style="display:block;font-size:12px;margin-bottom:6px"><input type="checkbox" id="nmrace" checked> <b>Vider aussi la scène de course</b> :
       caisses, fruits, boosters, zones de chute, téléporteurs retirés ; embranchements, raccourcis, réapparitions de l'ancien tracé
@@ -8026,19 +8339,20 @@ $('dnewmap').onclick = () => {
     <div class="btns"><button id="nmall" title="Piste de base ET tes ajouts : la map devient vide">Tout cocher</button></div>
     <div class="btns" style="justify-content:flex-end;margin-top:8px"><button id="nmno">Annuler</button><button id="nmyes" class="primary">Appliquer</button></div></div>`;
   document.body.appendChild(ov);
-  ov.querySelector('#nmall').onclick = () => { ov.querySelectorAll('.nmfile, .nmaway, .nmadd').forEach(c => c.checked = true); ov.querySelector('#nmground').checked = true; };
+  ov.querySelector('#nmall').onclick = () => { ov.querySelectorAll('.nmfile, .nmaway, .nmadd, #nmbase').forEach(c => c.checked = true); ov.querySelector('#nmground').checked = true; };
   ov.querySelector('#nmno').onclick = () => ov.remove();
   ov.querySelector('#nmyes').onclick = async () => {
     const req = { track, strip_ground: ov.querySelector('#nmground').checked, strip_art: [...ov.querySelectorAll('.nmfile:checked')].map(c => c.value),
                   move_away: [...ov.querySelectorAll('.nmaway:checked')].map(c => c.value),
-                  remove: [...ov.querySelectorAll('.nmadd:checked')].map(c => c.value) };
+                  remove: [...ov.querySelectorAll('.nmadd:checked')].map(c => c.value), clear_base: !!ov.querySelector('#nmbase')?.checked };
     const n = added.filter(g => req.remove.includes(g.key)).reduce((a, g) => a + g.count, 0);
     if (n && !(await ask(`${n} objet(s) que tu as ajoutés seront supprimés (imports, objets de la bibliothèque, copies). « ↶ Annuler » permet de revenir en arrière. Continuer ?`))) return;
     if (dirty && !(await ask('Des modifications non enregistrées seront perdues. Continuer ?'))) return;
-    const race = ov.querySelector('#nmrace').checked;
+    const race = ov.querySelector('#nmrace').checked, base = !!ov.querySelector('#nmbase')?.checked;
     ov.remove();
     status('Vider la map : réécriture du décor et de la collision…');
     try {
+      if (base) await creator.saveBaseToServer();        // base d'avant dans l'etape de l'historique (« ↶ Annuler »)
       const r = await api('/api/newmap', req);
       await loadTrack(track, true);                     // collision (sol gris) rechargee
       await loadDecor(true, false);
@@ -8046,6 +8360,8 @@ $('dnewmap').onclick = () => {
         r.report.push(await clearRaceScene());
         await saveRace();
       }
+      // base des outils de creation (2026-11-20) : sinon toujours affichee par-dessus la map videe
+      if (base && await creator.clearBase()) { r.report.push('base vidée (route, relief, peinture, eau, décor semé)'); setBasePreview(); }
       showNewmapResult(r);
       status('Map vidée — ' + r.report.join(' · ') + ' (réinstalle pour le jeu)', 'ok');
     } catch (e) { status('Erreur : ' + e.message, 'err'); }
@@ -8108,7 +8424,49 @@ $('dexport').onclick = () => {
 };
 
 // ---- visite virtuelle : camera a hauteur de kart le long de la ligne de course ------------------------------
-const TOUR_EYE = 2 * 39.37, TOUR_AHEAD = 18 * 39.37, TOUR_SPEED = 25 * 39.37;   // oeil a 2 m, regard 18 m devant, 25 m/s (90 km/h)
+const TOUR_EYE = 2.5 * 39.37, TOUR_AHEAD = 18 * 39.37, TOUR_SPEED = 25 * 39.37;   // oeil a 2,5 m, regard 18 m devant, 25 m/s (90 km/h)
+// Visite avec kart (2026-11-23) : camera de poursuite 12,5 m derriere et 4,5 m au-dessus du kart ; jamais a moins de
+// 1,2 m du sol sous elle (plancher dur, pas lisse : a x4 la camera lissee passait sous les bosses) ; un mur ou un plafond
+// entre le kart et la camera la rapproche du kart.
+const TOUR_BACK = 12.5 * 39.37, TOUR_UP = 4.5 * 39.37, TOUR_CLEAR = 1.2 * 39.37, TOUR_KART = 0.6;   // kart : ~2,6 m de long
+let tourKart = null;
+function makeTourKart() {
+  const g = new THREE.Group(), M = c => new THREE.MeshLambertMaterial({ color: c });
+  const box = (w, d, h, x, y, z, m) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, d, h), m); o.position.set(x, y, z); g.add(o); return o; };
+  const body = M(0xe8590c), dark = M(0x23262e), metal = M(0x9aa3ad), tyre = M(0x15161a), rim = M(0xd8dde3);
+  box(150, 92, 20, 0, 0, 24, body);                           // plancher
+  box(64, 62, 16, 96, 0, 22, body);                           // nez
+  box(24, 112, 10, 128, 0, 16, dark);                         // pare-chocs avant
+  for (const y of [-54, 54]) box(104, 18, 28, -4, y, 34, body);   // pontons
+  box(18, 56, 48, -34, 0, 56, dark);                          // dossier
+  box(44, 64, 36, -72, 0, 50, metal);                         // moteur
+  for (const y of [-18, 18]) { const e = new THREE.Mesh(new THREE.CylinderGeometry(7, 7, 30, 10), dark); e.rotation.z = Math.PI / 2; e.position.set(-104, y, 58); g.add(e); }
+  for (const y of [-44, 44]) box(10, 6, 34, -96, y, 62, dark);    // montants de l'aileron
+  box(22, 120, 8, -98, 0, 82, body);                          // aileron
+  const sw = new THREE.Mesh(new THREE.TorusGeometry(15, 3, 6, 16), dark); sw.rotation.y = Math.PI / 2 - 0.5; sw.position.set(30, 0, 62); g.add(sw);
+  box(30, 40, 44, -6, 0, 62, M(0x2f6fd6));                    // pilote
+  const head = new THREE.Mesh(new THREE.SphereGeometry(21, 16, 12), M(0xf4f4f4)); head.position.set(-4, 0, 100); g.add(head);
+  box(8, 30, 12, 14, 0, 102, dark);                           // visiere
+  const wheels = [];
+  for (const [x, y, r, w, front] of [[70, -64, 24, 22, true], [70, 64, 24, 22, true], [-62, -68, 29, 28, false], [-62, 68, 29, 28, false]]) {
+    const pivot = new THREE.Group(); pivot.position.set(x, y, r); g.add(pivot);
+    const wh = new THREE.Group(); pivot.add(wh);
+    wh.add(new THREE.Mesh(new THREE.CylinderGeometry(r, r, w, 18), tyre));
+    wh.add(new THREE.Mesh(new THREE.BoxGeometry(r * 1.2, w + 2, r * 0.35), rim));   // rayon : la roue tourne a l'oeil
+    wheels.push({ pivot, spin: wh, r: r * TOUR_KART, front });
+  }
+  g.traverse(o => { if (o.isMesh) o.raycast = () => {}; });
+  g.scale.setScalar(TOUR_KART);
+  // kart affiche : vrai modele du jeu (celui de la Creation de la base) des qu'il est charge ; kart dessine ci-dessus
+  // en attendant ou si le dossier du jeu est introuvable
+  const root = new THREE.Group(); root.rotation.order = 'ZYX'; root.add(g);
+  root.userData.wheels = wheels; root.visible = false; scene.add(root);
+  creator?.kartModel?.().then(k => {
+    if (!k) return;
+    root.remove(g); root.add(k); root.userData.wheels = k.userData.wheels;
+  });
+  return root;
+}
 const TOUR_STEP = 20 * 39.37, TOUR_HOLE = 4 * 39.37, TOUR_SPEEDS = [0.5, 1, 2, 4];
 function tourPath() {
   const pts = [], starts = [];
@@ -8145,7 +8503,9 @@ function tourVisibility() {
   decorGroup.visible = dec;
   if (colMesh) colMesh.visible = $('tcol').checked || !dec;          // sans decor, le sol gris reste visible
   root.visible = markers.visible = portalGroup.visible = startGroup.visible = tpGroup.visible = marks; flyGroup.visible = false;
+  respawnGroup.visible = fallGroup.visible = camGroup.visible = gravGroup.visible = marks;   // reapparitions et zones : avec les reperes seulement
   crateGroup.visible = boostGroup.visible = true; gizmo.visible = false;
+  if (tourKart) tourKart.visible = $('tkart').checked;
 }
 async function tourDecor() {
   if (!$('tdecor').checked || decor || !track) return;
@@ -8158,9 +8518,12 @@ async function startTour() {
   if (tour) return;
   const p = tourPathOrNull();
   if (!p) { status("Pas de parcours à visiter : crée d'abord le parcours (« Créer le parcours depuis la route… »).", 'err'); return; }
-  const vis = new Map([root, markers, startGroup, crateGroup, boostGroup, decorGroup, gizmo, colMesh].filter(Boolean).map(o => [o, o.visible]));
+  const vis = new Map([root, markers, startGroup, crateGroup, boostGroup, decorGroup, gizmo, colMesh, respawnGroup, fallGroup, camGroup, gravGroup, portalGroup, tpGroup]
+    .filter(Boolean).map(o => [o, o.visible]));
   tour = { path: p, d: 0, playing: true, speed: 1, vis, cam: camera.position.clone(), target: orbit.target.clone(), fov: camera.fov,
-           z: null, look: null, yaw: 0, pitch: 0, drag: false, laps: 0, holes: new Set(), hud: 0, t: null };
+           z: null, look: null, yaw: 0, pitch: 0, drag: false, laps: 0, holes: new Set(), hud: 0, t: null,
+           kp: null, kr: null, cyaw: null, cz: null, steer: 0 };
+  tourKart ??= makeTourKart();
   orbit.enabled = false; document.activeElement?.blur?.();
   camera.fov = 70; camera.updateProjectionMatrix();
   $('tspeed').value = '1'; $('tplay').textContent = '⏸'; $('tourwarn').textContent = '';
@@ -8174,12 +8537,57 @@ function stopTour() {
   if (!tour) return;
   const t = tour; tour = null;
   for (const [o, v] of t.vis) o.visible = v;
+  if (tourKart) tourKart.visible = false;
   camera.fov = t.fov; camera.updateProjectionMatrix();
   camera.position.copy(t.cam); orbit.target.copy(t.target); orbit.enabled = true; orbit.update();
   $('tourhud').hidden = true; $('help').hidden = !$('showhelp').checked;
   status(t.holes.size ? `Visite terminée — ⚠ ${t.holes.size} endroit(s) sans sol sous la ligne de course` : 'Visite terminée — aucun trou repéré sous la ligne de course');
 }
-function tourSeek(dd) { tour.d += dd; tour.z = null; tour.look = null; }
+function tourResetSmooth() { tour.z = tour.look = tour.kp = tour.kr = tour.cyaw = tour.cz = null; }   // apres un saut de position
+function tourSeek(dd) { tour.d += dd; tourResetSmooth(); }
+const tourRc = new THREE.Raycaster();
+const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
+// kart pose sur le sol de la ligne de course (cap, pente, devers), camera de poursuite derriere lui
+function tourKartTick(dt, dd, p, g, hole) {
+  const M = 39.37, f = tourAt(tour.d + M), b = tourAt(tour.d - M), far = tourAt(tour.d + 4 * M);
+  const yaw = Math.atan2(f.y - b.y, f.x - b.x);
+  const steerT = Math.max(-0.45, Math.min(0.45, wrapAngle(Math.atan2(far.y - p.y, far.x - p.x) - yaw) * 2.2));
+  tour.steer += (steerT - tour.steer) * Math.min(1, dt * 6);
+  const cx = Math.cos(yaw), cy = Math.sin(yaw), base = hole ? p.z : g;
+  const at = (dx, dy) => { const z = groundZ(p.x + dx, p.y + dy, base + 100); return z == null || Math.abs(z - base) > 150 ? base : z; };
+  // sol sous le kart : centre + avant / arriere a 1,2 m + cotes a 0,9 m. Hauteur = moyenne de ces points, sans retard
+  // (2026-11-23 : la hauteur montait d'un coup et redescendait en retard -> kart qui flottait puis retombait,
+  // « il sautille ») ; pente et devers lisses (les aretes des triangles du sol ne secouent pas le kart)
+  const gf = at(cx * 47, cy * 47), gb = at(-cx * 47, -cy * 47), gl = at(-cy * 35, cx * 35), gr = at(cy * 35, -cx * 35);
+  const kz = (base * 2 + gf + gb) / 4, pitchT = Math.atan2(gf - gb, 94), rollT = Math.atan2(gl - gr, 70);
+  const ka = 1 - Math.exp(-dt * 10);
+  tour.kp = tour.kp == null ? pitchT : tour.kp + (pitchT - tour.kp) * ka;
+  tour.kr = tour.kr == null ? rollT : tour.kr + (rollT - tour.kr) * ka;
+  const pitch = tour.kp, roll = tour.kr;
+  tourKart.position.set(p.x, p.y, kz);
+  tourKart.rotation.set(roll, -pitch, yaw, 'ZYX');
+  for (const w of tourKart.userData.wheels) { w.spin.rotation.y += dd / w.r; if (w.front) w.pivot.rotation.z = tour.steer; }
+  // camera : derriere le kart (son cap suit le kart avec un peu de retard, la souris tourne autour)
+  tour.cyaw = tour.cyaw == null ? yaw : tour.cyaw + wrapAngle(yaw - tour.cyaw) * Math.min(1, dt * 4);
+  const cyaw = tour.cyaw + tour.yaw, dist = Math.hypot(TOUR_UP, TOUR_BACK);
+  const el = Math.max(0.05, Math.min(1.3, Math.atan2(TOUR_UP, TOUR_BACK) - tour.pitch));
+  const head = new THREE.Vector3(p.x, p.y, kz + 1 * M);
+  const want = new THREE.Vector3(p.x - Math.cos(cyaw) * Math.cos(el) * dist, p.y - Math.sin(cyaw) * Math.cos(el) * dist, kz + Math.sin(el) * dist);
+  tour.cz = tour.cz == null ? want.z : tour.cz + (want.z - tour.cz) * Math.min(1, dt * 5);
+  want.z = Math.max(want.z - 0.5 * M, tour.cz);           // retard de hauteur limite a 50 cm
+  if (colMesh) {                                          // mur / plafond entre le kart et la camera : camera rapprochee
+    const dir = want.clone().sub(head), len = dir.length();
+    tourRc.set(head, dir.normalize()); tourRc.far = len;
+    const hit = tourRc.intersectObject(colMesh, false)[0];
+    if (hit) want.copy(head).addScaledVector(dir, Math.max(0.6 * M, hit.distance - 0.5 * M));
+  }
+  const gc = groundZ(want.x, want.y, want.z);
+  if (gc != null && want.z < gc + TOUR_CLEAR) want.z = gc + TOUR_CLEAR;   // plancher dur : jamais dans le sol
+  camera.position.copy(want);
+  const look = tour.drag || Math.abs(tour.yaw) > 0.3 ? head
+    : head.clone().add(new THREE.Vector3(Math.cos(tour.cyaw) * 12 * M, Math.sin(tour.cyaw) * 12 * M, 0.3 * M));
+  camera.lookAt(look);
+}
 function tourTick(t) {
   const dt = tour.t == null ? 0 : Math.min(0.1, (t - tour.t) / 1000); tour.t = t;
   const L = tour.path.length;
@@ -8189,15 +8597,20 @@ function tourTick(t) {
   const p = tourAt(tour.d), a = tourAt(tour.d + TOUR_AHEAD);
   const g = groundZ(p.x, p.y, p.z), hole = g == null || g < p.z - TOUR_HOLE;
   if (hole) tour.holes.add(Math.floor(tour.d / TOUR_STEP));
+  if (!tour.drag) { tour.yaw *= 1 - Math.min(1, dt * 2); tour.pitch *= 1 - Math.min(1, dt * 2); }  // la tete revient vers l'avant
+  if ($('tkart').checked) { tourKartTick(dt, tour.playing ? dt * TOUR_SPEED * tour.speed : 0, p, g, hole); tourHud(t, L, hole); return; }
   const eye = (hole ? p.z : g) + TOUR_EYE, k = Math.min(1, dt * 6);
   tour.z = tour.z == null ? eye : tour.z + (eye - tour.z) * k;
+  if (!hole && tour.z < g + TOUR_CLEAR) tour.z = g + TOUR_CLEAR;   // plancher dur : a grande vitesse, le lissage passait sous les bosses
   const look = new THREE.Vector3(a.x, a.y, a.z + (tour.z - p.z) * 0.6);
   tour.look = tour.look ? tour.look.lerp(look, k) : look;
-  if (!tour.drag) { tour.yaw *= 1 - Math.min(1, dt * 2); tour.pitch *= 1 - Math.min(1, dt * 2); }  // la tete revient vers l'avant
   camera.position.set(p.x, p.y, tour.z);
   const dir = tour.look.clone().sub(camera.position), flat = Math.hypot(dir.x, dir.y);
   const yaw = Math.atan2(dir.y, dir.x) + tour.yaw, pitch = Math.atan2(dir.z, flat) + tour.pitch;
   camera.lookAt(camera.position.clone().add(new THREE.Vector3(Math.cos(yaw) * Math.cos(pitch), Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch))));
+  tourHud(t, L, hole);
+}
+function tourHud(t, L, hole) {
   if (t - tour.hud < 200) return;                         // barre d'infos : 5 fois par seconde
   tour.hud = t;
   const sec = tour.path.starts.filter(s => s <= tour.d).length || 1;
@@ -8205,7 +8618,15 @@ function tourTick(t) {
   if (!tour.scrub) $('tpos').value = Math.round(tour.d / L * 1000);
   $('tourwarn').textContent = hole ? '⚠ Pas de sol sous la ligne de course ici (trou ou collision manquante)' : '';
 }
-$('tour').onclick = () => { if (!inCreation()) startTour(); };   // visite : map generee seulement
+// visite : map generee seulement. Outils de base en cours d'ouverture (1re fois sur une piste : plusieurs secondes) : la
+// barre de gauche a demande leur fermeture, la visite part une fois l'ouverture finie (sinon celle-ci l'arretait)
+$('tour').onclick = async () => {
+  if (crOpening) {                                         // (menu Piste aussi : fermeture demandee ici)
+    closeCreator(); status('Visite : fin de l\'ouverture des outils de base…');
+    try { await crOpening; } catch (e) { /* ouverture ratee */ }
+  }
+  if (!inCreation()) startTour();
+};
 
 // barre posee sur la vue : boutons W / E / R (memes regles que le clavier, selon l'objet selectionne) + menu Affichage
 document.querySelectorAll('[data-gmode]').forEach(b => b.onclick = () =>
@@ -8247,7 +8668,13 @@ $('tplay').onclick = () => { tour.playing = !tour.playing; $('tplay').textConten
 $('tspeed').onchange = e => { if (tour) tour.speed = +e.target.value; e.target.blur(); };
 $('tpos').addEventListener('pointerdown', () => { if (tour) tour.scrub = true; });
 $('tpos').addEventListener('pointerup', () => { if (tour) tour.scrub = false; });
-$('tpos').oninput = e => { if (tour) { tour.d = +e.target.value / 1000 * tour.path.length; tour.z = null; tour.look = null; } };
+$('tpos').oninput = e => { if (tour) { tour.d = +e.target.value / 1000 * tour.path.length; tourResetSmooth(); } };
+try { $('tkart').checked = localStorage.getItem('ctr_tkart') !== '0'; } catch (e) {}
+$('tkart').onchange = () => {
+  try { localStorage.setItem('ctr_tkart', $('tkart').checked ? '1' : '0'); } catch (e) {}
+  if (tour) { tourResetSmooth(); tourVisibility(); }
+  $('tkart').blur();
+};
 for (const id of ['tdecor', 'tcol', 'tmarks']) $(id).onchange = async () => { await tourDecor(); tourVisibility(); };
 addEventListener('keydown', e => {                        // pendant la visite, les raccourcis de l'editeur sont suspendus
   if (!tour) return;
@@ -8656,6 +9083,17 @@ creator = initCreator({ THREE, TransformControls, scene, camera, orbit, view, re
     matCatalog = null;
     for (const c of [texMatCache, glowMatCache, geoCache]) for (const k in c) delete c[k];
     $('track').value = r.track;                          // nouvelle piste : l'editeur passe dessus
+    // piste aleatoire : ciel, heure et meteo tires d'apres le code (2026-11-20), poses une fois (Habillage > Ambiance ensuite)
+    let lookMsg = '';
+    if (r.look) {
+      try {
+        const a = await api('/api/ambiance_info', { track: r.track });
+        const sky = (a.skies || []).some(s => s.key === r.look.sky) ? r.look.sky : '';
+        const rep = (await api('/api/set_ambiance', { track: r.track, preset: r.look.preset, values: { ...(a.presets?.[r.look.preset] || {}) }, sky })).report;
+        rep.push(...(await api('/api/set_weather', { track: r.track, preset: r.look.weather || '', density: r.look.density || 'normal' })).report);
+        lookMsg = ' · ambiance : ' + rep.filter(Boolean).join(', ');
+      } catch (e) { lookMsg = ' · ⚠ ciel / météo non posés (' + e.message + ') : Habillage › Ambiance'; }
+    }
     await loadTrack(r.track, true); loadAmbiancePreview();
     await loadDecor(true);
     const cleared = r.wipe ? await clearRaceScene() : '';  // « Repartir de zéro » : scene de course videe avant le parcours
@@ -8694,9 +9132,67 @@ creator = initCreator({ THREE, TransformControls, scene, camera, orbit, view, re
         falls = ' · chutes : ' + f.report.join(', ');
       } catch (e) { falls = ' · ⚠ chutes dans l\'eau non créées (' + e.message + ') : lance « Chutes et réapparitions »'; }
     }
-    status(`Piste générée et enregistrée : ${r.report.join(' · ')} · ${cleared ? cleared + ' · ' : ''}${msg.replace(/ — vérifie.*$/, '')}${items}${zonesGone}${falls}. ` +
+    status(`Piste générée et enregistrée : ${r.report.join(' · ')} · ${cleared ? cleared + ' · ' : ''}${msg.replace(/ — vérifie.*$/, '')}${items}${zonesGone}${falls}${lookMsg}. ` +
            (items ? 'Ensuite : chutes, mini-carte, puis « ▶ Tester en jeu ».' : 'Ensuite : caisses, chutes, mini-carte, puis « ▶ Tester en jeu ».'), 'ok');
   } });
+// ---- pipeline (2026-11-21) : map complete d'une traite, sans interface ---------------------------------------------
+// piste aleatoire (code) -> generation -> ciel / meteo -> parcours + voies IA -> caisses / boosters -> enregistrement ->
+// chutes. Aucune question, pas de rechargement du decor en 3D (le sol des caisses vient de la collision), pas de copie
+// pour « Annuler » (nohist). Pour l'integration future (OCTR en ligne) et les mesures : window.ctrPipeline({code, track}).
+// -> {track, code, times: [[etape, ms depuis le debut]], total, report}
+async function runPipeline(p = {}) {
+  const t0 = performance.now(), times = [], mark = l => times.push([l, Math.round(performance.now() - t0)]);
+  if (creator.active) closeCreator();
+  if (p.track && p.track !== track) { $('track').value = p.track; if (await loadTrack(p.track) === false) throw new Error('piste introuvable'); }
+  const look = p.look !== false;
+  // liste des ciels (et presets de l'ambiance) lue PENDANT le chargement de la base (2026-11-21 : ~1 s de gagne)
+  const ambP = look ? api('/api/ambiance_info', { track }).catch(() => null) : Promise.resolve(null);
+  await creator.loadQuiet();
+  if (!creator.loaded) throw new Error('base de la piste non chargée');
+  mark('base chargée');
+  const c = p.code ? creator.parseCode(p.code) : p.c;
+  if (!c) throw new Error('code de piste aléatoire invalide');
+  const amb0 = await ambP;
+  const rb = await creator.randomBase(c, { decor: true, items: p.items !== false, marks: p.marks !== false, look, fresh: true, skies: amb0?.skies || [] });
+  mark('piste aléatoire (base)');
+  const r = await creator.generateNow({ nohist: true, wipe: true });
+  mark('génération de la map');
+  setBasePreview();                                       // base a jour : plus d'apercu (le sol vient de la collision)
+  const rep = [...r.report];
+  if (r.look) {
+    const sky = (amb0?.skies || []).some(s => s.key === r.look.sky) ? r.look.sky : '';
+    rep.push(...(await api('/api/set_ambiance', { track, preset: r.look.preset, values: { ...(amb0?.presets?.[r.look.preset] || {}) }, sky, nohist: true })).report);
+    rep.push(...(await api('/api/set_weather', { track, preset: r.look.weather || '', density: r.look.density || 'normal', nohist: true })).report);
+    mark('ciel et météo');
+  }
+  matCatalog = null;
+  for (const k of [texMatCache, glowMatCache, geoCache]) for (const x in k) delete k[x];
+  setContext('race');                                     // comme onGenerate (gotoMode('race'))
+  await loadTrack(r.track, true);
+  mark('relecture de la piste');
+  rep.push(await clearRaceScene());
+  const chain = raceChain(), ex = r.exact || [];
+  let len = 0;
+  for (let i = 0; i < ex.length; i++) { const a = ex[i], b = ex[(i + 1) % ex.length]; len += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]); }
+  const nsec = ex.length > 2 ? Math.max(3, Math.min(30, Math.round(len / 39.37 / 500))) : chain.length;
+  rep.push(await createRoute(chain, { objects: r.road }, { exact: r.exact, start: { pos: r.start, yaw: r.yaw }, ai: true,
+    neutralize: true, sections: nsec, randomness: 0.5, maxJump: 40, reverse: false }));
+  placeStartBehindChecker(r.start, r.yaw);
+  mark('parcours + voies IA');
+  if (r.items) { await refreshCollision(true); rep.push(await placeGeneratedItems(r.items)); creator.dropItems('all'); mark('caisses et boosters'); }
+  await saveRace({ killz: r.killz, nohist: true });
+  mark('enregistrement de la course');
+  if (r.water_falls) {
+    const f = await api('/api/auto_falls', { track, spacing: 50, killz: true, zones: true, nohist: true });
+    rep.push('chutes : ' + f.report.join(', '));
+    mark('chutes et réapparitions');
+  }
+  const total = Math.round(performance.now() - t0);
+  status(`Pipeline : map complète en ${(total / 1000).toFixed(1)} s`, 'ok');
+  return { track, code: p.code || null, base: { shape: rb.shape, length: rb.length, pieces: rb.pieces, jumps: rb.jumps, theme2: rb.theme2 },
+           times, total, report: rep.filter(Boolean) };
+}
+window.ctrPipeline = runPipeline;
 // piste aleatoire (case « Caisses et boosters ») : caisses (placement automatique, hors des sauts et des boosters) et
 // boosters poses sur la route generee, seulement si la piste n'en a pas deja (ajouts de l'Edition gardes) -> texte du rapport
 async function placeGeneratedItems(it) {
@@ -8838,6 +9334,9 @@ async function openCreatorNow() {
     // parcours, caisses, boosters... modifies et pas enregistres : enregistres aussi (une generation depuis la Creation
     // relit la piste ; 2026-11-19 : objet / caisse deplaces perdus)
     if (raceDirty()) { crLoad(30, 'Enregistrement des modifications du parcours…'); await saveRace(); }
+    // outil d'Edition ou Visite choisi pendant l'ouverture (2026-11-20, « la visite s'arrete apres quelques secondes la
+    // 1re fois ») : ouverture abandonnee ici, sans arreter la visite lancee entre-temps
+    if (crCloseWanted) return;
     stopTour(); setDecorSelection([]); if (lightSel != null) selectLight(null); gizmo.detach(); selected = null; closeWin(); closeLib();
     setBasePreview(false);                            // decor genere remis avant que la Creation note ce qui est affiche
     document.body.classList.add('creating');          // panneau « Selection » masque : seule la Creation dans la colonne
@@ -8925,11 +9424,23 @@ function setBasePreview(want = true, quiet = false) {
   creator?.preview(on, dirty);
   for (const m of decorGroup.children) if (m.userData.bpHidden) { m.visible = true; delete m.userData.bpHidden; }
   if (colMesh?.userData.bpHidden) { colMesh.visible = true; delete colMesh.userData.bpHidden; }
+  const fresh = dirty && !!creator?.pendingFresh;
+  if (fresh !== freshHidden) {
+    freshHidden = fresh;
+    if (!creator?.active) { crateGroup.visible = boostGroup.visible = itemsShown(); animGroup.visible = !fresh; }
+    if (fresh && (selected?.kind === 'crate' || selected?.kind === 'boost' || selected?.kind === 'crateGroup')) select(null);
+    // lumieres et objets animes de l'ancienne piste (2026-11-23) : retires aussi a la generation, plus montres d'ici la
+    if (fresh) { if (lightSel != null) selectLight(null); if (animSel >= 0) selectAnim(-1); }
+    renderLights();
+  }
   if (!on) { sceneSync(); return; }
   // base modifiee : tout ce que la derniere generation a importe (murs, ponts, ligne de depart, eau, marquage...) est perime
   const genImport = m => /Createur_Creator/.test(m.userData.obj?.model || m.userData.obj?.name || '');
   for (const m of decorGroup.children)
-    if (m.visible && (isCreatorGround(m) || (dirty && (m.userData.obj?.csown || genImport(m))))) { m.visible = false; m.userData.bpHidden = true; }
+    if (m.visible && (isCreatorGround(m) || (dirty && (m.userData.obj?.csown || genImport(m))) || fresh)) {
+      // fresh : tout le decor de l'ancienne map (generation « map vide » + ajouts d'Edition retires, 2026-11-23)
+      m.visible = false; m.userData.bpHidden = true;
+    }
   if (dirty && colMesh?.visible) { colMesh.visible = false; colMesh.userData.bpHidden = true; }
   sceneSync();                                                // liste de la Scene : decor de la base / decor genere
   if (dirty && !wasDirty && !quiet) status('Base modifiée, pas encore générée : tu la vois ici telle quelle et tu peux poser caisses, boosters et objets dessus. « ⚙ Générer la piste » quand tu veux la voir en jeu.');
@@ -8965,7 +9476,7 @@ function syncInspector() {
   else { name = inspectorSelection(); if (!name) { ctx = 'Piste'; name = $('track').selectedOptions[0]?.textContent || track || ''; } }
   const nosel = !creating && ctx === 'Piste', todo = baseNotGenerated();
   const c = nosel ? { decor: decorGroup.children.filter(m => m.visible && !m.userData.deleted && m.userData.obj).length,
-                      base: baseDirtyShown ? creator.sceneList().length : 0, crates: crates.length, boosts: boosts.length, lights: lights.length, anims: animItems.length } : {};
+                      base: baseDirtyShown ? creator.sceneList().length : 0, crates: liveOld(crates).length, boosts: liveOld(boosts).length, lights: liveOld(lights).length, anims: liveOld(animItems).length } : {};
   const sig = [ctx, name, nosel, todo, mapIsCreation(), creator.hasBase, importNeedsCourse(), importedWithoutBase(), ...Object.values(c)].join('|');
   if (sig === insSig) return;
   insSig = sig;
@@ -9187,12 +9698,11 @@ function openWin(name) {
   if (name === 'scene') renderScene();
 }
 function closeWin() { winOpen = null; document.querySelectorAll('#side details.sec').forEach(s => s.classList.remove('shown')); layoutPanels(); $('scenebtn').classList.remove('on'); }
-// « Objets de la scene » : ouverte ou fermee par l'utilisateur, l'editeur s'en souvient (ouverte la premiere fois sur un grand ecran)
-let sceneWanted = pref('scene', innerWidth >= 1300);
-const toggleScene = show => { show = show ?? winOpen !== 'scene'; sceneWanted = show; setPref('scene', show); show ? openWin('scene') : winOpen === 'scene' && closeWin(); };
-$('sideclose').onclick = () => { if (winOpen === 'scene') { sceneWanted = false; setPref('scene', false); } closeWin(); };
+// « Objets de la scene » : fermee au demarrage (2026-11-23, demande utilisateur) ; ouverte / fermee ensuite par le bouton Scene
+let sceneWanted = false;
+const toggleScene = show => { show = show ?? winOpen !== 'scene'; sceneWanted = show; show ? openWin('scene') : winOpen === 'scene' && closeWin(); };
+$('sideclose').onclick = () => { if (winOpen === 'scene') sceneWanted = false; closeWin(); };
 $('scenebtn').onclick = () => toggleScene();
-if (sceneWanted) openWin('scene');
 // fenetre du mode precedent : fermee au changement de mode
 const winModeCheck = () => { if (winOpen && document.querySelector(`#side [data-win="${winOpen}"]`)?.closest('[hidden]:not(#side)')) closeWin(); };
 

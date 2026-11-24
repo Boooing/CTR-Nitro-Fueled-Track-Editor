@@ -43,7 +43,9 @@ class DecorFile:
         for _, v in (z.hash_items(table) if table is not None else []):
             off = int(v['@ref'], 16) if isinstance(v, dict) and '@ref' in v else None
             if off is not None and z.objects.get(off) == 'CModelComponentData':
-                return z.dump_object(off).get('_fileName')
+                # champ _fileName (+0x10, igStringMetaField, la ou set_model l'ecrit) lu directement (2026-11-21,
+                # vitesse : dump_object decodait tout le composant ; meme valeur, verifiee sur 3 633 objets)
+                return z.read_value(off + 0x10, 'igStringMetaField', 8)
         return None
 
     def objects(self):
