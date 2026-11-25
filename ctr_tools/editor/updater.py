@@ -33,7 +33,7 @@ import zipfile
 
 import progress
 
-VERSION = '0.8'
+VERSION = '0.8.1'
 REPO = 'Boooing/CTR-Nitro-Fueled-Track-Editor'
 VERSION_URL = f'https://raw.githubusercontent.com/{REPO}/refs/heads/main/version'
 RELEASE_URL = f'https://api.github.com/repos/{REPO}/releases/latest'

@@ -5744,7 +5744,7 @@ export function initCreator(ctx) {
   }
   // une base existe : chargee avec une route, ou commencee pendant la session (route, relief, decor : toute modification)
   const baseExists = () => !!S.hasBase || S.points?.length > 1 || (S.editN || 0) > 0;
-  const surfaces = () => [terrainMesh, road];
+  const surfaces = () => [terrainMesh, road, clay.group];      // pate : sol des parties retouchees (relief cache dessous)
   function close() {
     if (!S.active) return;
     if (draftTimer) writeDraft();

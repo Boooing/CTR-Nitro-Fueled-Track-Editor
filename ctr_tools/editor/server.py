@@ -8354,41 +8354,47 @@ def preinstall_check(track):
     progress.step('poids de la map en jeu', 0.8)
     try:
         w = map_weight(track)
-        limit = f"plafond {w['budget']} Mo, le jeu charge toute l'archive au chargement"
+        # 2026-11-25 (« l'avertissement ne parle que de la taille, complete-le avec les objets et tout le reste ») : une
+        # ligne avec TOUT ce qui compte au chargement (taille de l'archive, modeles differents, fichiers, charge estimee,
+        # collision), couleur = le plus proche de sa limite. Textures reduites par le reglage « Alleger la map » sous le
+        # plafond : simple information (avant : orange alors que 105 Mo << 560 Mo)
+        nb = lambda v: f'{v:,}'.replace(',', ' ')
+        load, files_lim = w.get('load', 0), LOAD_LIMIT['files']
+        parts = [f"archive {w['after']} Mo / {w['budget']} Mo",
+                 f"{nb(w['models'])} modèles différents / {nb(w['models_max'])}",
+                 f"{nb(w['files'])} fichiers / {nb(files_lim)}",
+                 f"charge estimée {load} %"]
+        if w['collision']:
+            parts.append(f"collision {nb(w['collision'])} triangles / {nb(w['collision_budget'])}")
+        level, why = 'ok', []
         if w['after'] > w['budget']:
-            add('erreur', 'Mémoire du jeu', f"archive de la piste : {w['after']} Mo même après réduction des textures ({limit}) : "
-                                            'le jeu plantera au chargement → retire du décor ou réduis les textures',
-                **({'fix': 'texmax'} if w['texture_max'] != 512 else {'ui': 'dlight'}))
-        elif w['textures']:
-            add('attention', 'Mémoire du jeu', f"archive de {w['before']} Mo : {w['textures']} texture(s) seront réduites de moitié "
-                                               f"à l'installation pour passer à {w['after']} Mo ({limit})", ui='dlight')
-        else:
-            add('ok', 'Mémoire du jeu', f"archive de la piste : {w['after']} Mo ({limit})")
-        # nombre de modeles (2026-11-17, T922 : 1 319 modeles plantait meme avec une archive allegee, 600 se charge)
-        many = f"{w['models']} modèles différents, {w['files']} fichiers dans l'archive de la piste"
-        if w['models'] > w['models_max']:
-            add('erreur', 'Mémoire du jeu', f"{many} : le jeu plantera au chargement (limite mesurée : 1 082 modèles chargent, 1 126 plantent) "
-                                            '→ moins de sortes d\'objets différents (décor semé à la main sur beaucoup de familles, objets de la bibliothèque)')
-        elif w['models'] > w['models_ok']:
-            add('attention', 'Mémoire du jeu', f"{many} : proche de la limite (1 082 modèles chargent, 1 126 plantent) "
-                                                "→ à essayer en jeu, sinon moins de sortes d'objets")
-        else:
-            add('ok', 'Mémoire du jeu', many)
-        # charge estimee + modeles rares a retirer en premier (2026-11-18)
-        load = w.get('load', 0)
+            level = 'erreur'; why.append('archive trop lourde même après réduction des textures → retire du décor ou réduis les textures')
+        if w['models'] > w['models_max'] or load >= 100:
+            level = 'erreur'; why.append('trop de modèles différents ou de fichiers : le jeu plantera au chargement → moins de sortes d\'objets')
+        elif w['models'] > w['models_ok'] or load >= 90:
+            level = 'attention' if level == 'ok' else level
+            why.append('proche de la limite de modèles / fichiers (1 082 modèles chargent, 1 126 plantent) → à essayer en jeu, sinon moins de sortes d\'objets')
+        if w['collision'] and w['collision'] > w['collision_budget']:
+            level = 'attention' if level == 'ok' else level
+            why.append('collision lourde → décor loin de la piste sans collision, ou collision simplifiée')
+        if w['textures'] and w['before'] > w['budget'] and w['after'] <= w['budget']:
+            level = 'attention' if level == 'ok' else level
+            why.append(f"{w['textures']} texture(s) réduites de moitié à l'installation pour passer de {w['before']} Mo sous le plafond")
+        elif w['textures'] and w['after'] <= w['budget']:
+            parts.append(f"{w['textures']} texture(s) réduites par ton réglage « Alléger la map »")
+        text = ' · '.join(parts) + (' — ' + ' ; '.join(why) if why else ' — tout est sous les limites mesurées en jeu')
+        opts = {}
+        if level != 'ok':
+            opts = {'fix': 'texmax'} if w['after'] > w['budget'] and w['texture_max'] != 512 else {'ui': 'dlight'}
+        add(level, 'Mémoire du jeu', text, **opts)
+        # modeles rares a retirer en premier (2026-11-18), quand la limite de modeles approche
         if w['models'] > w['models_ok']:
             rare, n_rare = rare_models(track)
             if rare:
                 names = ', '.join(f'{nm} ({c})' for nm, c in rare[:10])
-                add('attention', 'Mémoire du jeu', f"charge estimée {load} % de la limite : {n_rare} modèle(s) n'ont qu'1 ou 2 "
-                                                   f"exemplaires, les retirer allège le plus vite → {names}"
+                add('attention', 'Mémoire du jeu', f"{n_rare} modèle(s) n'ont qu'1 ou 2 exemplaires, les retirer allège le plus vite → {names}"
                                                    + (' …' if n_rare > 10 else '') + ' (Liste de la scène : chercher leur nom)',
                     ui='dlight')
-        else:
-            add('ok', 'Mémoire du jeu', f'charge estimée : {load} % de la limite mesurée en jeu')
-        if w['collision'] and w['collision'] > w['collision_budget']:
-            add('attention', 'Mémoire du jeu', f"collision lourde : {w['collision']} triangles (au-delà de {w['collision_budget']}) "
-                                               '→ décor loin de la piste sans collision, ou collision simplifiée', ui='dlight')
     except Exception as e:  # noqa: BLE001
         add('attention', 'Mémoire du jeu', f'poids non mesuré : {e}')
     return {'checks': out, 'errors': sum(c['level'] == 'erreur' for c in out),

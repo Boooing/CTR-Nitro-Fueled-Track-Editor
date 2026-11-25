@@ -777,7 +777,9 @@ async function refreshLoadChip(force) {
   try {
     const w = await (await fetch('/api/weight_live?track=' + encodeURIComponent(track))).json();
     if (w.error) return;
-    const c = w.load >= 100 ? 'var(--err)' : w.load >= 80 ? '#ffb13d' : 'var(--muted)';
+    // memes seuils que Verifier (2026-11-25) : orange a 90 %, rouge a 100 % ; detail au survol
+    const c = w.load >= 100 ? 'var(--err)' : w.load >= 90 ? '#ffb13d' : 'var(--muted)';
+    b.title = `Charge mémoire estimée : ${w.load} % de la limite mesurée en jeu — ${w.models} modèles différents (le jeu plante vers ${w.models_max}). La taille de l'archive se voit dans Vérifier. Clic : Alléger la map`;
     b.textContent = `🧠 ${w.load} %`;
     b.style.cssText = `color:${c};border-color:${c};background:transparent`;
     b.hidden = false;
@@ -4764,6 +4766,28 @@ function selectDecor(m, toggle = false) {
   if (!toggle) { setDecorSelection(m ? [m] : []); return; }
   if (m) setDecorSelection(dMulti.includes(m) ? dMulti.filter(x => x !== m) : [...dMulti, m]);
 }
+// point d'accroche loin de l'objet (2026-11-25, demande utilisateur : objets de la bibliotheque dont l'origine du modele
+// est a des centaines de metres, morceaux de piste modelises aux coordonnees de leur circuit) : la poignee (deplacer,
+// tourner, taille) est mise au centre de l'objet, comme pour une selection multiple. Le modele et sa position en jeu ne
+// changent pas : seule la facon de le manipuler. -> centre (monde) si l'origine est hors de l'objet (marge 1 m), sinon null
+const pivotBox = new THREE.Box3();
+function farPivot(m) {
+  const g = m.geometry; if (!g?.attributes?.position) return null;
+  if (!g.boundingBox) g.computeBoundingBox();
+  m.updateMatrixWorld();
+  pivotBox.copy(g.boundingBox).applyMatrix4(m.matrixWorld);
+  const o = new THREE.Vector3().setFromMatrixPosition(m.matrixWorld);
+  return pivotBox.clone().expandByScalar(39.37).containsPoint(o) ? null : pivotBox.getCenter(new THREE.Vector3());
+}
+function attachSingle(m) {                                // objet seul : poignee sur lui, ou en son centre (origine lointaine)
+  const c = farPivot(m);
+  if (!c) { gizmo.attach(m); return false; }
+  pivot.position.copy(c); m.getWorldQuaternion(pivot.quaternion); pivot.scale.set(1, 1, 1); pivot.updateMatrixWorld();
+  pivotStart = pivot.matrixWorld.clone();
+  m.updateMatrix(); multiStart = [m.matrix.clone()];
+  gizmo.attach(pivot);
+  return true;
+}
 function setDecorSelection(list) {
   clearBaseSel();
   if (list.some(Boolean)) setContext('decor');
@@ -4775,7 +4799,7 @@ function setDecorSelection(list) {
   if (dMulti.length) lastDecorObjects = dMulti.filter(m => !m.userData.isNew).map(m => ({ file: m.userData.file, id: m.userData.obj.id, name: m.userData.obj.name }));
   for (const m of dMulti) m.material = selMaterial(m);
   if (dSelected) {
-    gizmo.attach(dSelected);
+    attachSingle(dSelected);
     if (!dSelected.userData.obj.has_transform) gizmo.setMode('translate');
     showLinkedCollision(dSelected);
   } else if (dMulti.length) {
@@ -4797,6 +4821,7 @@ function multiChanged() {
     D.clone().multiply(multiStart[i]).decompose(p, q, s);
     m.position.copy(p);
     if (m.userData.obj.has_transform) m.rotation.setFromQuaternion(q, 'ZYX');
+    if (dMulti.length === 1 && m.userData.obj.has_transform) m.scale.copy(s);   // objet seul tenu par son centre : taille aussi
     recordDecorEdit(m);
   });
   markDirty(); renderDecorSel(true);
@@ -5503,7 +5528,7 @@ function recordDecorEdit(m) {
 function decorChanged() {
   if (animSel >= 0 && gizmo.object?.userData.anim === animSel) { animMoved(); return; }
   if (lightSel != null && gizmo.object?.userData.light === lightSel) { lightMoved(); return; }
-  if (gizmo.object === pivot && dMulti.length > 1) { multiChanged(); return; }
+  if (gizmo.object === pivot && dMulti.length) { multiChanged(); return; }
   const m = dSelected; if (!m) return;
   recordDecorEdit(m);
   markDirty(); renderDecorSel(true);
@@ -5735,6 +5760,9 @@ function renderBasePropSel(valuesOnly) {
 }
 function renderDecorSel(valuesOnly) {
   const box = $('dsel'), m = dSelected;
+  // objet seul tenu par son centre : bouge autrement que par la poignee (champs, poser au sol, annuler...) -> poignee
+  // remise en son centre, nouveau point de depart
+  if (m && gizmo.object === pivot && dMulti.length === 1 && !gizmo.dragging) attachSingle(m);
   if (!valuesOnly) setTimeout(syncInspector, 0);          // en-tete de l'inspecteur : tout de suite
   if (baseSel != null && !dMulti.length) { if (!valuesOnly) sceneSync(); renderBasePropSel(valuesOnly); return; }
   if (baseMany != null && !dMulti.length) {
@@ -8524,6 +8552,7 @@ async function startTour() {
            z: null, look: null, yaw: 0, pitch: 0, drag: false, laps: 0, holes: new Set(), hud: 0, t: null,
            kp: null, kr: null, cyaw: null, cz: null, steer: 0 };
   tourKart ??= makeTourKart();
+  tourGridBuild();                                        // sol de la visite (une fois par collision)
   orbit.enabled = false; document.activeElement?.blur?.();
   camera.fov = 70; camera.updateProjectionMatrix();
   $('tspeed').value = '1'; $('tplay').textContent = '⏸'; $('tourwarn').textContent = '';
@@ -8545,6 +8574,61 @@ function stopTour() {
 }
 function tourResetSmooth() { tour.z = tour.look = tour.kp = tour.kr = tour.cyaw = tour.cz = null; }   // apres un saut de position
 function tourSeek(dd) { tour.d += dd; tourResetSmooth(); }
+// sol de la visite (2026-11-24, « visite lente et saccadee, le kart sautille ») : groundZ lance un rayon sur TOUTE la
+// collision (des centaines de milliers de triangles testes un a un), ~8 fois par image -> images lentes et irregulieres,
+// kart qui sautait d'une image a l'autre. Grille des triangles de la collision (cases de 10 m), faite une fois au debut
+// de la visite : un rayon vertical ne teste que les triangles de sa case. Meme resultat que groundZ.
+const TG_CELL = 400;
+let tourGrid = null;
+// surfaces du sol (collision de la map generee, ou apercu de la base : relief, route, pate) : signature = maillages et
+// versions de leurs sommets / index (refaite si elles changent)
+const tourSig = list => list.map(m => m.uuid + ':' + m.geometry.uuid + ':' + (m.geometry.attributes.position?.version ?? 0) + ':' + (m.geometry.index?.version ?? 0)).join('|');
+function tourGridBuild() {
+  const list = []; for (const t of groundTargets()) t.traverse?.(o => { if (o.isMesh && o.geometry?.attributes.position) list.push(o); });
+  if (!list.length) return tourGrid = null;
+  const sig = tourSig(list);
+  if (tourGrid?.sig === sig) return tourGrid;
+  let nv = 0; for (const m of list) nv += m.geometry.attributes.position.count;
+  const P = new Float32Array(nv * 3), v = new THREE.Vector3(), cells = new Map(); let off = 0;
+  for (const m of list) {
+    m.updateMatrixWorld();
+    const geo = m.geometry, src = geo.attributes.position, n = src.count;
+    for (let i = 0; i < n; i++) { v.fromBufferAttribute(src, i).applyMatrix4(m.matrixWorld); P[(off + i) * 3] = v.x; P[(off + i) * 3 + 1] = v.y; P[(off + i) * 3 + 2] = v.z; }
+    const I = geo.index ? geo.index.array : null, total = I ? I.length : n;
+    // seulement les parties dessinees (groupes du maillage : le relief saute les cases recouvertes par la pate)
+    const ranges = geo.groups?.length ? geo.groups.map(g => [g.start, Math.min(total, g.start + g.count)]) : [[0, total]];
+    for (const [r0, r1] of ranges) for (let q = r0; q + 2 < r1; q += 3) {
+      const a = off + (I ? I[q] : q), b = off + (I ? I[q + 1] : q + 1), c = off + (I ? I[q + 2] : q + 2);
+      const x0 = Math.min(P[a * 3], P[b * 3], P[c * 3]), x1 = Math.max(P[a * 3], P[b * 3], P[c * 3]);
+      const y0 = Math.min(P[a * 3 + 1], P[b * 3 + 1], P[c * 3 + 1]), y1 = Math.max(P[a * 3 + 1], P[b * 3 + 1], P[c * 3 + 1]);
+      for (let j = Math.floor(y0 / TG_CELL); j <= Math.floor(y1 / TG_CELL); j++) for (let i = Math.floor(x0 / TG_CELL); i <= Math.floor(x1 / TG_CELL); i++) {
+        const k = i * 100003 + j; let l = cells.get(k); if (!l) cells.set(k, l = []); l.push(a, b, c);
+      }
+    }
+    off += n;
+  }
+  return tourGrid = { sig, P, cells, list };
+}
+function tourGround(x, y, zHint) {                        // = groundZ(x, y, zHint), par la grille
+  const G = tourGrid; if (!G) return groundZ(x, y, zHint);
+  const l = G.cells.get(Math.floor(x / TG_CELL) * 100003 + Math.floor(y / TG_CELL)); if (!l) return null;
+  const P = G.P, top = (zHint ?? 0) + 3000;
+  let best = null, low = null, high = null;
+  for (let q = 0; q < l.length; q += 3) {
+    const a = l[q] * 3, b = l[q + 1] * 3, c = l[q + 2] * 3;
+    const ax = P[a], ay = P[a + 1], bx = P[b] - ax, by = P[b + 1] - ay, cx = P[c] - ax, cy = P[c + 1] - ay;
+    const d = bx * cy - by * cx; if (Math.abs(d) < 1e-9) continue;      // triangle vertical : pas touche par un rayon vertical
+    const px = x - ax, py = y - ay, u = (px * cy - py * cx) / d, w = (bx * py - by * px) / d;
+    if (u < -1e-6 || w < -1e-6 || u + w > 1 + 1e-6) continue;
+    const z = P[a + 2] + (P[b + 2] - P[a + 2]) * u + (P[c + 2] - P[a + 2]) * w;
+    if (z > top) continue;
+    if (high === null || z > high) high = z;
+    if (low === null || z < low) low = z;
+    if (zHint != null && z <= zHint + 300 && (best === null || z > best)) best = z;
+  }
+  if (high === null) return null;
+  return zHint == null ? high : best ?? low;
+}
 const tourRc = new THREE.Raycaster();
 const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
 // kart pose sur le sol de la ligne de course (cap, pente, devers), camera de poursuite derriere lui
@@ -8554,7 +8638,7 @@ function tourKartTick(dt, dd, p, g, hole) {
   const steerT = Math.max(-0.45, Math.min(0.45, wrapAngle(Math.atan2(far.y - p.y, far.x - p.x) - yaw) * 2.2));
   tour.steer += (steerT - tour.steer) * Math.min(1, dt * 6);
   const cx = Math.cos(yaw), cy = Math.sin(yaw), base = hole ? p.z : g;
-  const at = (dx, dy) => { const z = groundZ(p.x + dx, p.y + dy, base + 100); return z == null || Math.abs(z - base) > 150 ? base : z; };
+  const at = (dx, dy) => { const z = tourGround(p.x + dx, p.y + dy, base + 100); return z == null || Math.abs(z - base) > 150 ? base : z; };
   // sol sous le kart : centre + avant / arriere a 1,2 m + cotes a 0,9 m. Hauteur = moyenne de ces points, sans retard
   // (2026-11-23 : la hauteur montait d'un coup et redescendait en retard -> kart qui flottait puis retombait,
   // « il sautille ») ; pente et devers lisses (les aretes des triangles du sol ne secouent pas le kart)
@@ -8575,13 +8659,15 @@ function tourKartTick(dt, dd, p, g, hole) {
   const want = new THREE.Vector3(p.x - Math.cos(cyaw) * Math.cos(el) * dist, p.y - Math.sin(cyaw) * Math.cos(el) * dist, kz + Math.sin(el) * dist);
   tour.cz = tour.cz == null ? want.z : tour.cz + (want.z - tour.cz) * Math.min(1, dt * 5);
   want.z = Math.max(want.z - 0.5 * M, tour.cz);           // retard de hauteur limite a 50 cm
-  if (colMesh) {                                          // mur / plafond entre le kart et la camera : camera rapprochee
-    const dir = want.clone().sub(head), len = dir.length();
-    tourRc.set(head, dir.normalize()); tourRc.far = len;
-    const hit = tourRc.intersectObject(colMesh, false)[0];
-    if (hit) want.copy(head).addScaledVector(dir, Math.max(0.6 * M, hit.distance - 0.5 * M));
+  if (tourGrid) {                                         // mur / talus entre le kart et la camera : camera rapprochee
+    // (points tous les 50 cm sous le sol de la grille ; avant : rayon sur toute la collision a chaque image)
+    const dir = want.clone().sub(head), len = dir.length(); dir.normalize();
+    for (let s = 0.6 * M; s < len; s += 0.5 * M) {
+      const q = head.clone().addScaledVector(dir, s), gz = tourGround(q.x, q.y, q.z);
+      if (gz != null && gz > q.z) { want.copy(head).addScaledVector(dir, Math.max(0.6 * M, s - 0.5 * M)); break; }
+    }
   }
-  const gc = groundZ(want.x, want.y, want.z);
+  const gc = tourGround(want.x, want.y, want.z);
   if (gc != null && want.z < gc + TOUR_CLEAR) want.z = gc + TOUR_CLEAR;   // plancher dur : jamais dans le sol
   camera.position.copy(want);
   const look = tour.drag || Math.abs(tour.yaw) > 0.3 ? head
@@ -8595,7 +8681,7 @@ function tourTick(t) {
   if (tour.d >= L) { tour.d -= L; tour.laps++; }
   if (tour.d < 0) tour.d += L;
   const p = tourAt(tour.d), a = tourAt(tour.d + TOUR_AHEAD);
-  const g = groundZ(p.x, p.y, p.z), hole = g == null || g < p.z - TOUR_HOLE;
+  const g = tourGround(p.x, p.y, p.z), hole = g == null || g < p.z - TOUR_HOLE;
   if (hole) tour.holes.add(Math.floor(tour.d / TOUR_STEP));
   if (!tour.drag) { tour.yaw *= 1 - Math.min(1, dt * 2); tour.pitch *= 1 - Math.min(1, dt * 2); }  // la tete revient vers l'avant
   if ($('tkart').checked) { tourKartTick(dt, tour.playing ? dt * TOUR_SPEED * tour.speed : 0, p, g, hole); tourHud(t, L, hole); return; }

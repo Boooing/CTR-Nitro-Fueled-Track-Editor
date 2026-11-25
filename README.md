@@ -10,7 +10,28 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 
 ---
 
-## What's new in v0.8
+## What's new in v0.8.1
+
+Fixes since v0.8:
+- **Virtual tour smooth again, kart no longer bouncing**:
+  - the ground under the kart and the camera is now read from a grid of the ground's triangles, built once when the tour starts;
+  - before, every frame cast several rays on the whole collision;
+  - on a track built in the editor: 167 ms → 6 ms per frame;
+  - the kart's bouncing came from those slow, irregular frames.
+- **Objects whose attach point is far away** (some game objects from the library, track pieces modelled at their circuit's coordinates):
+  - the move / rotate / size handle is now placed at the centre of the object instead of hundreds of metres away;
+  - the object and its position in the game do not change.
+- **Check › Game memory** now gives everything that matters when the track loads, in one line, coloured by whatever is closest to its limit:
+  - archive size;
+  - number of different models;
+  - number of files;
+  - estimated load;
+  - collision triangles.
+
+  Textures reduced by your own *Lighten the map* setting are no longer shown as a warning. The 🧠 gauge turns orange at 90 % and shows the details on hover.
+- **The Check window is fully translated**: all messages, the fix buttons and the header (English, Spanish, Italian, German).
+
+## What was new in v0.8
 
 ### Modelling-clay ground: caves, tunnels and earth bridges
 - The ground of tracks built in the editor is now **modelling clay**: a real 3D volume, not just a height map.
@@ -335,6 +356,24 @@ Third-party: [three.js](https://threejs.org) (MIT, `ctr_tools/editor/vendor/thre
 Importe ta map (OBJ / COLLADA) ou **construis-la de zéro dans l'éditeur**, transforme-la en course jouable en quelques clics et ajoute-la au jeu comme **nouvelle piste** ou à la place d'une piste existante : IA, caisses, boosters, réapparitions, mini-carte, images de menu, ta propre musique, lumières et même téléporteurs.
 
 Ce dossier contient l'éditeur seul. **CTR Track Installer**, l'appli à part pour les joueurs, n'en fait pas partie.
+
+### Nouveautés de la v0.8.1
+
+- **Visite virtuelle fluide, le kart ne sautille plus**
+  - Le sol sous le kart et la caméra est lu dans une grille des triangles du sol, faite une fois au départ de la visite. Avant, chaque image lançait plusieurs rayons sur toute la collision.
+  - Sur une piste construite dans l'éditeur : 167 ms → 6 ms par image. Le sautillement venait de ces images lentes et irrégulières.
+- **Objets dont le point d'accroche est loin d'eux** (certains objets de la bibliothèque, morceaux de piste modélisés aux coordonnées de leur circuit)
+  - La poignée pour déplacer, tourner et changer la taille se met au centre de l'objet, au lieu de rester à des centaines de mètres.
+  - L'objet et sa place en jeu ne changent pas.
+- **Vérifier › Mémoire du jeu** : une ligne avec tout ce qui compte au chargement, colorée selon ce qui est le plus proche de sa limite :
+  - taille de l'archive ;
+  - nombre de modèles différents ;
+  - nombre de fichiers ;
+  - charge estimée ;
+  - triangles de collision.
+
+  Les textures réduites par ton réglage *Alléger la map* ne sont plus un avertissement. La jauge 🧠 passe orange à 90 % et donne le détail au survol.
+- **Fenêtre Vérifier entièrement traduite** : messages, boutons de correction et en-tête.
 
 ### Nouveautés de la v0.8
 
