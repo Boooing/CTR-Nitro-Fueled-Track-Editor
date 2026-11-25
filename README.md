@@ -10,7 +10,39 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 
 ---
 
-## What's new in v0.8.1
+## What's new in v0.8.2
+
+### Tunnels
+- **Tunnel while driving** (Creation › drive the road): press **U** (or the pad button) to start or stop a tunnel. Dig down into the ground or drive through a hill you raised: the ground is left above the road as a roof.
+- **🚇 Tunnel** tool (Relief): click the entrance, drag, release: a straight gallery through the clay.
+- Tunnels follow the relief: raising or lowering the ground over a tunnel rebuilds its roof.
+- **Decorated tunnel entrances** (Scenery › Automatic, and in the random track window): pillars and lanterns of the theme at each entrance, warm lights inside the tunnel.
+- The clay always leaves **at least 20 m of headroom** over the road (was 15 m), no more earth on the road or holes under it.
+- Clay pieces no longer attached to anything are removed automatically.
+- Clay walls have continuous textures (no more breaks between triangles).
+
+### Building and checking
+- **Closing the loop** while paving: within 150 m of the start, a green (or orange if too tight) curve shows the join; *Close the loop* finishes the track.
+- **Relief tools** sorted into groups: *Sculpt the ground*, *Volume: caves and tunnels*, *Under the road*, *Water*.
+- **⚡ Recommended lightening** in *Lighten the map*: picks texture size, simplified collision and clean-up for you, with a before → after table.
+- **🧠 gauge** shows the exact value of the last check as long as nothing changed.
+- **Test in game** works with more shadPS4 versions: emulator found from the Qt launcher, Cross key read from your shadPS4 controls, both log folders read.
+
+### AI lanes and loading
+- **Fix: a track with many sections could crash while loading** ("OOM MP_LEVEL"): the game only loads a limited number of AI lanes. Generating AI lanes now stays under that limit (36 lanes in total on tracks made with the editor, fewer lanes per section when the track has many sections), the section generator shows how many lanes are left, *Check* warns when there are too many, and installing removes the extra ones.
+
+### Boosters
+- **Boosters stay on the road**: when added, moved or when a track is loaded, each booster is put on the ground, tilted like the slope and turned in the direction of the race.
+- Checkbox **Always on the ground and aligned with the road** in the booster panel: untick it to place a booster freely (saved with the track).
+
+### Faster
+- **Check** gives its result at once when nothing was saved since the last check (16 s → 0 s).
+- **Clay brush** computed in background threads: the view no longer freezes (67 ms → 7 ms per stroke, full rebuild 250 ms → 18 ms).
+- Detached clay search limited to the edited area (63 ms → 10 ms).
+- Reading the ground (crates, boosters, splines, placing on the ground) uses a grid of the ground's triangles.
+- Collision of several modified meshes encoded in parallel.
+
+## What was new in v0.8.1
 
 Fixes since v0.8:
 - **Virtual tour smooth again, kart no longer bouncing**:
@@ -356,6 +388,38 @@ Third-party: [three.js](https://threejs.org) (MIT, `ctr_tools/editor/vendor/thre
 Importe ta map (OBJ / COLLADA) ou **construis-la de zéro dans l'éditeur**, transforme-la en course jouable en quelques clics et ajoute-la au jeu comme **nouvelle piste** ou à la place d'une piste existante : IA, caisses, boosters, réapparitions, mini-carte, images de menu, ta propre musique, lumières et même téléporteurs.
 
 Ce dossier contient l'éditeur seul. **CTR Track Installer**, l'appli à part pour les joueurs, n'en fait pas partie.
+
+### Nouveautés de la v0.8.2
+
+#### Tunnels
+- **Tunnel en conduisant** (Création › conduire la route) : touche **U** (ou le bouton de la manette) pour commencer ou arrêter un tunnel. Descends dans le sol ou traverse une colline que tu as montée : la terre reste au-dessus de la route comme plafond.
+- Outil **🚇 Tunnel** (Relief) : clic sur l'entrée, glisser, relâcher : une galerie droite dans la pâte.
+- Les tunnels suivent le relief : monter ou baisser le sol au-dessus d'un tunnel refait son plafond.
+- **Entrées de tunnel décorées** (Décor › Automatique, et dans la fenêtre de piste aléatoire) : piliers et lanternes du thème à chaque entrée, lumières chaudes dans le tunnel.
+- La pâte laisse toujours **au moins 20 m au-dessus de la route** (avant 15 m), plus de terre sur la route ni de trou dessous.
+- Les morceaux de pâte qui ne tiennent plus à rien sont retirés automatiquement.
+- Textures continues sur les parois de pâte (plus de cassures entre les triangles).
+
+#### Construction et vérification
+- **Fermer la boucle** pendant le pavage : à moins de 150 m du départ, une courbe verte (orange si trop serrée) montre le raccord ; *Fermer la boucle* termine la piste.
+- **Outils du Relief** rangés en groupes : *Sculpter le sol*, *Volume : caves et tunnels*, *Sous la route*, *Eau*.
+- **⚡ Allègement recommandé** dans *Alléger la map* : taille des textures, collision simplifiée et nettoyage choisis pour toi, avec un tableau avant → après.
+- La **jauge 🧠** montre la valeur exacte de la dernière vérification tant que rien n'a changé.
+- **Tester en jeu** marche avec plus de versions de shadPS4 : émulateur trouvé depuis le lanceur Qt, touche Croix lue dans tes réglages de manette shadPS4, les deux dossiers de journal lus.
+
+#### Voies IA et chargement
+- **Correction : une piste avec beaucoup de sections pouvait planter au chargement** (« OOM MP_LEVEL ») : le jeu ne charge qu'un nombre limité de voies IA. La génération des voies IA reste maintenant sous cette limite (36 voies en tout sur les pistes faites dans l'éditeur, moins de voies par section quand la piste a beaucoup de sections) ; la génération d'une section indique combien de voies il reste ; *Vérifier* prévient quand il y en a trop, et l'installation retire celles en trop.
+
+#### Boosters
+- **Les boosters restent sur la route** : à l'ajout, au déplacement et au chargement d'une piste, chaque booster est posé au sol, incliné comme la pente et tourné dans le sens de la course.
+- Case **Toujours posé au sol et aligné sur la route** dans le panneau du booster : décoche-la pour placer un booster librement (enregistré avec la piste).
+
+#### Plus rapide
+- **Vérifier** donne son résultat tout de suite si rien n'a été enregistré depuis la dernière vérification (16 s → 0 s).
+- **Pinceau de pâte** calculé en arrière-plan : la vue ne se fige plus (67 ms → 7 ms par trait, recalcul complet 250 ms → 18 ms).
+- Recherche des morceaux de pâte détachés limitée à la zone retouchée (63 ms → 10 ms).
+- Lecture du sol (caisses, boosters, splines, pose au sol) dans une grille des triangles du sol.
+- Collision de plusieurs maillages modifiés encodée en parallèle.
 
 ### Nouveautés de la v0.8.1
 
