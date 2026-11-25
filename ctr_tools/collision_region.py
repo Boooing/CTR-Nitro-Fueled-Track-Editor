@@ -18,7 +18,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cms_codec import Prim, encode_mesh, read_mesh, write_mesh  # noqa: E402
+from cms_codec import Prim, encode_mesh, encode_meshes, read_mesh, write_mesh  # noqa: E402
 from collision_edit import CollisionFile  # noqa: E402
 from havok import Packfile  # noqa: E402
 from havok_writer import PackfileWriter  # noqa: E402
@@ -265,14 +265,16 @@ class GroundEditor:
         if not any(m['dirty'] for m in self.meshes) and not self.inst_edits and not self.inst_added:
             return self.raw
         w = PackfileWriter(self.raw)
-        for m in self.meshes:
-            if m['dirty']:
-                dele = m.get('deleted', set())
-                m['mesh'].prims = [p for i, p in enumerate(m['mesh'].prims) if i not in dele]
-                m['deleted'] = set()
-                if not m['mesh'].prims:      # maillage vide : on garde un triangle minuscule (structure valide)
-                    m['mesh'].prims = [Prim([(0, 0, -1e4), (1e-3, 0, -1e4), (0, 1e-3, -1e4)], 0)]
-                write_mesh(w, m['shape'], encode_mesh(m['mesh']))
+        dirty = [m for m in self.meshes if m['dirty']]
+        for m in dirty:
+            dele = m.get('deleted', set())
+            m['mesh'].prims = [p for i, p in enumerate(m['mesh'].prims) if i not in dele]
+            m['deleted'] = set()
+            if not m['mesh'].prims:      # maillage vide : on garde un triangle minuscule (structure valide)
+                m['mesh'].prims = [Prim([(0, 0, -1e4), (1e-3, 0, -1e4), (0, 1e-3, -1e4)], 0)]
+        # (2026-11-25) maillages modifies encodes ensemble, en parallele (cms_codec.encode_meshes)
+        for m, enc in zip(dirty, encode_meshes([m['mesh'] for m in dirty])):
+            write_mesh(w, m['shape'], enc)
         write_compound(w, self)
         return w.to_bytes()
 

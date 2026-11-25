@@ -428,6 +428,55 @@ def encode_mesh(mesh):
     return enc
 
 
+def _encode_mesh_job(mesh):
+    """Tache d'un processus de calcul : un maillage entier (pas de calcul en parallele imbrique dans le processus)."""
+    global PARALLEL_MIN_SECTIONS
+    PARALLEL_MIN_SECTIONS = 1 << 30
+    return _encode_mesh(mesh)
+
+
+def encode_meshes(meshes):
+    """Comme encode_mesh pour plusieurs maillages (2026-11-25, « collision sur plusieurs coeurs pour toute la map ») :
+    ceux deja encodes sont repris ; les autres en meme temps, chacun dans un processus de calcul, le plus gros sur place
+    (ses sections sont elles-memes reparties sur les processus). Meme resultat qu'un par un ; repli sur place si le
+    calcul en parallele echoue."""
+    global _pool
+    keys = [mesh_key(m) for m in meshes]
+    out, todo = [None] * len(meshes), []
+    for i, k in enumerate(keys):
+        if k in _ENC_MEMO:
+            _ENC_MEMO.move_to_end(k)
+            out[i] = _ENC_MEMO[k]
+        else:
+            todo.append(i)
+    if todo:
+        progress.step(f'encodage de la collision : {len(todo)} maillage(s) à encoder, {len(meshes) - len(todo)} repris')
+    big = max(todo, key=lambda i: len(meshes[i].prims)) if todo else None
+    far = [i for i in todo if i != big and len(meshes[i].prims) > 2000]
+    futures = {}
+    if far and _workers() > 1:
+        try:
+            pool = _get_pool()
+            futures = {i: pool.submit(_encode_mesh_job, meshes[i]) for i in far}
+        except Exception as e:  # noqa: BLE001 - repli sur place
+            print(f'encodage des maillages en parallele impossible ({e!r}) : calcul sur place', flush=True)
+            futures, _pool = {}, None
+    for i in todo:
+        if i not in futures:
+            out[i] = _encode_mesh(meshes[i])
+    for i, f in futures.items():
+        try:
+            out[i] = f.result()
+        except Exception as e:  # noqa: BLE001
+            print(f'maillage {i} : calcul en parallele rate ({e!r}), refait sur place', flush=True)
+            out[i] = _encode_mesh(meshes[i])
+    for i in todo:
+        _ENC_MEMO[keys[i]] = out[i]
+    while len(_ENC_MEMO) > ENC_MEMO_MAX:
+        _ENC_MEMO.popitem(last=False)
+    return out
+
+
 def _encode_mesh(mesh):
     """Encodage complet d'un Mesh (voir encode_mesh)."""
     prims = mesh.prims

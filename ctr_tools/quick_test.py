@@ -236,7 +236,8 @@ def uninstall(archives):
 
 
 # --- shadPS4 : lancement, validation automatique du choix du personnage, retour au jeu normal ---------------------
-CROSS_KEY = 0x4E                  # « n » : croix au clavier dans la configuration par defaut de shadPS4
+CROSS_KEY = 0x4E                  # « n » : croix au clavier dans la configuration par defaut de shadPS4 (repli)
+EMU_IMAGE = {'shadps4.exe'}       # noms d'exe de l'emulateur suivis (celui lance est ajoute)
 READY_MARK = 'forPlayID:0'        # journal : pilote du joueur charge -> ecran de personnalisation pret
 FIRST_PRESS, PRESS_EVERY, MAX_PRESSES = 0.8, 1.0, 15     # s apres READY_MARK, s entre deux appuis, appuis au plus
 STATUS = {'state': 'idle', 'text': ''}
@@ -247,8 +248,16 @@ def _status(state, text):
 
 
 def find_shadps4(configured=None):
-    """shadPS4.exe : reglage, sinon version choisie dans le lanceur Qt (qt_ui.ini), sinon la plus recente."""
-    if configured and os.path.isfile(configured):
+    """shadPS4.exe : reglage, sinon version choisie dans le lanceur Qt (qt_ui.ini), sinon la plus recente.
+    2026-11-25 (« plusieurs versions de shadPS4 posent probleme sur d'autres PC ») : reglage qui pointe le LANCEUR
+    (shadPS4QtLauncher.exe, depuis la v0.12 l'emulateur est un exe a part) -> version choisie dans ce lanceur ; reglage =
+    dossier -> l'exe de l'emulateur dedans."""
+    if configured and os.path.isdir(configured):
+        found = [f for f in glob.glob(os.path.join(configured, '*.exe')) if 'shadps4' in os.path.basename(f).lower()
+                 and 'launcher' not in os.path.basename(f).lower()]
+        if found:
+            return sorted(found, key=os.path.getmtime)[-1]
+    if configured and os.path.isfile(configured) and 'launcher' not in os.path.basename(configured).lower():
         return configured
     root = os.path.join(os.environ.get('APPDATA', ''), 'shadPS4QtLauncher')
     ini = configparser.ConfigParser(interpolation=None, strict=False)
@@ -266,9 +275,17 @@ def find_shadps4(configured=None):
 def emulator_running():
     if sys.platform != 'win32':
         return subprocess.run(['pgrep', '-f', 'shadps4'], capture_output=True).returncode == 0
-    out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq shadPS4.exe', '/NH'], capture_output=True, text=True,
-                         creationflags=0x08000000).stdout
-    return 'shadps4.exe' in out.lower()
+    out = subprocess.run(['tasklist', '/FO', 'CSV', '/NH'], capture_output=True, text=True,
+                         creationflags=0x08000000).stdout.lower()
+    return any(f'"{n}"' in out for n in EMU_IMAGE)
+
+
+def user_dirs(exe):
+    """Dossiers « user » possibles de shadPS4, le plus probable d'abord : a cote de l'exe (version portable, lanceur Qt :
+    un par version), sinon %APPDATA%\\shadPS4 (installation classique)."""
+    out = [os.path.join(os.path.dirname(exe), 'user')]
+    out.append(os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'shadPS4'))
+    return out
 
 
 def log_path(exe):
@@ -279,11 +296,54 @@ def log_path(exe):
     return os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'shadPS4', 'log', 'shad_log.txt')
 
 
+# touches de shadPS4 (input_config/*.ini, noms SDL) -> codes de touche Windows
+_VK = {'space': 0x20, 'enter': 0x0D, 'return': 0x0D, 'backspace': 0x08, 'tab': 0x09, 'escape': 0x1B,
+       'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'lshift': 0xA0, 'rshift': 0xA1, 'lctrl': 0xA2,
+       'rctrl': 0xA3, 'lalt': 0xA4, 'ralt': 0xA5, 'kpenter': 0x0D, 'kp_enter': 0x0D}
+
+
+def cross_key(exe, game_id='CUSA13795'):
+    """Touche du clavier liee a la croix dans la configuration de shadPS4 (2026-11-25) : les versions recentes lisent
+    user/input_config/<jeu>.ini (sinon default.ini) — « cross = kp2 » (pave numerique) par defaut, « n » en
+    alternative, ou ce que le joueur a choisi ; les anciennes versions : « n » fixe. -> (code Windows, nom)."""
+    for ud in user_dirs(exe):
+        for name in (f'{game_id}.ini', 'default.ini'):
+            path = os.path.join(ud, 'input_config', name)
+            try:
+                lines = open(path, encoding='utf-8', errors='replace').read().splitlines()
+            except OSError:
+                continue
+            keys = []
+            for ln in lines:
+                ln = ln.split('#', 1)[0].strip()
+                if '=' not in ln:
+                    continue
+                k, v = (t.strip().lower() for t in ln.split('=', 1))
+                if k != 'cross':
+                    continue
+                for part in v.replace(';', ',').split(','):
+                    part = part.strip()
+                    if len(part) == 1 and part.isalnum():
+                        keys.append((ord(part.upper()), part))
+                    elif part.startswith('kp') and part[2:].isdigit():
+                        keys.append((0x60 + int(part[2:]), part))
+                    elif part in _VK:
+                        keys.append((_VK[part], part))
+            if keys:                                     # lettre de preference (pave numerique : depend de Verr Num)
+                return next((k for k in keys if k[1].isalpha() and len(k[1]) == 1), keys[0])
+    return CROSS_KEY, 'n'
+
+
+
 class _Log:
     """Lecture au fil de l'eau du journal (recree a chaque lancement)."""
 
     def __init__(self, path, since):
         self.path, self.since, self.pos, self.text = path, since, 0, ''
+        try:                                             # journal en mode « ajout » (--log-append) : seulement la suite
+            self.pos = os.path.getsize(path)
+        except OSError:
+            self.pos = 0
 
     def read(self):
         try:
@@ -303,12 +363,11 @@ class _Log:
 
 
 def _emulator_pids():
-    out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq shadPS4.exe', '/FO', 'CSV', '/NH'], capture_output=True,
-                         text=True, creationflags=0x08000000).stdout
-    return {int(l.split('","')[1]) for l in out.splitlines() if l.lower().startswith('"shadps4.exe"')}
+    out = subprocess.run(['tasklist', '/FO', 'CSV', '/NH'], capture_output=True, text=True, creationflags=0x08000000).stdout
+    return {int(l.split('","')[1]) for l in out.splitlines() if l.split('","')[0].strip('"').lower() in EMU_IMAGE}
 
 
-def _press_cross(pid):
+def _press_cross(pid, key=None):
     """Croix envoyee a la fenetre du jeu, SEULEMENT si elle est au premier plan (jamais a une autre application)."""
     import ctypes
     from ctypes import wintypes
@@ -335,10 +394,12 @@ def _press_cross(pid):
         time.sleep(0.3)
         if u32.GetForegroundWindow() not in wins:
             return False
-    scan = u32.MapVirtualKeyW(CROSS_KEY, 0)
-    u32.keybd_event(CROSS_KEY, scan, 0, 0)
+    vk = key or CROSS_KEY
+    scan = u32.MapVirtualKeyW(vk, 0)
+    ext = 1 if vk in (0x26, 0x28, 0x25, 0x27, 0xA3, 0xA5) else 0   # fleches, Ctrl / Alt droits : touches etendues
+    u32.keybd_event(vk, scan, ext, 0)
     time.sleep(0.12)
-    u32.keybd_event(CROSS_KEY, scan, 2, 0)
+    u32.keybd_event(vk, scan, ext | 2, 0)
     return True
 
 
@@ -379,10 +440,24 @@ def _popen_clean(cmd, cwd):
 def launch(exe, game_root, track, on_exit=None, auto_ready=True, timeout=180):
     """Lance shadPS4 sur le jeu ; fil de suivi : validation du choix perso / kart, puis on_exit() a la fermeture."""
     since = time.time() - 2
+    EMU_IMAGE.add(os.path.basename(exe).lower())             # exe renomme (shadPS4-v0.13.exe...) : suivi aussi
+    game_id = os.path.basename(os.path.normpath(game_root)).split('-')[0] or 'CUSA13795'
+    key, key_name = cross_key(exe, game_id if game_id.upper().startswith('CUSA') else 'CUSA13795')
+    logs = [_Log(os.path.join(ud, 'log', 'shad_log.txt'), since) for ud in user_dirs(exe)]   # celui qui avance compte
+    # -g : accepte par toutes les versions (anciennes : seule forme ; recentes : -g, --game ou chemin seul)
     proc = _popen_clean([exe, '-g', os.path.join(game_root, 'eboot.bin')], os.path.dirname(exe))
-    log = _Log(log_path(exe), since)
+
+    class _Logs:
+        @property
+        def text(self):
+            return max((l.text for l in logs), key=len)
+
+        def read(self):
+            for l in logs:
+                l.read()
+    log = _Logs()
     load_marks = (f"load {map_path(track)}".lower(), f"'{map_path(track).lower()}'")
-    _status('starting', 'shadPS4 lancé, démarrage du jeu…')
+    _status('starting', f'shadPS4 lancé ({os.path.basename(os.path.dirname(exe)) or exe}), démarrage du jeu…')
 
     def watch():
         nonlocal auto_ready
@@ -397,9 +472,9 @@ def launch(exe, game_root, track, on_exit=None, auto_ready=True, timeout=180):
                 elif not loaded and auto_ready and sys.platform == 'win32':
                     if ready_at is None and READY_MARK.lower() in low:
                         ready_at = time.time() + FIRST_PRESS
-                        _status('ready', 'choix du personnage : validation automatique…')
+                        _status('ready', f'choix du personnage : validation automatique (touche « {key_name} »)…')
                     if ready_at and time.time() >= ready_at:
-                        if _press_cross(proc.pid):
+                        if _press_cross(proc.pid, key):
                             presses += 1
                         ready_at = time.time() + PRESS_EVERY
                     if presses >= MAX_PRESSES or time.time() - t0 > timeout:

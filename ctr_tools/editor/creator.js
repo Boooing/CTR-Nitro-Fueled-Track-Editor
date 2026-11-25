@@ -45,8 +45,14 @@ let MATERIALS = [                     // ordre = indice de peinture (matieres du
 // peintures de TOUS les themes, apres celles du theme : indice MATERIALS.length + rang (track_creator.paint_materials)
 let EXTRA_MATS = [];
 // dig : sous une route en hauteur, le sol n'est plus colle a la route (relief garde, route en pont) ; fill : l'inverse
-const TOOLS = [['stretch', '✋ Étirer'], ['raise', '⬆ Monter'], ['lower', '⬇ Creuser'], ['flatten', '▬ Aplanir'], ['smooth', '〰 Lisser'],
-               ['dig', '⛏ Creuser sous la route'], ['fill', '↺ Reboucher sous la route'], ['water', '💧 Remplir d\'eau']];
+// outils du Relief par usage (2026-11-25, « l'ordre des outils est melange et n'a pas de sens ») : sculpter le sol, puis
+// travailler la pate en volume, puis le sol sous la route, puis l'eau
+const TOOL_GROUPS = [
+  ['Sculpter le sol', [['raise', '⬆ Monter'], ['lower', '⬇ Creuser'], ['flatten', '▬ Aplanir'], ['smooth', '〰 Lisser']]],
+  ['Volume : caves et tunnels', [['stretch', '✋ Étirer'], ['tunnel', '🚇 Tunnel']]],
+  ['Sous la route', [['dig', '⛏ Creuser sous la route'], ['fill', '↺ Reboucher sous la route']]],
+  ['Eau', [['water', '💧 Remplir d\'eau']]]];
+const TOOLS = TOOL_GROUPS.flatMap(([, l]) => l);
 
 // ---- manette : chaque action lit une entree, bouton (b) ou demi-axe (a + sens s), valeur 0..1. Touches au choix,
 // gardees dans le navigateur (localStorage) ; numeros = disposition standard (Xbox : 0 A, 1 B, 2 X, 3 Y, 4 LB,
@@ -59,6 +65,7 @@ export const PAD_ACTIONS = [
   ['wider', 'Élargir la route', { b: 5 }], ['narrower', 'Rétrécir la route', { b: 4 }],
   ['close', 'Fermer la boucle', { b: 3 }], ['camera', 'Caméra libre / poursuite', { b: 1 }],
   ['bankLeft', 'Incliner la route à gauche', { b: 12 }], ['bankRight', 'Incliner la route à droite', { b: 13 }],
+  ['tunnel', 'Tunnel : plafond de terre au-dessus (oui · non)', { b: 10 }],
   ['undo', '↶ Annuler', { b: 14 }], ['redo', '↷ Rétablir', { b: 15 }]];
 const PAD_KEY = 'ctr_pad_map', PAD_DEAD = 0.2;
 export function loadPadMap() {
@@ -338,7 +345,7 @@ export function initCreator(ctx) {
     faces: () => terrainFaces, repeat: () => (S.kitInfo?.ground_repeat || 12) * IN,
     material: m => terrainFaces?.mats?.get(m) || terrainMesh.material[0],
     onRegion: () => S.terrain && refreshTerrainFaces(), pickGround: r => pickRay(r), roadMap: () => clayRoadMap() });
-  // chaussee pour la pate (2026-11-24 : pas de pate a moins de 15 m au-dessus de la route) : colonnes de la grille de 4 m
+  // chaussee pour la pate (2026-11-24 : pas de pate a moins de 20 m au-dessus de la route (15 m le 24)) : colonnes de la grille de 4 m
   // sous la route (largeur locale + 1 m de chaque cote) -> hauteurs de la chaussee ; refaite quand la route change
   let roadMapC = { sig: null, ver: 0, map: new Map() };
   function clayRoadMap() {
@@ -351,17 +358,23 @@ export function initCreator(ctx) {
     for (let k = 0; k < n; k++) {
       const a = E[k], b = E[(k + 1) % n]; if (!S.closed && k === n - 1) break;
       const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
+      // points de la grille jusqu'a 4 m au-dela du bord : d = distance au bord (negative sur la route), pour placer les
+      // parois exactement au bord (2026-11-25)
       for (let t = 0; t < 1; t += 0.25) {
-        const x0 = a[0] + dx * t, y0 = a[1] + dy * t, z0 = a[2] + (b[2] - a[2]) * t, hw = ((a[3] || S.width) + ((b[3] || S.width) - (a[3] || S.width)) * t) / 2 + 1 * IN;
-        for (let o = -hw; o <= hw; o += V / 2) {
+        const x0 = a[0] + dx * t, y0 = a[1] + dy * t, z0 = a[2] + (b[2] - a[2]) * t, hwT = ((a[3] || S.width) + ((b[3] || S.width) - (a[3] || S.width)) * t) / 2;
+        for (let o = -hwT - V; o <= hwT + V; o += V / 2) {
           const x = x0 + nx * o, y = y0 + ny * o;
           for (const ix of [Math.floor(x / V), Math.ceil(x / V)]) for (const iy of [Math.floor(y / V), Math.ceil(y / V)]) {
-            if (Math.hypot(ix * V - x0, iy * V - y0) > hw + V / 2) continue;
+            const d = Math.hypot(ix * V - x0, iy * V - y0) - hwT;
+            if (d > V) continue;
             // chaussee AU POINT de la grille (sol affiche : devers compris) ; pont / saut (sol loin dessous) : l'axe
-            const sh = sample(S.shown, ix * V, iy * V), zr = sh > z0 - 4 * IN ? sh : z0;
-            const key = ck(ix, iy), zs = map.get(key);
-            if (!zs) map.set(key, [zr]);
-            else { const j = zs.findIndex(z => Math.abs(z - zr) < 6 * IN); if (j < 0) zs.push(zr); else zs[j] = Math.min(zs[j], zr); }
+            const sh = sample(S.shown, ix * V, iy * V), gr = sh > z0 - 4 * IN, zr = gr ? sh : z0;
+            const key = ck(ix, iy), l = map.get(key);
+            if (!l) { map.set(key, [{ z: zr, d, gr }]); continue; }
+            const e = l.find(v => Math.abs(v.z - zr) < 6 * IN);
+            if (!e) l.push({ z: zr, d, gr });
+            else if (d < e.d) { e.d = d; e.z = Math.min(e.z, zr); e.gr = e.gr || gr; }
+            else e.z = Math.min(e.z, zr);
           }
         }
       }
@@ -492,6 +505,7 @@ export function initCreator(ctx) {
         <span>↑ Z W</span><span>avancer (pose la route)</span><span>↓ S</span><span>reculer (efface)</span>
         <span>← Q A · → D</span><span>tourner</span><span>R · F</span><span>monter · descendre</span>
         <span>T · G</span><span>incliner à gauche · à droite</span><span>B</span><span>talus sous la route (oui · non)</span>
+        <span>U</span><span>tunnel : plafond de terre au-dessus (oui · non)</span>
         <span>+ · −</span><span>largeur</span><span>Entrée</span><span>fermer la boucle</span>
         <span>Maj</span><span>plus vite</span><span>C</span><span>caméra libre / poursuite</span>
         <span>Espace</span><span>saut (maintenir : trou dans la route)</span></div></details>
@@ -501,7 +515,9 @@ export function initCreator(ctx) {
       <div class="note">Clic gauche maintenu sur le sol : sculpter. Clic droit : tourner la vue, molette : zoom, clic milieu : déplacer. Sous la route, le terrain est raccordé à la route à la génération.</div>
       <div class="note">⛏ Creuser sous la route : sous une route en hauteur, le sol n'est plus collé à elle (place pour du décor, la route devient un pont). ↺ Reboucher : le sol se raccorde de nouveau.</div></details>
       <div class="crcard"><h4>Outil de relief</h4>
-      <div id="crtools" style="display:flex;flex-wrap:wrap;gap:4px">${TOOLS.map(([k, l]) => `<button data-tool="${k}">${l}</button>`).join('')}</div></div>
+      <div id="crtools">${TOOL_GROUPS.map(([g, l]) => `<div style="font-size:11px;color:var(--muted);margin:6px 0 3px">${g}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">${l.map(([k, t]) => `<button data-tool="${k}">${t}</button>`).join('')}</div>`).join('')}</div>
+</div>
       <div id="crwatercard" class="crcard" hidden><h4>💧 Eau</h4>
         <div id="crwhelp" class="note" style="font-size:12px;margin-bottom:6px"></div>
         <label style="display:flex;gap:6px;align-items:center;margin-bottom:6px" title="Couleur de l'eau, pour l'eau sélectionnée et les nouvelles">Type
@@ -548,6 +564,7 @@ export function initCreator(ctx) {
           <label style="display:block;margin-bottom:4px" title="Hauteur des collines et creux que le décor automatique peut modeler autour de la route. 0 : il ne touche pas au relief.">Relief : <b id="craiampv">25</b> m<input id="craiamp" type="range" min="0" max="80" step="5" value="25" style="width:100%"></label>
           <label style="display:block;margin-bottom:4px"><input id="craibig" type="checkbox" checked> Gros décors en fond de carte</label>
           <label style="display:block" title="Rien de haut (arbre, rocher, bâtiment) à moins de 30 m à l'intérieur d'un virage ni autour de la ligne de départ : on voit toujours la suite de la route."><input id="craisight" type="checkbox" checked> Virages et départ dégagés</label>
+          <label style="display:block;margin-top:4px" title="À la génération : deux piliers du thème et une lanterne de chaque côté de chaque entrée de tunnel, et des lumières du jeu dans le tunnel (refaits à chaque génération)"><input id="craitun" type="checkbox" checked> 🏛 Entrées de tunnel décorées</label>
         </details>
         <button id="craigo" class="primary" style="width:100%;margin-top:8px">🤖 Créer le décor</button>
         <button id="crairm" hidden style="width:100%;margin-top:4px;font-size:12px">🧹 Retirer le décor automatique</button>
@@ -1656,6 +1673,89 @@ export function initCreator(ctx) {
     if (on) { const e = edgesOf(p); while (p.length < 5) p.push(0); p[5] = e[0]; p[6] = e[1]; p[7] = e[2]; p[8] = e[3]; p[9] = 1; }
     else if (p.length > 9) p[9] = 0;
   }
+  // ---- tunnel a la conduite (2026-11-25, « je descends dans le sol et j'appuie sur une touche qui laisse le plafond de
+  // terre au-dessus ») : U (ou clic du stick gauche) bascule le mode. Points poses en mode tunnel : p[10] = 1. Quelques
+  // points derriere le paveur (terrain raccorde a jour), la pate remet le terrain naturel au-dessus de la tranchee (releve
+  // en tertre si la route n'est pas assez profonde : voute + 12 m) puis creuse la galerie a la largeur de la route. Reculer
+  // : pate du tunnel refaite depuis l'etat d'avant le tunnel (photo prise a l'appui sur U).
+  function setTunnel(p, on) {
+    if (on) { if (p.length < 10) { const nt = p[9] || 0; setNoTalus(p, true); p[9] = nt; } p[10] = 1; }
+    else if (p.length > 10) p[10] = 0;
+  }
+  setTimeout(() => {                                        // case « entrees de tunnel decorees » : retenue
+    const c = $('craitun'); if (!c) return;
+    try { c.checked = localStorage.getItem('ctr_tundeco') !== '0'; } catch (e) { c.checked = true; }
+    c.onchange = () => { try { localStorage.setItem('ctr_tundeco', c.checked ? '1' : '0'); } catch (e) { /* sans importance */ } };
+  }, 0);
+  function toggleTunnel() {
+    if (!S.tunnelMode) {
+      if (S.closed) { status('La boucle est fermée : recule un peu pour poser un tunnel', 'err'); return; }
+      S.tunnelMode = true;
+      const last = S.points.length - 1;
+      S.tunRun = { start: last, built: last, snap: clay.snapshot() };
+      setTunnel(S.points[last], true);
+      status('⛏ Tunnel : la terre reste au-dessus de la route (U pour sortir). Descends sous le sol : le plafond suit derrière toi', 'ok');
+    } else {
+      S.tunnelMode = false;
+      tunnelAdvance(true);
+      clay.dropFloating();
+      S.tunRun = null; S.propsDirty = true; saveDraft();
+      status('Tunnel terminé : la route ressort à l\'air libre', 'ok');
+    }
+    hudText = ''; showHeight();
+  }
+  function tunnelAdvance(all) {                              // points du tunnel pas encore creuses, par paquets de 4
+    const R = S.tunRun; if (!R) return;                     // (sauf les 3 derniers, terrain raccorde encore en cours)
+    const upto = all ? S.points.length : S.points.length - 3;
+    if (upto - R.built < (all ? 1 : 4)) return;
+    clay.batch(() => tunnelBuild(R.built, upto - 1)); R.built = upto; S.propsDirty = true;
+  }
+  function tunnelAfterErase() {                             // recul dans le tunnel : pate refaite depuis la photo
+    const R = S.tunRun;
+    if (S.points.length - 1 < R.start) { clay.restore(R.snap); S.tunnelMode = false; S.tunRun = null; hudText = ''; showHeight(); return; }
+    if (R.built <= S.points.length) return;
+    clay.restore(R.snap); R.snap = clay.snapshot(); R.built = R.start;
+    tunnelAdvance(!S.tunnelMode);
+  }
+  // relief retouche au-dessus d'un tunnel fait a la conduite (2026-11-25) : les points du tunnel proches de la zone
+  // retouchee sont refaits (pate effacee le long de ces points, toit et galerie recalcules d'apres le nouveau terrain)
+  function tunnelsRefresh(box) {
+    const P = S.points, n = P.length, m = 60 * IN; if (!box) return 0;
+    const hit = []; for (let i = 0; i < n; i++) { const p = P[i];
+      if (p[10] && p[0] > box.x0 - m && p[0] < box.x1 + m && p[1] > box.y0 - m && p[1] < box.y1 + m) hit.push(i); }
+    if (!hit.length) return 0;
+    const runs = []; for (const i of hit) { const r = runs[runs.length - 1]; if (r && i <= r[1] + 3) r[1] = i; else runs.push([i, i]); }
+    // effacee autour des points touches, refaite plus loin de chaque cote (l'effacement deborde de la largeur du toit)
+    const E = Math.ceil(50 * IN / STEP) + 2;
+    clay.batch(() => { for (const [a, b] of runs) tunnelBuild(Math.max(0, a - 2 - E), Math.min(n - 1, b + 2 + E), [Math.max(0, a - 2), Math.min(n - 1, b + 2)]); });
+    clay.dropFloating();
+    return hit.length;
+  }
+  function tunnelBuild(i0, i1, clearRange) {                     // points i0..i1 (paquet) : toit puis galerie
+    const P = S.points, n = P.length;
+    const pick = (a, b) => { const out = []; for (let k = a; k <= b; k++) if (k >= 0 && k < n && P[k][10]) out.push(P[k]); return out; };
+    const near = pick(i0 - 1, i1 + 1), seg = pick(i0 - 3, i1 + 1);
+    if (near.length < 2 || seg.length < 2) return;
+    // chaussee : sol affiche (la route y est raccordee) ; pont / saut : l'axe
+    const surf = p => { const sh = sample(S.shown, p[0], p[1]); return sh > p[2] - 4 * IN ? sh : p[2]; };
+    const w = Math.max(...near.map(p => p[3] || S.width)), rIn = Math.max(14 * IN, 0.35 * w), need = 1.9 * rIn + 12 * IN;
+    const zs = near.map(surf); let deep = 0;
+    near.forEach((p, k) => { deep = Math.max(deep, heightAt(p[0], p[1]) - zs[k]); });
+    const zAt = (x, y) => { let b = Infinity, z = zs[0]; near.forEach((p, k) => { const d = (p[0] - x) ** 2 + (p[1] - y) ** 2; if (d < b) { b = d; z = zs[k]; } }); return z; };
+    // largeur du toit : la tranchee, et au moins la galerie + 12 m de pied plein de chaque cote (fondu de 24 m en plus) :
+    // sur une route peu enterree, le tertre sans pied etait retire comme morceau detache
+    const half = Math.max(w / 2 + Math.min(40 * IN, Math.max(0, deep) * 1.2 + 8 * IN), 0.48 * w + 0.44 * rIn + 36 * IN);
+    if (clearRange) clay.clearAlong(pick(clearRange[0], clearRange[1]).map(p => ({ x: p[0], y: p[1] })), half + 2 * 4 * IN);   // ancien toit, ancienne galerie
+    // toit : terrain naturel (sans la tranchee), au moins la voute + 12 m au-dessus de la route ; largeur = la tranchee
+    // (fondu aux bouts : 1 po, les paquets voisins se raccordent ; 25 m effacaient un paquet court)
+    clay.fillTo(near.map(p => ({ x: p[0], y: p[1] })), half,
+                (x, y) => Math.max(heightAt(x, y), zAt(x, y) + need), 1);
+    const dirAt = k => { const a = seg[Math.max(0, k - 1)], b = seg[Math.min(seg.length - 1, k + 1)], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      return [-(b[1] - a[1]) / L, (b[0] - a[0]) / L]; };
+    for (const f of [-0.48, -0.24, 0, 0.24, 0.48]) {         // galerie a la largeur de la route (comme les tunnels aleatoires)
+      clay.tube(seg.map((p, k) => { const [nx, ny] = dirAt(k), o = f * (p[3] || w); return { x: p[0] + nx * o, y: p[1] + ny * o, z: surf(p) + rIn * 0.9, r: rIn }; }), true);
+    }
+  }
   function effPoints() {
     const P = S.points, n = P.length;
     // tremplin (track_creator.centerline) : la route se releve avant chaque saut, comme a la generation
@@ -2299,7 +2399,7 @@ export function initCreator(ctx) {
     }
     S.terrain = T;
   }  function applyBrush(dt) {
-    const T = S.terrain, p = S.mouse; if (!T || !p || S.grab) return;   // Etirer : gere a la souris (clay.stretch)
+    const T = S.terrain, p = S.mouse; if (!T || !p || S.grab || S.tool === 'tunnel') return;   // Etirer / Tunnel : geres a la souris
     if (S.vol) {                                              // Monter / Creuser / Aplanir / Lisser sur de la matiere en volume
       const sp = S.brushSpeed || 1;
       const amt = S.tool === 'raise' || S.tool === 'lower' ? 8 * IN * S.strength * dt * 2 * sp
@@ -2495,6 +2595,7 @@ export function initCreator(ctx) {
   }
   function undo() {
     if (tc?.dragging || S.brushing) return;
+    if (S.tunRun) { S.tunnelMode = false; S.tunRun = null; }
     if (histTimer) histCommit();                              // modification toute fraiche : d'abord en faire une etape
     if (histAt <= 0) { status('Rien à annuler'); return; }
     histRestore(hist[--histAt]); genAgain(); status('Annulé');
@@ -2852,10 +2953,11 @@ export function initCreator(ctx) {
     const len = length() / IN, near = nearStart();
     const deg = Math.round(Math.abs(S.roll || 0) * 180 / Math.PI);
     const html = `Longueur : <b>${Math.round(len)} m</b> · ${S.points.length} points · ` + (deg ? `inclinaison <b>${deg}° ${S.roll > 0 ? '←' : '→'}</b> · ` : '') +
-      (S.closed ? '<b style="color:var(--ok)">boucle fermée</b>' : near ? '<b style="color:var(--ok)">Entrée : fermer la boucle</b>' : 'boucle ouverte');
+      (S.closed ? '<b style="color:var(--ok)">boucle fermée</b>' : near ? '<b style="color:var(--ok)">Entrée : fermer la boucle</b>'
+        : S.joinPlan ? (S.joinPlan.tight ? '<b style="color:var(--accent)">Entrée : fermer avec le raccord (serré)</b>' : '<b style="color:var(--ok)">Entrée : fermer avec le raccord vert</b>') : 'boucle ouverte');
     if (html !== statShown) { statShown = html; $('crstat').innerHTML = html; }
     if ($('crgo').disabled !== !S.closed) $('crgo').disabled = !S.closed;
-    const noClose = S.closed || !near;
+    const noClose = S.closed || (!near && !S.joinPlan);
     if ($('crclose').disabled !== noClose) $('crclose').disabled = noClose;
   }
   // croisement : nouveau point sur un morceau plus ancien a la meme hauteur (pas de pont possible)
@@ -2941,7 +3043,7 @@ export function initCreator(ctx) {
     const propGap = S.props.length > 500 ? 500 : 100;        // beaucoup d'objets : ils suivent moins souvent
     if (S.propsDirty && t - S.lastProps > propGap) { renderProps(); S.propsDirty = false; S.lastProps = t; }
     // terrain raccorde recalcule au plus 8 fois par seconde pendant que le paveur pose la route
-    if (S.terrainDirty && t - (S.lastTerrain || 0) > 120) { refreshTerrainMesh(S.paveFull ? null : S.paveBox); rebuild(); S.propsDirty = true; S.terrainDirty = S.paveFull = false; S.paveBox = null; S.lastTerrain = t; }
+    if (S.terrainDirty && t - (S.lastTerrain || 0) > 120) { refreshTerrainMesh(S.paveFull ? null : S.paveBox); rebuild(); S.propsDirty = true; S.terrainDirty = S.paveFull = false; S.paveBox = null; S.lastTerrain = t; tunnelAdvance(); }
     // manette : valeurs des actions ; « tap » = appui de ce cadre (bouton qui vient d'etre enfonce)
     const pad = firstPad(), P = {}, was = S.padWas || {};
     for (const [k] of PAD_ACTIONS) P[k] = padValue(pad, S.padMap[k]);
@@ -2957,7 +3059,7 @@ export function initCreator(ctx) {
       if (S.propsDirty && t - S.lastProps > propGap) { renderProps(); S.propsDirty = false; S.lastProps = t; }
       return;
     }
-    if (t - (S.ghostAt || 0) > 120) { S.ghostAt = t; updateGhost(); }   // apercu de la piece speciale devant le kart
+    if (t - (S.ghostAt || 0) > 120) { S.ghostAt = t; updateGhost(); updateJoin(); }   // apercu de la piece speciale devant le kart
     if (S.pickStart) return;                                 // placement du kart en cours : il ne roule pas
     const k = S.keys;
     let fwd = (k.has('ArrowUp') || k.has('KeyW') || k.has('KeyZ')) ? 1 : 0;
@@ -2976,6 +3078,7 @@ export function initCreator(ctx) {
       if (P.narrower > 0.5) setWidth(S.width - 10 * IN * dt);
       if (tap('close') && !S.closed) closeLoop();
       if (tap('camera')) toggleChase();
+      if (tap('tunnel')) toggleTunnel();
     }
     if (rev > fwd) fwd = 0; else rev = 0;                    // les deux a la fois : la plus enfoncee
     const speed = SPEED * (k.has('ShiftLeft') || k.has('ShiftRight') || P.fast > 0.5 ? 2 : 1);
@@ -3002,6 +3105,7 @@ export function initCreator(ctx) {
           p.push(w2, w2, -dz, dz);
         }
         if (S.noTalus) setNoTalus(p, true);
+        if (S.tunnelMode) setTunnel(p, true);
         if (crossing(p) && t - S.warned > 3000) { S.warned = t; status('Croisement à la même hauteur : monte (R) ou descends (F) pour faire un pont', 'err'); }
         S.points.push(p); changed = true; growPave(p);
       }
@@ -3010,6 +3114,7 @@ export function initCreator(ctx) {
       S.closed = false;
       S.back += speed * rev * dt;
       while (S.back >= STEP && S.points.length > 1) { growPave(S.points[S.points.length - 1]); S.points.pop(); S.back -= STEP; changed = true; }
+      if (changed && S.tunRun) tunnelAfterErase();
       placeFromPoints();                                     // pente du bout de route reprise (plus de bosse)
     } else if (steer && !S.closed && S.points.length === 1) {
       S.yaw += steer * dt * 1.5; S.start = { ...S.start, yaw: S.yaw };    // orienter le depart sur place
@@ -4363,7 +4468,8 @@ export function initCreator(ctx) {
       <h4>Avec</h4>
       <div class="rdchips">${chip('rdopt on', 'data-o="decor"', 'Relief, décor et eau automatiques')}${chip('rdopt on', 'data-o="marks"', 'Marquage au sol')}${chip('rdopt on', 'data-o="items"', 'Caisses et boosters',
         'Visibles tout de suite dans l\'aperçu, posés à « Générer la piste » : rangées de caisses « ? », caisses de fruits, lignes de fruits Wumpa, et boosters avant les sauts et en sortie de virage. Rien n\'est posé si la piste a déjà des caisses ou des boosters.')}${chip('rdopt on', 'data-o="look"', '🌦 Ciel et météo',
-        'Ciel (celui du thème ou d\'une autre piste), heure (jour, soir, nuit) et météo selon le thème (pluie, neige, orage, feuilles, lucioles…), tirés d\'après le code. Posés à « Générer la piste » ; modifiables ensuite dans Habillage › Ambiance.')}${chip('rdopt on', 'data-o="fresh"', '🧹 Retirer l\'ancienne scène',
+        'Ciel (celui du thème ou d\'une autre piste), heure (jour, soir, nuit) et météo selon le thème (pluie, neige, orage, feuilles, lucioles…), tirés d\'après le code. Posés à « Générer la piste » ; modifiables ensuite dans Habillage › Ambiance.')}${chip('rdopt' + (tunDecoOn() ? ' on' : ''), 'data-o="tundeco"', '🏛 Entrées de tunnel décorées',
+        'À « Générer la piste » : deux piliers du thème et une lanterne de chaque côté de chaque entrée de tunnel, et des lumières du jeu dans les tunnels. Même réglage que dans Décor › Automatique.')}${chip('rdopt on', 'data-o="fresh"', '🧹 Retirer l\'ancienne scène',
         'Tout ce qui était posé sur l\'ancienne piste (décor, objets, imports, copies, caisses, boosters, lumières, objets animés, groupes) disparaît de l\'aperçu et est retiré à « Générer la piste » (« ↶ Annuler » pour revenir). Décoché : tes ajouts d\'Édition sont gardés et reposés sur le nouveau sol.')}</div>
       <div class="rdcode"><span style="font-size:12px;color:var(--muted)">Code</span><input id="rdcode" type="text" maxlength="16" spellcheck="false">
         <button id="rdnew" title="Nouveau code au hasard">🎲 Autre</button><button id="rdcopy" title="Copier le code (pour le partager)">Copier</button></div>
@@ -4408,6 +4514,7 @@ export function initCreator(ctx) {
       if (!p) { q('#rdbad').hidden = false; return; }
       const on = k => !!q(`.rdopt[data-o="${k}"]`)?.classList.contains('on');
       const opts = { decor: on('decor'), marks: on('marks'), items: on('items'), look: on('look'), fresh: on('fresh') };
+      setTunDeco(on('tundeco'));                                  // entrees de tunnel decorees : meme reglage que le decor automatique
       ov.remove();
       if (opts.look) {                                             // ciels disponibles (pistes du jeu qui en ont un)
         try { opts.skies = (await api('/api/ambiance_info', { track: getTrack() })).skies || []; } catch (e) { opts.skies = []; }
@@ -4434,7 +4541,60 @@ export function initCreator(ctx) {
     buildScreed(S.width);                                    // racle de la largeur de la route
     $('crwidth').value = String(Math.round(S.width / IN)); $('crw').textContent = Math.round(S.width / IN);
   }
+  // ---- raccord propose (2026-11-25, « quand la route revient pres du depart, proposer de fermer avec un raccord
+  // propre ») : a moins de 150 m du depart, courbe d'Hermite du paveur (cap, pente) au depart (cap, pente du debut de la
+  // route), un point tous les 4 m ; apercu vert (orange : virage ou pente plus forts que ce que le paveur permet). Entree
+  // ou « Fermer la boucle » : les points du raccord sont poses, puis la boucle fermee comme d'habitude ----
+  const JOIN_R = 150 * IN;
+  const joinLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x4cd964, depthTest: false }));
+  joinLine.renderOrder = 31; joinLine.visible = false; joinLine.frustumCulled = false; group.add(joinLine);
+  function joinPlan() {
+    if (S.closed || S.points.length < 3 || length() < CLOSE_MIN_LEN || nearStart()) return null;
+    const P0 = S.points[0], P1 = S.points[1], d = Math.hypot(S.pos.x - P0[0], S.pos.y - P0[1]);
+    if (d > JOIN_R) return null;
+    const l0 = Math.hypot(P1[0] - P0[0], P1[1] - P0[1]) || 1, bx = (P1[0] - P0[0]) / l0, by = (P1[1] - P0[1]) / l0;
+    const k = d * 1.3, ax = Math.cos(S.yaw), ay = Math.sin(S.yaw);
+    if (ax * (P0[0] - S.pos.x) + ay * (P0[1] - S.pos.y) < -0.3 * d) return null;   // depart derriere le paveur : pas de raccord
+    const H = (t, p0, m0, p1, m1) => { const t2 = t * t, t3 = t2 * t; return (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1; };
+    const raw = [];
+    for (let i = 0; i <= 80; i++) { const t = i / 80; raw.push([H(t, S.pos.x, ax * k, P0[0], bx * k), H(t, S.pos.y, ay * k, P0[1], by * k)]); }
+    let L = 0; for (let i = 1; i < raw.length; i++) L += Math.hypot(raw[i][0] - raw[i - 1][0], raw[i][1] - raw[i - 1][1]);
+    const z0 = S.pos.z, z1 = effZ(P0), s1 = Math.max(-SLOPE_MAX, Math.min(SLOPE_MAX, (effZ(P1) - effZ(P0)) / l0));
+    const pts = []; let acc = 0, next = STEP, tight = false, prevYaw = S.yaw;
+    for (let i = 1; i < raw.length; i++) {
+      const seg = Math.hypot(raw[i][0] - raw[i - 1][0], raw[i][1] - raw[i - 1][1]);
+      while (acc + seg >= next && next < L - STEP * 0.5) {
+        const f = (next - acc) / seg, x = raw[i - 1][0] + (raw[i][0] - raw[i - 1][0]) * f, y = raw[i - 1][1] + (raw[i][1] - raw[i - 1][1]) * f;
+        const u = next / L, z = H(u, z0, (S.slope || 0) * L, z1, s1 * L);
+        const prev = pts.length ? pts[pts.length - 1] : [S.pos.x, S.pos.y, z0];
+        const yaw = Math.atan2(y - prev[1], x - prev[0]), turn = Math.abs(Math.atan2(Math.sin(yaw - prevYaw), Math.cos(yaw - prevYaw)));
+        if (turn > STEP / (R_MIN * 0.8) || Math.abs(z - prev[2]) / STEP > SLOPE_MAX * 1.05) tight = true;
+        prevYaw = yaw; pts.push([x, y, z]); next += STEP;
+      }
+      acc += seg;
+    }
+    return pts.length ? { pts, tight } : null;
+  }
+  function updateJoin() {
+    const plan = S.mode === 'route' && S.active ? joinPlan() : null;
+    S.joinPlan = plan;
+    if (!plan) { joinLine.visible = false; return; }
+    const P0 = S.points[0], v = [new THREE.Vector3(S.pos.x, S.pos.y, S.pos.z + 3 * IN), ...plan.pts.map(q => new THREE.Vector3(q[0], q[1], q[2] + 3 * IN)),
+      new THREE.Vector3(P0[0], P0[1], effZ(P0) + 3 * IN)];
+    joinLine.geometry.dispose(); joinLine.geometry = new THREE.BufferGeometry().setFromPoints(v);
+    joinLine.material.color.set(plan.tight ? 0xffa726 : 0x4cd964); joinLine.visible = true;
+  }
   function closeLoop() {
+    if (!nearStart() && S.joinPlan && !S.closed) {           // raccord propose : ses points d'abord
+      for (const q of S.joinPlan.pts) {
+        const p = [q[0], q[1], q[2], S.width, 0];
+        if (S.noTalus) setNoTalus(p, true);
+        if (S.tunnelMode) setTunnel(p, true);
+        S.points.push(p); growPave(p);
+      }
+      const last = S.points[S.points.length - 1]; S.pos.set(last[0], last[1], last[2]);
+      S.joinPlan = null; joinLine.visible = false; S.paveFull = true;
+    }
     if (!nearStart()) { status('Reviens dans le cercle vert du départ pour fermer la boucle', 'err'); return; }
     // fin du trace passee devant le depart (sur le debut de la route) : retiree, sinon le raccord ferait un aller-retour
     const [a, b] = S.points, dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
@@ -4463,7 +4623,7 @@ export function initCreator(ctx) {
   function showHeight() {
     const m = Math.round((S.pos.z - heightAt(S.pos.x, S.pos.y)) / IN), deg = Math.round(Math.abs(S.roll || 0) * 180 / Math.PI);
     const atLimit = S.pos.z >= S.groundZ + H_MAX - IN || S.pos.z <= S.groundZ - H_MIN + IN;
-    const text = `∠ ${deg ? (S.roll > 0 ? '← ' : '→ ') : ''}${deg}°    ↕ ${m > 0 ? '+' : m < 0 ? '−' : ''}${Math.abs(m)} m`;
+    const text = `${S.tunnelMode ? '⛏ ' : ''}∠ ${deg ? (S.roll > 0 ? '← ' : '→ ') : ''}${deg}°    ↕ ${m > 0 ? '+' : m < 0 ? '−' : ''}${Math.abs(m)} m`;
     if (text + atLimit === hudText) return;
     hudText = text + atLimit;
     const g = hudCanvas.getContext('2d'), w = hudCanvas.width, h = hudCanvas.height;
@@ -4550,6 +4710,11 @@ export function initCreator(ctx) {
     status(S.noTalus ? 'Route suivante : sans talus (pont)' : 'Route suivante : avec talus');
     e.preventDefault(); e.stopImmediatePropagation();
   }, true);
+  addEventListener('keydown', e => {
+    if (!S.active || S.mode !== 'route' || e.code !== 'KeyU' || e.repeat || typing(e) || e.ctrlKey || e.metaKey) return;
+    toggleTunnel();
+    e.preventDefault(); e.stopImmediatePropagation();
+  }, true);
   const typing = e => /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'range';
   addEventListener('keydown', e => {
     if (!S.active || S.mode !== 'route' || typing(e) || e.ctrlKey || e.metaKey) return;
@@ -4589,6 +4754,12 @@ export function initCreator(ctx) {
     if (S.mode === 'props' && S.propTab === 'man' && S.propEdit) { propPointerDown(e); return; }
     if (S.mode === 'terrain' && S.tool === 'water' && (S.waterMode || 'fill') === 'fill') { waterPointerDown(e); return; }
     if (noBrush()) return;
+    if (S.mode === 'terrain' && S.tool === 'tunnel') {      // Tunnel : entree ici, sortie au relachement
+      const p = clayAt(e) || pick(e); if (!p) return;
+      S.tun = { a: p.clone(), b: p.clone() }; tunnelPreview();
+      S.brushing = true; orbit.enabled = false; canvas.setPointerCapture?.(e.pointerId);
+      e.preventDefault(); e.stopImmediatePropagation(); return;
+    }
     if (S.mode === 'terrain' && S.tool === 'stretch') {     // Etirer : la pate attrapee suit la souris
       const b = renderer.domElement.getBoundingClientRect();
       ndc.set(((e.clientX - b.left) / b.width) * 2 - 1, -((e.clientY - b.top) / b.height) * 2 + 1); ray.setFromCamera(ndc, camera);
@@ -4618,6 +4789,11 @@ export function initCreator(ctx) {
     if (S.mode === 'terrain' && S.tool === 'water' && !S.brushing) { brush.visible = false; waterHover(e); return; }
     if (S.waterCursor) { canvas.style.cursor = ''; S.waterCursor = false; }
     if (noBrush()) { brush.visible = false; return; }
+    if (S.mode === 'terrain' && S.tool === 'tunnel' && S.brushing && S.tun) {
+      const p = clayAt(e) || pick(e);
+      if (p) { S.tun.b.copy(p); tunnelPreview(); brush.visible = true; brush.position.set(p.x, p.y, p.z + 20); brush.scale.set(S.radius / 2, S.radius / 2, 1); }
+      e.preventDefault(); e.stopImmediatePropagation(); return;
+    }
     if (S.mode === 'terrain' && S.tool === 'stretch') {
       const b = renderer.domElement.getBoundingClientRect();
       ndc.set(((e.clientX - b.left) / b.width) * 2 - 1, -((e.clientY - b.top) / b.height) * 2 + 1); ray.setFromCamera(ndc, camera);
@@ -4650,15 +4826,44 @@ export function initCreator(ctx) {
     if (p) { S.mouse = p; brush.position.set(p.x, p.y, p.z + 20); brush.scale.set(S.radius, S.radius, 1); }
     if (S.brushing) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
+  // ---- pinceau Tunnel (2026-11-25) : clic = entree, glisser jusqu'a la sortie, relacher = galerie creusee en ligne droite
+  // (sol des deux points, pente reguliere), rayon = moitie du pinceau, sol refait (plat sous les roues) ----
+  const tunLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+                                 new THREE.LineBasicMaterial({ color: 0xffd54a, depthTest: false }));
+  tunLine.renderOrder = 30; tunLine.visible = false; tunLine.frustumCulled = false; group.add(tunLine);
+  function tunnelPreview() {
+    const { a, b } = S.tun, R = S.radius / 2, pos = tunLine.geometry.attributes.position;
+    pos.setXYZ(0, a.x, a.y, a.z + R * 0.8); pos.setXYZ(1, b.x, b.y, b.z + R * 0.8); pos.needsUpdate = true;
+    tunLine.geometry.computeBoundingSphere(); tunLine.visible = true;
+    const L = Math.hypot(b.x - a.x, b.y - a.y) / IN;
+    status(L < 8 ? 'Tunnel : glisse jusqu\'à la sortie, puis relâche' : `Tunnel de ${Math.round(L)} m, ${Math.round(S.radius / IN)} m de large — relâche pour creuser`);
+  }
+  function digTunnel(a, b) {
+    const R = S.radius / 2, L = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    if (L < 8 * IN) { status('Tunnel trop court : glisse plus loin avant de relâcher', 'err'); return null; }
+    const n = Math.max(2, Math.ceil(L / (2 * 4 * IN))), line = [];
+    for (let k = 0; k <= n; k++) { const t = k / n; line.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t }); }
+    let box = clay.tube(line.map(q => ({ x: q.x, y: q.y, z: q.z + R * 0.8, r: R })), true);          // la galerie
+    const fb = clay.tube(line.map(q => ({ x: q.x, y: q.y, z: q.z - R * 0.5 - 0.3 * IN, r: R * 0.5 })), false, 4 * IN);   // le sol
+    if (fb) box = box ? growBox(box, fb.x0, fb.y0, fb.x1, fb.y1) : fb;
+    status(box ? `Tunnel creusé : ${Math.round(L / IN)} m, ${Math.round(2 * R / IN)} m de large (Ctrl+Z pour annuler)` : 'Rien à creuser ici', box ? 'ok' : 'err');
+    return box;
+  }
   const endBrush = e => {
     if (!S.brushing) return;
     S.brushing = false; orbit.enabled = true;
     if (S.mode === 'terrain' && S.tool === 'water') { waterStrokeEnd(); e?.stopImmediatePropagation?.(); return; }   // relief inchange
+    if (S.tun) {                                            // Tunnel : creuse entre l'entree et la sortie
+      const t = S.tun; S.tun = null; tunLine.visible = false;
+      const bx = digTunnel(t.a, t.b);
+      if (bx) { const fb = clay.dropFloating(bx); clearSeats(fb ? growBox(bx, fb.x0, fb.y0, fb.x1, fb.y1) : bx); renderProps(); saveDraft(); }
+      e?.stopImmediatePropagation?.(); return;
+    }
     let clayBox = S.grab?.box || S.vol?.box;                 // Etirer / outils en volume : objets de la zone reposes sur la pate
     if (S.grab || S.vol) {
       if (S.grab) clay.endStretch();
       S.grab = S.vol = null;
-      const fb = clay.dropFloating();                       // morceaux de pate qui ne tiennent plus a rien : retires
+      const fb = clay.dropFloating(clayBox);                // morceaux de pate qui ne tiennent plus a rien : retires (zone du trait)
       if (fb) clayBox = clayBox ? growBox(clayBox, fb.x0, fb.y0, fb.x1, fb.y1) : fb;
       if (clayBox) { clearSeats(clayBox); renderProps(); }
       saveDraft(); e?.stopImmediatePropagation?.(); return;
@@ -4666,8 +4871,10 @@ export function initCreator(ctx) {
     // fin du trait : la zone peinte seulement ; talus et objets suivent le relief (rien de tout ca pour la peinture et le decor)
     if (S.mode === 'terrain') {
       refreshTerrainMesh(S.strokeBox);
+      const nt = tunnelsRefresh(S.strokeBox);              // tunnels a la conduite sous la zone : toit refait
+      if (nt) status(`Plafond du tunnel recalculé (${nt} point(s) de route)`, 'ok');
       // sol du relief creuse sous un pied de pate : morceau detache retire (2026-11-24)
-      const fb = clay.edited ? clay.dropFloating() : null; if (fb) clearSeats(fb);
+      const fb = clay.edited ? clay.dropFloating(S.strokeBox) : null; if (fb) clearSeats(fb);
       rebuild(); renderProps();
     }
     else if (S.mode === 'paint') refreshTerrainMesh(S.strokeBox);
@@ -5049,7 +5256,7 @@ export function initCreator(ctx) {
   // remise d'origine (largeur du paveur, a plat) : autour du point choisi, ou partout
   function edgeReset(all) {
     const base = S.points.map(edgesOf);
-    if (all) S.points.forEach(p => { if (p.length > 5) { p[3] = p[5] + p[6]; const nt = p[9]; p.length = 5; setNoTalus(p, nt); } });
+    if (all) S.points.forEach(p => { if (p.length > 5) { p[3] = p[5] + p[6]; const nt = p[9], tu = p[10]; p.length = 5; setNoTalus(p, nt); if (tu) setTunnel(p, true); } });
     else applyEdges(base, (v, w) => { const h = (v[0] + v[1]) / 2; return [v[0] + (h - v[0]) * w, v[1] + (h - v[1]) * w, v[2] * (1 - w), v[3] * (1 - w)]; });
     refreshTerrainMesh(); rebuild(); renderProps(); saveDraft(); placeEdge();
   }
@@ -5146,7 +5353,7 @@ export function initCreator(ctx) {
     showBridge();
   }
   // essais automatiques seulement (adresse avec ?crtest) : fonctions de la Creation accessibles depuis la console
-  if (/[?&]crtest\b/.test(location.search)) window.__crtest = { S, setMode, crossingAt, bridgePlan, selectBridge, makeBridge, tryProp, seatOf, roadUnder, undo, effPoints, applyBrush, pick, setTool, roofMask, roofMesh,
+  if (/[?&]crtest\b/.test(location.search)) window.__crtest = { S, setMode, rebuild, renderProps, refreshTerrainFaces, tunnelEntrances, joinPlan, updateJoin, closeLoop, tunnelsRefresh, setTunnel, toggleTunnel, tunnelAdvance, tunnelAfterErase, crossingAt, bridgePlan, selectBridge, makeBridge, tryProp, seatOf, roadUnder, undo, effPoints, applyBrush, pick, setTool, roofMask, roofMesh,
                                                                   refreshTerrainMesh, camera, orbit, saveDraft, ptc, propProxy, selectProp, propZ,
                                                                   waterBasin, renderWater, waterPointerDown, placeFromPoints, slopeOfEnd, selectEdge, edgeZone, edgeSmooth, setEdgeZone,
                                                                   randomTrack, parseRndCode, roadDistance, rndProgress, rndCode,
@@ -5409,12 +5616,54 @@ export function initCreator(ctx) {
   // pipeline (2026-11-21, map complete d'une traite) : generation de la base en cours, sans question (cible = piste
   // selectionnee, rien retire au loin, pas de « décor seul ? »), nohist : sans copie pour « Annuler ». Ne touche pas a la vue :
   // la suite (parcours, IA, caisses, chutes) est faite par la page (index.html runPipeline)
+  // ---- entrees de tunnel decorees (2026-11-25) : entrees reperees sur la route (pate au-dessus de la chaussee, entre
+  // 22 et 90 m, sur au moins 32 m), quelle que soit l'origine du tunnel (conduite, piste aleatoire, pinceau). A chaque
+  // entree : deux piliers du theme (pilier, colonne, statue, sinon rocher) et une lanterne (torche, lanterne, lampe)
+  // de chaque cote, juste dehors ; lumieres du jeu chaudes a l'entree et tous les 60 m dedans (32 au plus). Objets
+  // marques p.tun (remplaces a chaque generation), lumieres marquees « tunnel » cote serveur. ----
+  const tunDecoOn = () => { try { return localStorage.getItem('ctr_tundeco') !== '0'; } catch (e) { return true; } };
+  const setTunDeco = v => { try { localStorage.setItem('ctr_tundeco', v ? '1' : '0'); } catch (e) { /* sans importance */ } const c = $('craitun'); if (c) c.checked = !!v; };
+  function tunnelEntrances() {
+    S.props = S.props.filter(p => !p.tun);
+    const on = tunDecoOn();
+    const out = { lights: on && clay.edited ? [] : null };
+    if (!on || !clay.edited) return out;
+    const E = effPoints(), n = E.length, kit = $('crkit').value;
+    const surf = p => { const sh = sample(S.shown, p[0], p[1]); return sh > p[2] - 4 * IN ? sh : p[2]; };
+    const cov = E.map(p => { const z = surf(p); return [22, 30, 40, 55, 70, 90].some(h => clay.field(p[0], p[1], z + h * IN) < 0); });
+    const runs = []; let i0 = -1;
+    for (let k = 0; k < n; k++) { if (cov[k] && i0 < 0) i0 = k; if (!cov[k] && i0 >= 0) { runs.push([i0, k - 1]); i0 = -1; } }
+    if (i0 >= 0) runs.push([i0, n - 1]);
+    const kindIn = list => list.find(t => propKinds[kit + '|' + t]);
+    const pillar = kindIn(['pillar', 'column', 'statue', 'rock']), lamp = kindIn(['torch', 'lantern', 'lamp']);
+    const place = (t, x, y, yaw) => { const kd = propKinds[kit + '|' + t]; if (!kd) return;
+      const [a, b] = kd.scale || [1, 1]; S.props.push({ k: kit, t, m: 0, x, y, yaw: +yaw.toFixed(3), s: +((a + b) / 2).toFixed(2), c: CAT_VERSION, road: 1, tun: 1 }); };
+    for (const [a, b] of runs) {
+      if (b - a < 8) continue;                               // simple arche : pas un tunnel
+      for (const [inside, step] of [[a, -1], [b, 1]]) {      // les deux entrees, vers l'exterieur
+        const o = E[(inside + 2 * step + n) % n], q = E[(inside + 3 * step + n) % n];
+        if (!o || !q || cov[(inside + 2 * step + n) % n]) continue;
+        const yaw = Math.atan2(q[1] - o[1], q[0] - o[0]), nx = -Math.sin(yaw), ny = Math.cos(yaw), w = (o[3] || S.width) / 2;
+        for (const sd of [-1, 1]) {
+          if (pillar) { const r = (dimOf({ k: kit, t: pillar, m: 0, s: 1 }).r || 3) * IN; place(pillar, o[0] + nx * sd * (w + r + 2 * IN), o[1] + ny * sd * (w + r + 2 * IN), yaw); }
+          if (lamp) place(lamp, q[0] + nx * sd * (w + 2.5 * IN), q[1] + ny * sd * (w + 2.5 * IN), yaw);
+        }
+        const m = E[inside]; if (out.lights.length < 32) out.lights.push({ pos: [m[0], m[1], surf(m) + 7 * IN], color: [1, 0.78, 0.45], intensity: 8, radius: 50 * IN, tag: 'tunnel' });
+      }
+      for (let k = a + 15; k < b - 7 && out.lights.length < 32; k += 15) {
+        const m = E[k]; out.lights.push({ pos: [m[0], m[1], surf(m) + 9 * IN], color: [1, 0.82, 0.55], intensity: 6, radius: 45 * IN, tag: 'tunnel' });
+      }
+    }
+    return out;
+  }
   async function generateNow(opt = {}) {
     if (S.loadedTrack !== getTrack()) throw new Error('base non chargée');
     if (!S.closed || S.points.length < 8) throw new Error('route non fermée');
     const wipe = opt.wipe ?? !!S.rndFresh;
+    const tun = tunnelEntrances();                           // piliers + lanternes (S.props, p.tun) et lumieres du jeu
     const sent = S.props.slice();
-    const r = await api('/api/create_build', buildReq(getTrack(), { props: sent, wipe, nohist: !!opt.nohist, terrain: packFull(S.terrain) }));
+    const r = await api('/api/create_build', buildReq(getTrack(), { props: sent, wipe, nohist: !!opt.nohist, terrain: packFull(S.terrain),
+                                                                     tunnel_lights: tun.lights }));
     (r.uids || []).forEach((u, i) => { if (u && sent[i]) sent[i].u = u; });
     const look = S.rndLook;
     S.rndLook = null; S.rndFresh = false;
@@ -5609,7 +5858,7 @@ export function initCreator(ctx) {
     groundParts(pv.ground !== false);
     // cercle vert du depart (« fermer la boucle ») : repere des outils de base seulement (2026-11-23 : il restait affiche
     // dans l'Edition)
-    for (const o of [paver, brush, ghost, edgeHandle, edgeLine, bridgeLine, bridgeMark, selHold, startMark]) o.visible = false;
+    for (const o of [paver, brush, ghost, edgeHandle, edgeLine, bridgeLine, bridgeMark, selHold, startMark, joinLine]) o.visible = false;
   }
   // Edition : objet du decor de l'apercu sous le rayon (plus proche que maxDist) -> son rang dans S.props, sinon -1
   function previewPropAt(r, maxDist = Infinity) {

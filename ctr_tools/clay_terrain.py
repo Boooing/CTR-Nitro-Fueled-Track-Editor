@@ -323,11 +323,25 @@ def top_z(patch, xs, ys, H, x, y):
 
 
 def emit(ob, patch, names_of_cell, rep, prefix='CreatorClay'):
-    """Triangles de la pâte dans l'OBJ, un objet par matière ; UV par triangle (dessus ou côté). -> matières utilisées."""
+    """Triangles de la pâte dans l'OBJ, un objet par matière. -> matières utilisées.
+    UV par SOMMET, continues (2026-11-25, « textures des parois en jeu sans cassures ») : avant, chaque triangle prenait
+    sa projection (dessus, côté x ou côté y) et la texture sautait d'un triangle à l'autre sur les parois. Maintenant
+    normale lissée du sommet -> dessus (x, y) comme le relief, côté (le long de la paroi, hauteur), mélange progressif
+    entre les deux ; sommets partagés : aucune couture dans une même matière."""
     V, T, cells = patch['verts'], patch['tris'], patch['cells']
-    n = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])
-    an = np.abs(n)
-    proj = np.where(an[:, 2] >= 0.6 * an.max(1), 0, np.where(an[:, 0] > an[:, 1], 1, 2))   # 0 dessus, 1 cote y-z, 2 cote x-z
+    fn = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])          # normale de face (pondérée par l'aire)
+    vn = np.zeros_like(V, dtype=np.float64)
+    for k in range(3):
+        np.add.at(vn, T[:, k], fn)
+    vn /= np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-9)
+    nz = np.abs(vn[:, 2])
+    w = np.clip((nz - 0.45) / 0.35, 0.0, 1.0)
+    w = w * w * (3 - 2 * w)                                                 # 1 : dessus, 0 : paroi
+    hx, hy = vn[:, 0], vn[:, 1]
+    hl = np.maximum(np.hypot(hx, hy), 1e-9)
+    side_u = (V[:, 0] * np.abs(hy) + V[:, 1] * np.abs(hx)) / hl          # le long de la paroi (meme sens des deux cotes)
+    U = (w * V[:, 0] + (1 - w) * side_u) / rep
+    W = (w * V[:, 1] + (1 - w) * V[:, 2]) / rep
     mats = np.array([names_of_cell(int(a), int(b)) for a, b in cells])
     used = set()
     for m in np.unique(mats):
@@ -336,14 +350,12 @@ def emit(ob, patch, names_of_cell, rep, prefix='CreatorClay'):
         used.add(m)
         vid = {}
         for t in sel:
-            pr = int(proj[t])
             ids = []
             for v in T[t]:
-                key = (int(v), pr)
-                if key not in vid:
+                v = int(v)
+                if v not in vid:
                     x, y, z = V[v]
-                    uv = (x / rep, y / rep) if pr == 0 else (y / rep, z / rep) if pr == 1 else (x / rep, z / rep)
-                    vid[key] = ob.vert((float(x), float(y), float(z)), uv)
-                ids.append(vid[key])
+                    vid[v] = ob.vert((float(x), float(y), float(z)), (float(U[v]), float(W[v])))
+                ids.append(vid[v])
             ob.poly(ids)
     return used

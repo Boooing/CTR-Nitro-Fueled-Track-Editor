@@ -46,8 +46,6 @@ export function createClay(o) {
 
   // ---- maillage d'un bloc (surface nets) ---------------------------------------------------------------------------
   const NP = CH + 2;                                        // points -1..CH du bloc
-  const pf = new Float32Array(NP * NP * NP), colH = new Float32Array(NP * NP);
-  const cellV = new Int32Array((CH + 1) ** 3), cellP = new Float32Array((CH + 1) ** 3 * 3), cellN = new Float32Array((CH + 1) ** 3 * 3);
   const EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
   const CORNER = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]];
   const Lx = 0.45, Ly = -0.35, Lz = 0.82, Ln = Math.hypot(Lx, Ly, Lz);
@@ -105,14 +103,64 @@ export function createClay(o) {
   }
   const colAt = (p, q) => p >= 0 && q >= 0 && p < NCV && q < NCV ? colR[q * NCV + p] : 0;
 
-  function buildChunk(cx, cy, cz) {
+  // ---- remaillage hors du fil d'affichage (2026-11-25, « pâte remaillée dans un Web Worker : plus de saccade pendant
+  // le pinceau ») : le calcul de la surface d'un bloc (champ aux 18³ points + surface nets, ~2,5 ms par bloc, 20 blocs par
+  // coup de pinceau) se fait dans des Web Workers ; le fil principal prepare l'entree (sol du relief, classes de la zone,
+  // blocs de retouches utiles) et assemble la geometrie. Un resultat perime (bloc redemande entre-temps) est ignore.
+  // Sans Worker (navigateur qui refuse) : meme calcul sur place. netsCore est autonome (copiee telle quelle dans le Worker).
+  function makeJob(cx, cy, cz) {
     if (!colR) return null;
     const bx = cx * CH, by = cy * CH, bz = cz * CH;          // indices (voxels alignes sur le relief ; z : monde)
     let any = false;
     for (let j = -1; j < CH && !any; j++) for (let i = -1; i < CH; i++) if (colAt(bx + i, by + j)) { any = true; break; }
     if (!any) return null;
-    // sol du relief par colonne (points -1..CH), puis champ aux points
-    for (let j = 0; j < NP; j++) for (let i = 0; i < NP; i++) colH[j * NP + i] = groundAt(AX + (bx + i - 1) * V, AY + (by + j - 1) * V);
+    const ch = new Float32Array(NP * NP);                   // sol du relief aux points -1..CH
+    for (let j = 0; j < NP; j++) for (let i = 0; i < NP; i++) ch[j * NP + i] = groundAt(AX + (bx + i - 1) * V, AY + (by + j - 1) * V);
+    const cw = CH + 4, cls = new Uint8Array(cw * cw);       // classes de la zone, voxels bx-2 .. bx+CH+1
+    for (let b = 0; b < cw; b++) for (let a = 0; a < cw; a++) cls[b * cw + a] = colAt(bx - 2 + a, by - 2 + b);
+    const chunks = new Map();                               // blocs de retouches que le champ peut lire
+    if (D.size) {
+      const gx0 = fl((AX + (bx - 1) * V) / V), gx1 = fl((AX + (bx + CH) * V) / V) + 1;
+      const gy0 = fl((AY + (by - 1) * V) / V), gy1 = fl((AY + (by + CH) * V) / V) + 1;
+      for (let c3 = fl((bz - 1) / CH); c3 <= fl((bz + CH + 1) / CH); c3++)
+        for (let c2 = fl(gy0 / CH); c2 <= fl(gy1 / CH); c2++) for (let c1 = fl(gx0 / CH); c1 <= fl(gx1 / CH); c1++) {
+          const kk = key(c1, c2, c3), arr = D.get(kk); if (arr) chunks.set(kk, arr);
+        }
+    }
+    return { bx, by, bz, AX, AY, V, CH, colH: ch, cls, cw, chunks };
+  }
+  function netsCore(J) {
+    const { bx, by, bz, AX, AY, V, CH, colH, cls, cw, chunks } = J;
+    const NP = CH + 2, fl = Math.floor;
+    const EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
+    const CORNER = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]];
+    const keyOf = (a, b, c) => ((a + 2048) * 4096 + (b + 2048)) * 4096 + (c + 2048);
+    let lastK = NaN, lastA = null;
+    const dAt = (ix, iy, iz) => {
+      if (!chunks.size) return 0;
+      const cx = fl(ix / CH), cy = fl(iy / CH), cz = fl(iz / CH), k = keyOf(cx, cy, cz);
+      if (k !== lastK) { lastK = k; lastA = chunks.get(k) || null; }
+      if (!lastA) return 0;
+      return lastA[((iz - cz * CH) * CH + (iy - cy * CH)) * CH + (ix - cx * CH)];
+    };
+    const dSample = (x, y, z) => {
+      const gx = x / V, gy = y / V, gz = z / V, ix = fl(gx), iy = fl(gy), iz = fl(gz), u = gx - ix, v = gy - iy, w = gz - iz;
+      let s = 0;
+      for (let c = 0; c < 8; c++) {
+        const a = c & 1, b = (c >> 1) & 1, e = c >> 2, val = dAt(ix + a, iy + b, iz + e);
+        if (val) s += val * (a ? u : 1 - u) * (b ? v : 1 - v) * (e ? w : 1 - w);
+      }
+      return s;
+    };
+    const colAt = (pp, qq) => { const a = pp - bx + 2, b = qq - by + 2; return a >= 0 && b >= 0 && a < cw && b < cw ? cls[b * cw + a] : 0; };
+    // sol du relief en un point d'une arete de la grille (lineaire entre deux points de la grille, comme le relief)
+    const hAt = (fx, fy) => {
+      const i = Math.max(0, Math.min(NP - 1, fx - bx + 1)), j = Math.max(0, Math.min(NP - 1, fy - by + 1));
+      const i0 = Math.min(NP - 2, fl(i)), j0 = Math.min(NP - 2, fl(j)), u = i - i0, v = j - j0;
+      const h = (a, b) => colH[b * NP + a];
+      return (h(i0, j0) * (1 - u) + h(i0 + 1, j0) * u) * (1 - v) + (h(i0, j0 + 1) * (1 - u) + h(i0 + 1, j0 + 1) * u) * v;
+    };
+    const pf = new Float32Array(NP * NP * NP);
     let neg = false, pos = false;
     for (let k = 0, q = 0; k < NP; k++) {
       const z = (bz + k - 1) * V;
@@ -123,13 +171,12 @@ export function createClay(o) {
       }
     }
     if (!neg || !pos) return null;                          // pas de surface dans ce bloc
-    const P = (i, j, k) => pf[((k + 1) * NP + (j + 1)) * NP + (i + 1)];   // i, j, k : -1..CH
+    const P = (i, j, k) => pf[((k + 1) * NP + (j + 1)) * NP + (i + 1)];
     const NC = CH + 1, cid = (i, j, k) => ((k + 1) * NC + (j + 1)) * NC + (i + 1);
-    cellV.fill(-1);
-    let nv = 0;
+    const cellV = new Int32Array(NC * NC * NC).fill(-1), VP = [], VN = [];
     const cv = new Float32Array(8);
     for (let k = -1; k < CH; k++) for (let j = -1; j < CH; j++) for (let i = -1; i < CH; i++) {
-      const cls = colAt(bx + i, by + j); if (!cls) continue;   // hors de la zone : le relief
+      const cl = colAt(bx + i, by + j); if (!cl) continue;
       let m = 0;
       for (let c = 0; c < 8; c++) { cv[c] = P(i + CORNER[c][0], j + CORNER[c][1], k + CORNER[c][2]); if (cv[c] < 0) m |= 1 << c; }
       if (m === 0 || m === 255) continue;
@@ -141,27 +188,26 @@ export function createClay(o) {
         sy += CORNER[a][1] + (CORNER[b][1] - CORNER[a][1]) * t;
         sz += CORNER[a][2] + (CORNER[b][2] - CORNER[a][2]) * t; cnt++;
       }
-      const q = cid(i, j, k);
-      cellV[q] = nv++;
-      let px = AX + (bx + i + sx / cnt) * V, py = AY + (by + j + sy / cnt) * V, pz = (bz + k + sz / cnt) * V;
-      if (cls === 2) {                                       // anneau : sur l'arete du relief, a sa hauteur
+      cellV[cid(i, j, k)] = VP.length / 3;
+      let fx = bx + i + sx / cnt, fy = by + j + sy / cnt, pz = (bz + k + sz / cnt) * V;
+      if (cl === 2) {                                       // anneau : sur l'arete du relief, a sa hauteur
         const p0 = bx + i, q0 = by + j;
         const L = colAt(p0 - 1, q0) === 1, R = colAt(p0 + 1, q0) === 1, Dn = colAt(p0, q0 - 1) === 1, Up = colAt(p0, q0 + 1) === 1;
-        if (R) px = AX + (p0 + 1) * V; else if (L) px = AX + p0 * V;
-        if (Up) py = AY + (q0 + 1) * V; else if (Dn) py = AY + q0 * V;
+        if (R) fx = p0 + 1; else if (L) fx = p0;
+        if (Up) fy = q0 + 1; else if (Dn) fy = q0;
         if (!(L || R || Dn || Up)) for (const [dj, di] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) if (colAt(p0 + di, q0 + dj) === 1) {
-          px = AX + (p0 + (di > 0 ? 1 : 0)) * V; py = AY + (q0 + (dj > 0 ? 1 : 0)) * V; break;
+          fx = p0 + (di > 0 ? 1 : 0); fy = q0 + (dj > 0 ? 1 : 0); break;
         }
-        pz = groundAt(px, py);
+        pz = hAt(fx, fy);
       }
-      cellP[q * 3] = px; cellP[q * 3 + 1] = py; cellP[q * 3 + 2] = pz;
-      let gx = (cv[1] - cv[0]) + (cv[3] - cv[2]) + (cv[5] - cv[4]) + (cv[7] - cv[6]);
-      let gy = (cv[2] - cv[0]) + (cv[3] - cv[1]) + (cv[6] - cv[4]) + (cv[7] - cv[5]);
-      let gz = (cv[4] - cv[0]) + (cv[5] - cv[1]) + (cv[6] - cv[2]) + (cv[7] - cv[3]);
+      VP.push(AX + fx * V, AY + fy * V, pz);
+      const gx = (cv[1] - cv[0]) + (cv[3] - cv[2]) + (cv[5] - cv[4]) + (cv[7] - cv[6]);
+      const gy = (cv[2] - cv[0]) + (cv[3] - cv[1]) + (cv[6] - cv[4]) + (cv[7] - cv[5]);
+      const gz = (cv[4] - cv[0]) + (cv[5] - cv[1]) + (cv[6] - cv[2]) + (cv[7] - cv[3]);
       const gl = Math.hypot(gx, gy, gz) || 1;
-      cellN[q * 3] = gx / gl; cellN[q * 3 + 1] = gy / gl; cellN[q * 3 + 2] = gz / gl;
+      VN.push(gx / gl, gy / gl, gz / gl);
     }
-    if (!nv) return null;
+    if (!VP.length) return null;
     const tris = [];
     for (let k = 0; k < CH; k++) for (let j = 0; j < CH; j++) for (let i = 0; i < CH; i++) {
       const f0 = P(i, j, k);
@@ -172,13 +218,45 @@ export function createClay(o) {
         if (ax === 0) { c0 = cid(i, j - 1, k - 1); c1 = cid(i, j, k - 1); c2 = cid(i, j, k); c3 = cid(i, j - 1, k); cols = [[i, j - 1], [i, j]]; }
         else if (ax === 1) { c0 = cid(i - 1, j, k - 1); c1 = cid(i - 1, j, k); c2 = cid(i, j, k); c3 = cid(i, j, k - 1); cols = [[i - 1, j], [i, j]]; }
         else { c0 = cid(i - 1, j - 1, k); c1 = cid(i, j - 1, k); c2 = cid(i, j, k); c3 = cid(i - 1, j, k); cols = [[i - 1, j - 1], [i, j - 1], [i, j], [i - 1, j]]; }
-        if (cellV[c0] < 0 || cellV[c1] < 0 || cellV[c2] < 0 || cellV[c3] < 0) continue;
+        const v0 = cellV[c0], v1 = cellV[c1], v2 = cellV[c2], v3 = cellV[c3];
+        if (v0 < 0 || v1 < 0 || v2 < 0 || v3 < 0) continue;
         if (!cols.some(([a, b]) => colAt(bx + a, by + b) === 1)) continue;   // tout dans l'anneau : plat, sur le bord
-        if (f0 < 0) tris.push(c0, c1, c2, c0, c2, c3); else tris.push(c0, c2, c1, c0, c3, c2);
+        if (f0 < 0) tris.push(v0, v1, v2, v0, v2, v3); else tris.push(v0, v2, v1, v0, v3, v2);
       }
     }
     if (!tris.length) return null;
-    return { tris };
+    return { P: new Float32Array(VP), N: new Float32Array(VN), tris: new Uint32Array(tris) };
+  }
+  // Workers : 1 a 3 selon le processeur ; code = netsCore + reception des taches
+  let workers = null, wNext = 0, pendingJobs = 0, gen = 0;
+  const jobVer = new Map(), idleWaiters = [];
+  try {
+    if (typeof Worker !== 'undefined' && typeof Blob !== 'undefined' && !globalThis.__clayNoWorker) {
+      const src = `const netsCore = ${netsCore.toString()};\nonmessage = e => { const { id, ver, g, job } = e.data; let r = null;\n`
+        + `try { r = netsCore(job); } catch (err) { r = { err: String(err) }; }\n`
+        + `postMessage({ id, ver, g, r }, r && r.P ? [r.P.buffer, r.N.buffer, r.tris.buffer] : []); };`;
+      const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1));
+      workers = Array.from({ length: n }, () => {
+        const w = new Worker(url);
+        w.onmessage = e => onResult(e.data);
+        w.onerror = () => { workers = null; };             // plus de Worker : calcul sur place ensuite
+        return w;
+      });
+    }
+  } catch (e) { workers = null; }
+  function onResult({ id, ver, g, r }) {
+    pendingJobs = Math.max(0, pendingJobs - 1);
+    if (g === gen && jobVer.get(id) === ver) {
+      if (r && r.err) { const [a, b, c] = unkey(id); applyResult(id, netsCore(makeJob(a, b, c) || { chunks: new Map() })); }
+      else applyResult(id, r);
+    }
+    if (!pendingJobs) while (idleWaiters.length) idleWaiters.shift()();
+  }
+  const whenIdle = () => pendingJobs ? new Promise(res => idleWaiters.push(res)) : Promise.resolve();
+  function forget(k) {                                      // bloc retire : un resultat en route sera ignore
+    jobVer.set(k, (jobVer.get(k) || 0) + 1);
+    const m = meshes.get(k); if (m) { group.remove(m); m.geometry.dispose(); meshes.delete(k); }
   }
 
   // ---- texture « triplanaire » : chaque pixel melange les projections de dessus et de cote selon l'orientation du sol
@@ -212,8 +290,8 @@ export function createClay(o) {
     const faces = o.faces(), Tt = T(), rep = o.repeat();
     const byMat = new Map();                                // code de matiere -> liste de triangles (indices de cases)
     for (let t = 0; t < r.tris.length; t += 3) {
-      const a = r.tris[t], b = r.tris[t + 1], c = r.tris[t + 2];
-      const x = (cellP[a * 3] + cellP[b * 3] + cellP[c * 3]) / 3, y = (cellP[a * 3 + 1] + cellP[b * 3 + 1] + cellP[c * 3 + 1]) / 3;
+      const a = r.tris[t], b = r.tris[t + 1], c = r.tris[t + 2], RP = r.P;
+      const x = (RP[a * 3] + RP[b * 3] + RP[c * 3]) / 3, y = (RP[a * 3 + 1] + RP[b * 3 + 1] + RP[c * 3 + 1]) / 3;
       let m = 0;
       if (faces?.best && Tt) {
         const n = Tt.n, i = Math.max(0, Math.min(n - 2, fl((x - Tt.x0) / Tt.cell))), j = Math.max(0, Math.min(n - 2, fl((y - Tt.y0) / Tt.cell)));
@@ -226,7 +304,7 @@ export function createClay(o) {
     for (const q of r.tris) if (!remap.has(q)) { remap.set(q, ids.length); ids.push(q); }
     const nvx = ids.length, pos = new Float32Array(nvx * 3), nrm = new Float32Array(nvx * 3), uv = new Float32Array(nvx * 2), col = new Float32Array(nvx * 3);
     ids.forEach((q, v) => {
-      const x = cellP[q * 3], y = cellP[q * 3 + 1], z = cellP[q * 3 + 2], nx = cellN[q * 3], ny = cellN[q * 3 + 1], nz = cellN[q * 3 + 2];
+      const x = r.P[q * 3], y = r.P[q * 3 + 1], z = r.P[q * 3 + 2], nx = r.N[q * 3], ny = r.N[q * 3 + 1], nz = r.N[q * 3 + 2];
       pos[v * 3] = x; pos[v * 3 + 1] = y; pos[v * 3 + 2] = z - 2;
       nrm[v * 3] = nx; nrm[v * 3 + 1] = ny; nrm[v * 3 + 2] = nz;
       uv[v * 2] = x / rep; uv[v * 2 + 1] = y / rep;          // matieres sans projection triplanaire : dessus
@@ -250,8 +328,15 @@ export function createClay(o) {
     return { g, mats };
   }
   function remesh(cx, cy, cz) {
-    const k = key(cx, cy, cz), old = meshes.get(k);
-    const r = buildChunk(cx, cy, cz);
+    const k = key(cx, cy, cz), job = makeJob(cx, cy, cz);
+    const ver = (jobVer.get(k) || 0) + 1; jobVer.set(k, ver);
+    if (!job) { applyResult(k, null); return; }
+    if (!workers) { applyResult(k, netsCore(job)); return; }
+    pendingJobs++;
+    workers[wNext++ % workers.length].postMessage({ id: k, ver, g: gen, job });
+  }
+  function applyResult(k, r) {
+    const old = meshes.get(k);
     if (!r) { if (old) { group.remove(old); old.geometry.dispose(); meshes.delete(k); } return; }
     const { g, mats } = geometryOf(r);
     if (old) { old.geometry.dispose(); old.geometry = g; old.material = mats; return; }
@@ -273,9 +358,9 @@ export function createClay(o) {
     return out;
   }
   function dropColumn(cx, cy) {
-    for (const [k, m] of meshes) { const [a, b] = unkey(k); if (a === cx && b === cy) { group.remove(m); m.geometry.dispose(); meshes.delete(k); } }
+    for (const k of [...meshes.keys(), ...jobVer.keys()]) { const [a, b] = unkey(k); if (a === cx && b === cy) forget(k); }
   }
-  function refreshColumn(cx, cy) {
+  function refreshColumn(cx, cy, zl) {                    // zl : [cz0, cz1] blocs a remailler (hauteurs touchees), sinon tous
     let lo = Infinity, hi = -Infinity;                      // sol du relief sur la colonne (bords compris)
     for (let j = -1; j <= CH + 1; j += 2) for (let i = -1; i <= CH + 1; i += 2) {
       const h = groundAt(AX + (cx * CH + i) * V, AY + (cy * CH + j) * V); if (h < lo) lo = h; if (h > hi) hi = h;
@@ -287,57 +372,85 @@ export function createClay(o) {
       const [a, b, c] = unkey(k);
       if ((a + 1) * CW >= x0 && a * CW <= x1 && (b + 1) * CW >= y0 && b * CW <= y1) for (let z = c - 1; z <= c + 1; z++) want.add(z);
     }
-    for (const [k, m] of meshes) {
+    for (const k of [...meshes.keys()]) {
       const [a, b, c] = unkey(k);
-      if (a === cx && b === cy && !want.has(c)) { group.remove(m); m.geometry.dispose(); meshes.delete(k); }
+      if (a === cx && b === cy && !want.has(c)) forget(k);
     }
-    for (const cz of want) remesh(cx, cy, cz);
+    for (const cz of want) if (!zl || (cz >= zl[0] && cz <= zl[1]) || !meshes.has(key(cx, cy, cz))) remesh(cx, cy, cz);
   }
   // box : {x0, y0, x1, y1} monde (zone modifiee), sans : tout. Zone de pate recalculee si les retouches ont change :
   // colonnes entrees ou sorties remaillees, et le relief prevenu (ses cases cachees changent : o.onRegion)
-  // ---- route degagee : jamais de pate de la chaussee jusqu'a 15 m au-dessus (2026-11-24, demande utilisateur : « la
+  // ---- route degagee : jamais de pate de la chaussee jusqu'a 20 m au-dessus (2026-11-24, 15 m ; 20 m le 2026-11-25, demande utilisateur : « la
   // pate ne doit pas pouvoir se trouver a moins de 15 m au-dessus de la route »). o.roadMap() -> { ver, map : colonne de
   // la grille (ckey) -> hauteurs de chaussee (une par passage) }. Champ porte a au moins (z - route) dans la tranche :
   // surface juste a la hauteur de la chaussee, air au-dessus, la matiere sous la route ne bouge pas
-  const ROAD_CLEAR = 15 * IN;
+  const ROAD_CLEAR = 20 * IN, ROAD_SLAB = 8 * IN;           // dalle : 2 cases (plus mince que la grille, l'air passait)
   let roadVer = null;
+  // 2026-11-25 (« pâte plus fine près de la route », « vide sous la chaussée dans les tunnels ») : o.roadMap().map =
+  // colonne (ckey) -> [{z : chaussée, d : distance au bord de la route (négative dessus), gr : route posée sur le sol}].
+  // Champ comparé à la distance aux formes (et non plus forcé par point de grille) : la voûte tombe EXACTEMENT à 20 m et
+  // les parois au bord de la route, entre les points de la grille de 4 m (avant : arrondi à la case, plafond vers 20 m).
+  //   - route sur le sol : dalle pleine de 8 m sous la chaussée (union) -> jamais de vide sous la route d'un tunnel ;
+  //   - boîte vide de la chaussée à +20 m (soustraction) : max(f, distance à la boîte).
   function clampRoad(box) {
     const rm = o.roadMap?.(); if (!rm || !rm.map.size) return false;
     let changed = false;
-    const doCol = (ck, zs) => {
+    const doCol = (ck, list) => {
       const ix = Math.floor(ck / 3e5) - 1e5, iy = ck - (ix + 1e5) * 3e5 - 1e5;
       if (box && (ix * V < box.x0 - V || ix * V > box.x1 + V || iy * V < box.y0 - V || iy * V > box.y1 + V)) return;
       const g = groundAt(ix * V, iy * V);
-      for (const zr of zs) for (let iz = fl(zr / V); iz <= Math.ceil((zr + ROAD_CLEAR) / V); iz++) {
-        const z = iz * V, need = (z - zr) - (z - g), cx = fl(ix / CH), cy = fl(iy / CH), cz = fl(iz / CH), kk = key(cx, cy, cz);
-        let arr = D.get(kk); const q = ((iz - cz * CH) * CH + (iy - cy * CH)) * CH + (ix - cx * CH);
-        const cur = arr ? arr[q] : 0;
-        if (cur >= need - 0.5) continue;
-        if (!arr) { arr = new Float32Array(CH ** 3); setD(kk, arr); }
-        arr[q] = need; changed = true;
+      for (const { z: zr, d, gr } of list) {
+        const top = zr + ROAD_CLEAR, zb = zr - ROAD_SLAB;
+        for (let iz = fl((zb - V) / V); iz <= Math.ceil((top + V) / V); iz++) {
+          const z = iz * V, cx = fl(ix / CH), cy = fl(iy / CH), cz = fl(iz / CH), kk = key(cx, cy, cz);
+          let arr = D.get(kk); const q = ((iz - cz * CH) * CH + (iy - cy * CH)) * CH + (ix - cx * CH);
+          const cur = arr ? arr[q] : 0, f0 = z - g + cur;
+          let f = f0;
+          if (gr) f = Math.min(f, Math.max(z - zr, zb - z, d));          // dalle sous la chaussée
+          f = Math.max(f, Math.min(z - zr, top - z, -d));                  // vide au-dessus, jusqu'à 20 m
+          if (Math.abs(f - f0) < 0.5) continue;
+          if (!arr) { arr = new Float32Array(CH ** 3); setD(kk, arr); }
+          arr[q] = f - (z - g); changed = true;
+        }
       }
     };
     if (box) {                                              // colonnes de la boite seulement
       for (let iy = fl(box.y0 / V) - 1; iy <= Math.ceil(box.y1 / V) + 1; iy++) for (let ix = fl(box.x0 / V) - 1; ix <= Math.ceil(box.x1 / V) + 1; ix++) {
-        const ck = ckey(ix, iy), zs = rm.map.get(ck); if (zs) doCol(ck, zs);
+        const ck = ckey(ix, iy), l = rm.map.get(ck); if (l) doCol(ck, l);
       }
-    } else for (const [ck, zs] of rm.map) doCol(ck, zs);
+    } else for (const [ck, l] of rm.map) doCol(ck, l);
     if (changed) { version++; epoch++; }
     return changed;
   }
+  // plusieurs retouches d'affilee (tunnel a la conduite : toit + 5 tubes) : un seul remaillage a la fin (2026-11-25 ;
+  // avant, chaque retouche remaillait les memes blocs : 0,7 s par paquet de 4 points)
+  let deferring = 0, deferBox = null;
+  function batch(fn) {
+    deferring++;
+    try { return fn(); } finally {
+      if (--deferring === 0 && deferBox) { const b = deferBox; deferBox = null; refresh(b === 'all' ? undefined : b); }
+    }
+  }
   function refresh(box) {
+    if (deferring) {
+      deferBox = !box || deferBox === 'all' ? 'all' : deferBox ? { x0: Math.min(deferBox.x0, box.x0), y0: Math.min(deferBox.y0, box.y0),
+        x1: Math.max(deferBox.x1, box.x1), y1: Math.max(deferBox.y1, box.y1) } : { x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1 };
+      return;
+    }
     const rv = o.roadMap?.()?.ver;                          // route modifiee : toute la pate sur la nouvelle route degagee
     if (rv !== roadVer) { roadVer = rv; if (D.size && clampRoad(null)) box = null; }
     const before = new Set(chunkCols(null).map(([a, b]) => a + ',' + b));
     const changed = computeRegion();
     const now = chunkCols(null), nowSet = new Set(now.map(([a, b]) => a + ',' + b));
-    if (!box) { for (const [, m] of meshes) { group.remove(m); m.geometry.dispose(); } meshes.clear(); }
+    if (!box) { gen++; for (const [, m] of meshes) { group.remove(m); m.geometry.dispose(); } meshes.clear(); }
     for (const c of before) if (!nowSet.has(c)) { const [a, b] = c.split(',').map(Number); dropColumn(a, b); }
     const pad = box && { x0: box.x0 - 2 * V, y0: box.y0 - 2 * V, x1: box.x1 + 2 * V, y1: box.y1 + 2 * V };
-    const todo = new Set((box ? chunkCols(pad) : now).map(([a, b]) => a + ',' + b));
-    if (changed) for (const c of nowSet) if (!before.has(c)) todo.add(c);
-    if (changed && regDirty) for (const [a, b] of regDirty === 'all' ? now : chunkCols(regDirty)) todo.add(a + ',' + b);
-    for (const c of todo) { const [a, b] = c.split(',').map(Number); refreshColumn(a, b); }
+    // hauteurs touchees (2026-11-25) : seuls les blocs de ces hauteurs sont remailles (avant : toute la colonne de blocs)
+    const zl = box && box.z0 != null && box.z1 != null ? [fl((box.z0 - 2 * V) / CW), fl((box.z1 + 2 * V) / CW)] : null;
+    const todo = new Map((box ? chunkCols(pad) : now).map(([a, b]) => [a + ',' + b, zl]));
+    if (changed) for (const c of nowSet) if (!before.has(c)) todo.set(c, null);
+    if (changed && regDirty) for (const [a, b] of regDirty === 'all' ? now : chunkCols(regDirty)) todo.set(a + ',' + b, null);
+    for (const [c, z] of todo) { const [a, b] = c.split(',').map(Number); refreshColumn(a, b, z); }
     if (changed) o.onRegion?.();
   }
 
@@ -404,8 +517,8 @@ export function createClay(o) {
     grab.t = { x: t.x, y: t.y, z: t.z };
     if (!out.length) return null;
     version++; epoch++;                                    // caches (zone de pate, colonnes) a recalculer
-    const bx = { x0: (ix0 - 1) * V, y0: (iy0 - 1) * V, x1: (ix1 + 1) * V, y1: (iy1 + 1) * V };
-    clampRoad(bx);
+    const bx = { x0: (ix0 - 1) * V, y0: (iy0 - 1) * V, x1: (ix1 + 1) * V, y1: (iy1 + 1) * V, z0: (iz0 - 1) * V, z1: (iz1 + 1) * V };
+    if (clampRoad(bx)) bx.z0 = bx.z1 = undefined;           // route degagee retouchee : toutes les hauteurs
     refresh(bx);
     return bx;
   }
@@ -453,8 +566,8 @@ export function createClay(o) {
       arr[((iz - cz * CH) * CH + (iy - cy * CH)) * CH + (ix - cx * CH)] = val;
     }
     version++; epoch++;                                    // caches (zone de pate, colonnes) a recalculer
-    const bx = { x0: (ix0 - 1) * V, y0: (iy0 - 1) * V, x1: (ix1 + 1) * V, y1: (iy1 + 1) * V };
-    clampRoad(bx);
+    const bx = { x0: (ix0 - 1) * V, y0: (iy0 - 1) * V, x1: (ix1 + 1) * V, y1: (iy1 + 1) * V, z0: (iz0 - 1) * V, z1: (iz1 + 1) * V };
+    if (clampRoad(bx)) bx.z0 = bx.z1 = undefined;           // route degagee retouchee : toutes les hauteurs
     refresh(bx);
     return bx;
   }
@@ -503,8 +616,8 @@ export function createClay(o) {
       arr[((iz - cz * CH) * CH + (iy - cy * CH)) * CH + (ix - cx * CH)] = val;
     }
     version++; epoch++;                                    // caches (zone de pate, colonnes) a recalculer
-    const bx = { x0: (ix0 - 1) * V, y0: (iy0 - 1) * V, x1: (ix1 + 1) * V, y1: (iy1 + 1) * V };
-    clampRoad(bx);
+    const bx = { x0: (ix0 - 1) * V, y0: (iy0 - 1) * V, x1: (ix1 + 1) * V, y1: (iy1 + 1) * V, z0: (iz0 - 1) * V, z1: (iz1 + 1) * V };
+    if (clampRoad(bx)) bx.z0 = bx.z1 = undefined;           // route degagee retouchee : toutes les hauteurs
     refresh(bx);
     return bx;
   }
@@ -556,8 +669,8 @@ export function createClay(o) {
       arr[((iz - cz * CH) * CH + (iy - cy * CH)) * CH + (ix - cx * CH)] = val;
     }
     version++; epoch++;                                    // caches (zone de pate, colonnes) a recalculer
-    const bx = { x0: (ix0 - 1) * V, y0: (iy0 - 1) * V, x1: (ix1 + 1) * V, y1: (iy1 + 1) * V };
-    clampRoad(bx);
+    const bx = { x0: (ix0 - 1) * V, y0: (iy0 - 1) * V, x1: (ix1 + 1) * V, y1: (iy1 + 1) * V, z0: (iz0 - 1) * V, z1: (iz1 + 1) * V };
+    if (clampRoad(bx)) bx.z0 = bx.z1 = undefined;           // route degagee retouchee : toutes les hauteurs
     refresh(bx);
     return bx;
   }
@@ -571,9 +684,13 @@ export function createClay(o) {
   // autour) est retire (2026-11-24, demande utilisateur : « supprime automatiquement tout ce qui n'est plus relie a la
   // base »). Parcours des points pleins de la grille (26 voisins : un contact en biais compte comme relie) depuis le
   // dessous du sol des colonnes retouchees et depuis les colonnes non retouchees autour. -> boite modifiee ou null
-  function dropFloating() {
+  // box (2026-11-25, vitesse) : recherche limitee aux colonnes retouchees de la zone modifiee (+ 16 m) ; une colonne
+  // retouchee voisine d'une autre hors de la zone compte comme reliee (prudent : rien de retire a tort). Avant : toute
+  // la pate a chaque trait du relief (50 a 65 ms)
+  function dropFloating(box) {
     if (!D.size) return null;
     const cm = columns(); if (!cm.size) return null;
+    const m = 4 * V, inBox = box ? (ix, iy) => ix * V >= box.x0 - m && ix * V <= box.x1 + m && iy * V >= box.y0 - m && iy * V <= box.y1 + m : null;
     const cols = new Map();
     const dec = ck => { const ix = Math.floor(ck / 3e5) - 1e5; return [ix, ck - (ix + 1e5) * 3e5 - 1e5]; };
     const add = (ix, iy, edited, top) => {
@@ -582,7 +699,13 @@ export function createClay(o) {
       if (edited) { c.edited = true; c.z1 = Math.max(c.z1, Math.ceil(top / V) + 2); }
       return c;
     };
-    for (const [ck, e] of cm) { const [ix, iy] = dec(ck); add(ix, iy, true, e.top); }
+    for (const [ck, e] of cm) { const [ix, iy] = dec(ck); if (!inBox || inBox(ix, iy)) add(ix, iy, true, e.top); }
+    if (!cols.size) return null;
+    if (inBox) for (const c of cols.values()) {             // bord de la zone : la pate continue dehors -> reliee
+      for (let v = -1; v <= 1 && !c.edge; v++) for (let u = -1; u <= 1; u++) {
+        const k = ckey(c.ix + u, c.iy + v); if ((u || v) && cm.has(k) && !cols.has(k)) { c.edge = true; break; }
+      }
+    }
     for (const c of [...cols.values()]) for (let v = -1; v <= 1; v++) for (let u = -1; u <= 1; u++) if (u || v) add(c.ix + u, c.iy + v, false, 0);
     let total = 0; for (const c of cols.values()) { c.o = total; total += c.z1 - c.z0 + 1; }
     const st = new Uint8Array(total), q = new Int32Array(total);
@@ -593,7 +716,7 @@ export function createClay(o) {
       for (let iz = c.z0; iz <= c.z1; iz++) {
         if (iz * V - c.g + dAt(c.ix, c.iy, iz) >= 0) continue;     // air
         const id = c.o + iz - c.z0; st[id] = 1;
-        if (!c.edited || iz === c.z0) { st[id] = 2; q[qn++] = id; }  // relie a la base : sous le sol, ou relief non retouche
+        if (!c.edited || iz === c.z0 || c.edge) { st[id] = 2; q[qn++] = id; }  // relie a la base : sous le sol, relief non retouche, ou bord de la zone
       }
     }
     const colOf = new Int32Array(total); for (const c of list) colOf.fill(c.i, c.o, c.o + c.z1 - c.z0 + 1);
@@ -624,6 +747,35 @@ export function createClay(o) {
     return bx;
   }
 
+  // retouches effacees dans les colonnes a moins de `half` d'un trace (toutes hauteurs) : tunnel a la conduite refait
+  // apres une retouche du relief au-dessus (2026-11-25). -> boite ou null
+  function clearAlong(path, half) {
+    if (!D.size || path.length < 1) return null;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const q of path) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+    x0 -= half; y0 -= half; x1 += half; y1 += half;
+    const byCol = new Map();                                // (cx, cy) -> blocs retouches de cette colonne de blocs
+    for (const [k, a] of D) { const [cx, cy] = unkey(k); if ((cx + 1) * CW < x0 || cx * CW > x1 || (cy + 1) * CW < y0 || cy * CW > y1) continue;
+      const kk = cx * 100003 + cy; (byCol.get(kk) || byCol.set(kk, []).get(kk)).push(a); }
+    if (!byCol.size) return null;
+    const dist = (x, y) => { let d = Infinity; for (let k = 0; k < path.length; k++) {
+      const a = path[k], b = path[Math.min(k + 1, path.length - 1)], ux = b.x - a.x, uy = b.y - a.y, l2 = ux * ux + uy * uy;
+      const t = l2 ? Math.max(0, Math.min(1, ((x - a.x) * ux + (y - a.y) * uy) / l2)) : 0;
+      d = Math.min(d, Math.hypot(x - a.x - ux * t, y - a.y - uy * t)); } return d; };
+    let n = 0;
+    for (let iy = fl(y0 / V); iy <= Math.ceil(y1 / V); iy++) for (let ix = fl(x0 / V); ix <= Math.ceil(x1 / V); ix++) {
+      const cx = fl(ix / CH), cy = fl(iy / CH), list = byCol.get(cx * 100003 + cy); if (!list) continue;
+      if (dist(ix * V, iy * V) > half) continue;
+      const lx = ix - cx * CH, ly = iy - cy * CH;
+      for (const a of list) for (let lz = 0; lz < CH; lz++) { const q = (lz * CH + ly) * CH + lx; if (a[q]) { a[q] = 0; n++; } }
+    }
+    if (!n) return null;
+    version++; epoch++;
+    const bx = { x0, y0, x1, y1 };
+    clampRoad(bx);
+    refresh(bx);
+    return bx;
+  }
   function columns() {
     if (colE === epoch) return colMap;
     colMap = new Map();
@@ -715,7 +867,7 @@ export function createClay(o) {
   }
   function clear() { clearD(); version++; refresh(); }
 
-  return { group, refresh, hiddenMask: () => (computeRegion(), region), get regionVersion() { computeRegion(); return regVersion; }, beginStretch, dragStretch, endStretch, sculpt, dropFloating, tube, fillTo, normalAt, isVolume, columnEdited, surfaceZ, covered, pick, snapshot, restore, setSnap, pack, unpack, clear, field,
+  return { group, refresh, hiddenMask: () => (computeRegion(), region), get regionVersion() { computeRegion(); return regVersion; }, beginStretch, dragStretch, endStretch, sculpt, dropFloating, batch, clearAlong, whenIdle, get workers() { return workers ? workers.length : 0; }, tube, fillTo, normalAt, isVolume, columnEdited, surfaceZ, covered, pick, snapshot, restore, setSnap, pack, unpack, clear, field,
            get version() { return version; }, get edited() { return D.size > 0; }, get meshCount() { return meshes.size; },
            get triCount() { let n = 0; for (const m of meshes.values()) n += m.geometry.index.count / 3; return n; } };
 }

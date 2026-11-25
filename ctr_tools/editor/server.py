@@ -251,15 +251,17 @@ def load_track(track):
     except KeyError:
         crates = []
     cols = iter(boost_colors(track))                   # couleur de la plaque au sol de chaque booster
+    free = iter(read_boost_free(track))                # case « posé au sol et aligné » decochee
     for c in crates:
         if c['kind'] == 'boost':
             c['color'] = next(cols, 'bleu' if c.get('super') else 'orange')
+            c['free'] = next(free, False)
     return {'track': track, 'source': src, 'saved': src.startswith(OUT_DIR), 'splines': splines,
             'transitions': transitions, 'forks': rs['fork_checkers'], 'player_starts': rs['player_starts'],
             'starting_splines': starting, 'start_grid': grid, 'player_start': player_start, 'crates': crates,
             'teleporters': teleporters_of(track, ed), 'portals': portals_of(track, ed), 'flyby': flyby_info(track), 'original_start': original_start(track),
             'collision': load_collision(track), 'fall_zones': read_fall_zones(track), 'cam_zones': read_cam_zones(track),
-            'grav_zones': read_grav_zones(track),
+            'grav_zones': read_grav_zones(track), 'ai_total_max': ai_total_max(track),
             # parcours deja cree depuis la route (« Créer le parcours » / generation : route memorisee) : une map
             # importee sans parcours doit d'abord le creer (2026-11-16)
             'course_done': os.path.exists(road_source_path(track))}
@@ -1602,6 +1604,28 @@ def read_track_crates(track):
     return out if crates_in_design(track) else out + design_boosts(track)
 
 
+def _boost_free_path(track):
+    return os.path.join(OUT_DIR, f'{track}_boost_free.json')
+
+
+def write_boost_free(track, flags):
+    """Case « posé au sol et aligné sur la route » decochee, par booster dans l'ordre (2026-11-25) ; fichier retire si
+    aucun booster n'est libre."""
+    p = _boost_free_path(track)
+    if any(flags):
+        with open(p, 'w') as f:
+            json.dump(flags, f)
+    elif os.path.exists(p):
+        os.remove(p)
+
+
+def read_boost_free(track):
+    try:
+        return [bool(v) for v in json.load(open(_boost_free_path(track)))]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
 def design_boosts(track):
     """Boosters ajoutes par l'editeur dans le _Design ; ceux du jeu (TurboPad_001, GPI_SpeedBoostZone...) n'en font pas partie."""
     try:
@@ -2052,6 +2076,8 @@ def save_track(req):
             safe_compact(track, logical, z)
             z.save(saved_path(logical))
             report.append(msg)
+        # boosters « libres » (case decochee dans l'editeur : ni pose au sol ni aligne automatiquement), dans l'ordre
+        write_boost_free(track, [bool(c.get('free')) for c in req['crates'] if c['kind'] == 'boost'])
         # dessin au sol des boosters (aussi s'il n'est plus a jour : sol modifie, ancienne version mal placee)
         vis = sync_boost_visuals(track, [c for c in want if c['kind'] == 'boost'])
         if vis and vis != 'aucun booster':
@@ -8013,7 +8039,44 @@ def apply_fixes(req):
     return {'report': report, 'failed': failed}
 
 
+# Verifier sans rien refaire (2026-11-25, « mise en cache de la verification ») : resultat garde par piste avec la cle
+# des fichiers enregistres de la piste (noms, dates, tailles ; brouillon de la Creation exclu) et l'etat des archives
+# du jeu. Rien d'enregistre depuis : resultat repris aussitot (18,7 s -> 0 s sur T922, dont 15 s de poids d'archive).
+_check_cache = {}
+
+
+def _track_files_key(track):
+    t = track.lower()
+    tid = t.replace('_', '')
+    out = []
+    try:
+        names = os.listdir(OUT_DIR)
+    except OSError:
+        names = []
+    for f in sorted(names):
+        fl = f.lower()
+        if (t in fl or tid in fl) and 'creator_draft' not in fl and not fl.endswith(('.tmp', '.part')):
+            try:
+                st = os.stat(os.path.join(OUT_DIR, f))
+                out.append((f, st.st_mtime_ns, st.st_size))
+            except OSError:
+                pass
+    return (track, ARCHIVES, pak_tool.epoch, tuple(out))
+
+
 def preinstall_check(track):
+    """Verifier (voir _preinstall_check) ; resultat repris si rien n'a ete enregistre depuis la derniere fois."""
+    ensure_collision(track)                            # modifications en attente : collision a jour (change les fichiers)
+    key = _track_files_key(track)
+    hit = _check_cache.get(track)
+    if hit and hit[0] == key:
+        return {**hit[1], 'cached': True}
+    r = _preinstall_check(track)
+    _check_cache[track] = (_track_files_key(track), r)
+    return r
+
+
+def _preinstall_check(track):
     """Controles de ce qui sera installe (versions enregistrees) : [{'level': 'erreur' | 'attention' | 'ok',
     'topic', 'text'}]. Les erreurs empechent une course normale (depart a l'envers, IA perdues...) ; les
     avertissements meritent un coup d'oeil. Reprend les pieges rencontres : ligne d'arrivee deplacee / retournee
@@ -8110,6 +8173,13 @@ def preinstall_check(track):
                 off += road.at(p[0], p[1], p[2] - 80, window=1500.0) is None
         if off / max(tot, 1) > 0.05:
             add('attention', 'Splines IA', f'{100 * off / tot:.0f} % des trajets IA hors de la route', ui='regenall')
+    # voies en tout : au-dela, le jeu manque de memoire au chargement (2026-11-25, T922 a 42 voies) -> retirees a l'installation
+    linked = {n for t in tr.get('transitions') or [] for k in ('previous_ai', 'next_ai') for n in t.get(k) or []}
+    cap = ai_total_max(track)
+    if len(linked) > cap:
+        add('attention', 'Splines IA', f'{len(linked)} voies IA reliées au parcours, le jeu en charge {cap} en tout : des voies seront '
+                                       'retirées à l\'installation → « Régénérer toutes les splines IA » (le nombre par section est '
+                                       'alors limité)', ui='regenall')
     if ai and not knots and not longs:
         add('ok', 'Splines IA', f'{len(ai)} splines, sans nœud ni long segment')
     # hauteur des splines modifiees : un peu au-dessus de la route, ou en l'air seulement pendant un saut (A -> B)
@@ -8922,9 +8992,32 @@ def install_plan(track):
 MAX_AI_PER_TRANSITION = 6                               # voies par section (jeu : 5, 8 au plus sur Dingo Canyon)
 
 
+AI_TOTAL_MAX = 36                                       # voies IA en tout (pistes creees ; voir slim_ai_lanes)
+
+
 def _max_ai_lanes(data, track):
     ed = RaceSystemEditor(data, track)
     return max((len(v) for t in ed.transitions() for k, v in ed.transition_paths(t).items() if k in ('previous_ai', 'next_ai')), default=0)
+
+
+def _ai_lane_total(data, track):
+    ed = RaceSystemEditor(data, track)
+    return len({n for t in ed.transitions() for k, v in ed.transition_paths(t).items() if k in ('previous_ai', 'next_ai') for n in v})
+
+
+_ai_total_cache = {}
+
+
+def ai_total_max(track):
+    """Voies IA en tout que le jeu charge sur cette piste : AI_TOTAL_MAX, ou le total d'origine de la piste s'il est plus
+    grand (Slide Coliseum 60). Donne a la page (generation des voies, 2026-11-25) et utilise par slim_ai_lanes."""
+    if track not in _ai_total_cache:
+        try:
+            orig = _ai_lane_total(pak_tool.read_latest(ARCHIVES, race_file(track), track_pak(track))[0], track)
+        except (KeyError, StopIteration):
+            orig = 0
+        _ai_total_cache[track] = max(AI_TOTAL_MAX, orig)
+    return _ai_total_cache[track]
 
 
 def slim_ai_lanes(per_archive, track):
@@ -8942,6 +9035,15 @@ def slim_ai_lanes(per_archive, track):
         limit = MAX_AI_PER_TRANSITION
     ed, ttr = RaceSystemEditor(races[0][rl], track), TTRStatsEditor(ttrs[0][tl])
     lists = {(t, k): list(ed.transition_paths(t)[k]) for t in ed.transitions() for k in ('previous_ai', 'next_ai')}
+    # plafond du TOTAL des voies (2026-11-25) : T922 a 9 sections x 5 voies = 42 voies -> meme « OOM MP_LEVEL » ; essais sur
+    # copie du jeu : 28, 31, 35, 37 voies chargent, 42 plante (T114 : 34-36 chargent, 68 plante) ; ni les points, ni la
+    # collision, ni le decor, ni les zones de chute n'y changeaient rien. Pistes du jeu jusqu'a 60 voies (Slide Coliseum) :
+    # plafond = max(AI_TOTAL_MAX, total d'origine de la piste), applique seulement s'il est depasse
+    total_max = ai_total_max(track)
+    total = len({n for v in lists.values() for n in v})
+    n_trans = max(1, len(ed.transitions()))
+    if total > total_max:
+        limit = min(limit, max(2, total_max // n_trans))
     keep, dropped, stuck = set(ttr.starting_splines()), [], set()
     while True:
         over = [kv for kv in lists.items() if len(kv[1]) > limit and kv[0] not in stuck]
@@ -9241,14 +9343,16 @@ def shrink_textures(per_archive, track, budget=PAK_BUDGET, max_side=None, stats=
             + ('' if total <= budget else ' ; ATTENTION toujours au-dessus du plafond : retire du décor')]
 
 
-def map_weight(track):
+def map_weight(track, texture_max=None):
     """Poids de la map une fois installee : {before, after (Mo, contenu de l'archive de la piste avant / apres
-    reduction des textures), textures (reduites), budget (Mo), collision (triangles du fichier enregistre)}."""
+    reduction des textures), textures (reduites), budget (Mo), collision (triangles du fichier enregistre)}.
+    texture_max (2026-11-25, apercu « Allegement recommande ») : taille maxi des textures a essayer a la place du
+    reglage enregistre (rien n'est enregistre ; la mesure exacte de la jauge n'est pas remplacee)."""
     progress.step('poids de la map : fichiers à installer', 0.0)
     stats = {}
     plan = install_plan(track)
     counts = archive_counts(plan, track)
-    shrink_textures(plan, track, stats=stats)
+    shrink_textures(plan, track, stats=stats, max_side=texture_max)
     coll = None
     try:
         p = saved_path(collision_file(track))      # install_plan l'a remise a jour si besoin
@@ -9263,11 +9367,20 @@ def map_weight(track):
                     coll += pf.array(pf.ptr(shape + 0x58) + 0x60)[1]
     except Exception:  # noqa: BLE001
         coll = None
-    return {'before': round(stats.get('before', 0) / 2**20), 'after': round(stats.get('after', 0) / 2**20),
+    out = {'before': round(stats.get('before', 0) / 2**20), 'after': round(stats.get('after', 0) / 2**20),
             'textures': stats.get('textures', 0), 'budget': PAK_BUDGET // 2**20, 'collision': coll,
             'collision_budget': COLLISION_BUDGET, 'texture_max': int(light_settings(track).get('texture_max') or 0),
             'decor_reach': light_settings(track).get('decor_reach', 100), **counts,
             'models_ok': MODELS_OK, 'models_max': MODELS_MAX, **_rare_fields(track, counts)}
+    try:
+        if texture_max is not None:
+            raise ValueError('apercu')                     # essai d'un autre reglage : pas la mesure de la jauge
+        _weight_exact[track] = (_weight_key(track), {'models': out['models'], 'files': out['files'], 'load': out['load'],
+                                                     'size': out['after'], 'budget': out['budget'], 'collision': coll,
+                                                     'models_max': MODELS_MAX, 'files_max': LOAD_LIMIT['files'], 'exact': True})
+    except Exception:  # noqa: BLE001 - jauge : estimation a la place
+        pass
+    return out
 
 
 def _rare_fields(track, counts):
@@ -9315,6 +9428,20 @@ def load_estimate(counts):
 
 
 _weight_live_cache = {}
+# derniere mesure EXACTE (map_weight, faite par Verifier / l'installation) par piste : (cle des fichiers enregistres, valeurs)
+# -> la jauge 🧠 la montre tant que rien n'est reenregistre (2026-11-25, « mesure exacte de la charge dans la jauge »)
+_weight_exact = {}
+
+
+def _weight_key(track):
+    """Cle des fichiers enregistres qui changent le poids : decor, collision, liens (objets de la bibliotheque)."""
+    files = list(art_files(track))
+    for extra in (collision_file(track),):
+        try:
+            files.append(extra)
+        except Exception:  # noqa: BLE001
+            pass
+    return (track, tuple((a, os.path.getmtime(saved_path(a)) if os.path.exists(saved_path(a)) else 0) for a in files))
 
 
 def weight_live(track):
@@ -9323,7 +9450,10 @@ def weight_live(track):
     enregistre qui n'y sont pas (bibliotheque, imports) ; fichiers = archive + ~2,2 par modele ajoute (materiaux,
     textures) non compte. En memoire tant que les fichiers de decor enregistres ne changent pas."""
     arts = list(art_files(track))
-    key = (track, tuple((a, os.path.getmtime(saved_path(a)) if os.path.exists(saved_path(a)) else 0) for a in arts))
+    key = _weight_key(track)
+    ex = _weight_exact.get(track)
+    if ex and ex[0] == key:                                # mesure exacte de Verifier, toujours valable (2026-11-25)
+        return ex[1]
     if key in _weight_live_cache:
         return _weight_live_cache[key]
     arc = os.path.join(ARCHIVES, track_pak(track))
@@ -9342,7 +9472,8 @@ def weight_live(track):
     # charge d'apres les modeles seuls : le nombre de fichiers installes depend du nettoyage fait a l'installation
     # (fichiers d'origine inutilises retires), et les modeles sont la limite atteinte en premier (T922 : 54 % / 45 %)
     models = len(orig) + len(added)
-    out = {'models': models, 'added': len(added), 'load': load_estimate({'models': models}), 'models_max': MODELS_MAX}
+    out = {'models': models, 'added': len(added), 'load': load_estimate({'models': models}), 'models_max': MODELS_MAX,
+           'exact': False}
     _weight_live_cache.clear()
     _weight_live_cache[key] = out
     return out
@@ -9941,6 +10072,16 @@ def create_build(req):
     items += sign_items
     with progress.span(0.85, 1.0, 'décor semé'):
         sown = place_library_many(track, items, 'creator')
+    # lumieres des tunnels (2026-11-25, entrees de tunnel decorees) : celles marquees « tunnel » remplacees, les autres gardees
+    if req.get('tunnel_lights') is not None:
+        old = read_lights(track)
+        keep = [l for l in old if l.get('tag') != 'tunnel']
+        new = keep + [dict(l, tag='tunnel') for l in req['tunnel_lights'][:32]]
+        if new != old:
+            write_lights(track, new)
+            n_tl = len(req['tunnel_lights'][:32])
+            if n_tl:
+                reseated.append(f'{n_tl} lumière(s) dans les tunnels')
     road = [{'file': o['file'], 'id': o['id']} for o in route_objects(track, 'CreatorRoad')['objects']
             if 'CreatorRoad' in (o['name'] or '')]               # nom prefixe du lot : « Createur_CreatorRoad »
     if not road:
@@ -10986,7 +11127,7 @@ class Handler(BaseHTTPRequestHandler):
                                                  else with_history(req['track'], 'mini-carte', lambda: generate_minimap(req['track']))),
                       '/api/folder_scan': lambda: folder_scan(req),
                       '/api/light_info': lambda: light_info(req['track']),
-                      '/api/map_weight': lambda: map_weight(req['track']),
+                      '/api/map_weight': lambda: map_weight(req['track'], None if req.get('texture_max') is None else int(req['texture_max'])),
                       '/api/ambiance_info': lambda: ambiance_info(req['track']),
                       '/api/set_ambiance': lambda: with_history(req['track'], 'ambiance', lambda: set_ambiance(req)),
                       '/api/set_weather': lambda: with_history(req['track'], 'météo', lambda: set_weather(req)),

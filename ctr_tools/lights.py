@@ -43,7 +43,8 @@ def clean(lights):
             col = [min(max(float(v), 0.0), 1.0) for v in (l.get('color') or [1, 1, 1])[:3]]
             out.append({'pos': pos, 'color': col, 'intensity': min(max(float(l.get('intensity', 5)), 0.0), MAX_INTENSITY),
                         'radius': min(max(float(l.get('radius', 1500)), 50.0), 50000.0),
-                        **({'preset': l['preset']} if l.get('preset') in PRESETS else {})})
+                        **({'preset': l['preset']} if l.get('preset') in PRESETS else {}),
+                        **({'tag': l['tag']} if isinstance(l.get('tag'), str) and l['tag'] else {})})   # « tunnel » : posees par la Creation
         except (KeyError, TypeError, ValueError, IndexError):
             continue
     return out
