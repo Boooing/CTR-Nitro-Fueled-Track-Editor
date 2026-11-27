@@ -197,19 +197,190 @@ def obj_extents(text, pattern=None):
 
 def parse_obj_groups(text, scale=39.37, up='y', max_verts=MAX_MODEL_VERTS):
     """OBJ multi-objets / multi-materiaux -> [{'object', 'material', 'part', 'pos', 'nrm', 'uvs', 'tris'}] :
-    un groupe par couple (objet `o`/`g`, materiau `usemtl`), decoupe en morceaux de max_verts sommets."""
-    vs, vts, vns, faces = _parse_faces(text, scale, up)
-    order, by_key = [], {}
-    for obj, mtl, f in faces:
-        if (obj, mtl) not in by_key:
-            by_key[(obj, mtl)] = []
-            order.append((obj, mtl))
-        by_key[(obj, mtl)].append(f)
-    groups = []
-    for obj, mtl in order:
-        for i, (pos, nrm, uvs, tris) in enumerate(_assemble(vs, vts, vns, by_key[(obj, mtl)], max_verts)):
-            groups.append({'object': obj, 'material': mtl, 'part': i, 'pos': pos, 'nrm': nrm, 'uvs': uvs, 'tris': tris})
-    return groups
+    un groupe par couple (objet `o`/`g`, materiau `usemtl`), decoupe en morceaux de max_verts sommets.
+    (2026-11-27 : lecture en tableaux numpy, parse_obj_arrays + groups_from_arrays ; meme resultat, ~10 fois plus
+    rapide sur une grande map.)"""
+    return groups_from_arrays(parse_obj_arrays(text), scale, up, max_verts)
+
+
+# -- lecture rapide d'un OBJ en tableaux (2026-11-27) ----------------------------------------------
+# Une map importee de 2,4 M triangles (MoltenMile) : _parse_faces + _assemble ~55 s, et le texte etait relu a chaque
+# etape de l'analyse. Ici une passe sur les lignes (rangement seulement), puis les nombres convertis d'un bloc par
+# numpy. Les fichiers inhabituels (indices negatifs, sommets de longueur variable, coins de formats differents)
+# passent par une lecture ligne a ligne, plus lente, au meme resultat.
+
+def _floats_block(lines, width, skip):
+    """Nombres des lignes `v` / `vt` / `vn` -> tableau (n, width) ; colonnes en trop ignorees, manquantes = 0."""
+    import numpy as np
+    if not lines:
+        return np.zeros((0, width))
+    flat = np.array(' '.join(l[skip:] for l in lines).split(), dtype=np.float64)     # (fromstring : 10 fois plus lent)
+    n = len(lines)
+    if flat.size == n * width:
+        return flat.reshape(n, width)
+    out = np.zeros((n, width))
+    for i, l in enumerate(lines):
+        vals = [float(v) for v in l[skip:].split()[:width]]
+        out[i, :len(vals)] = vals
+    return out
+
+
+def parse_obj_arrays(text):
+    """OBJ -> {'V' (n, 3), 'VT' (m, 2), 'VN' (k, 3) : valeurs brutes du fichier ; 'C' (T, 3, 3) : coins des triangles
+    (sommet, UV, normale ; indices a partir de 0, -1 = absent), triangles en eventail dans l'ordre du fichier ;
+    'gid' (T,) : groupe de chaque triangle ; 'groups' : [(objet, materiau)] dans l'ordre d'apparition ; 'mtllibs'}."""
+    import numpy as np
+    vl, vtl, vnl, tri, gid = [], [], [], [], []
+    groups, gidx = [], {}
+    obj, mtl, cur = '', '', None
+    odd = False                                     # indices negatifs : lecture ligne a ligne des faces
+    mtllibs = []
+    for line in text.splitlines():
+        if not line:
+            continue
+        if line[0] in ' \t':
+            line = line.lstrip()
+            if not line:
+                continue
+        c0 = line[0]
+        if c0 == 'v':
+            c1 = line[1:2]
+            if c1 in (' ', '\t'):
+                vl.append(line)
+            elif c1 == 't':
+                vtl.append(line)
+            elif c1 == 'n':
+                vnl.append(line)
+        elif c0 == 'f' and line[1:2] in (' ', '\t'):
+            if cur is None:
+                cur = gidx.setdefault((obj, mtl), len(groups))
+                if cur == len(groups):
+                    groups.append((obj, mtl))
+            p = line.split()
+            if '-' in line:
+                odd = True
+                tri.append((p[1:], len(vl), len(vtl), len(vnl)))
+                gid.append(cur)
+            elif len(p) == 4:
+                tri.append(line[2:])
+                gid.append(cur)
+            else:
+                for k in range(2, len(p) - 1):          # eventail
+                    tri.append(f'{p[1]} {p[k]} {p[k + 1]}')
+                    gid.append(cur)
+        elif c0 in 'og' and (line[1:2] in (' ', '\t') or not line[1:].strip()):    # « g » seul : objet sans nom
+            obj, cur = ' '.join(line.split()[1:]), None
+        elif line.startswith('usemtl'):
+            mtl, cur = ' '.join(line.split()[1:]), None
+        elif line.startswith('mtllib'):
+            mtllibs.append(line[6:].strip())
+    V, VT, VN = _floats_block(vl, 3, 2), _floats_block(vtl, 2, 3), _floats_block(vnl, 3, 3)
+    T = len(tri)
+    C = None
+    if T and not odd:
+        big = ' '.join(tri)
+        ns, nd = big.count('/'), big.count('//')
+        k = 0 if ns == 0 else 1 if ns == 3 * T and nd == 0 else 2 if ns == 6 * T and nd == 3 * T else 3 if ns == 6 * T and nd == 0 else None
+        if k is not None:
+            flat = np.array(big.replace('/', ' ').split(), dtype=np.int64)
+            cols = {0: 1, 1: 2, 2: 2, 3: 3}[k]
+            if flat.size == T * 3 * cols:
+                A = flat.reshape(T, 3, cols) - 1
+                C = np.full((T, 3, 3), -1, np.int64)
+                C[:, :, 0] = A[:, :, 0]
+                if k in (1, 3):
+                    C[:, :, 1] = A[:, :, 1]
+                if k == 2:
+                    C[:, :, 2] = A[:, :, 1]
+                if k == 3:
+                    C[:, :, 2] = A[:, :, 2]
+    if C is None:                                    # lecture ligne a ligne (formats melanges, indices negatifs)
+        C = np.full((T, 3, 3), -1, np.int64)
+        nv, nt, nn = len(vl), len(vtl), len(vnl)
+        for i, t in enumerate(tri):
+            toks, cv, ct, cn = t if isinstance(t, tuple) else (t.split(), nv, nt, nn)
+            for k2, c in enumerate(toks[:3]) if len(toks) == 3 else []:
+                idx = (c.split('/') + ['', ''])[:3]
+                for j, (s, n) in enumerate(zip(idx, (cv, ct, cn))):
+                    if s:
+                        C[i, k2, j] = int(s) - 1 if int(s) > 0 else n + int(s)
+        # faces en eventail avec indices negatifs : triangulees ici
+        if odd:
+            rows, rgid = [], []
+            for t, g in zip(tri, gid):
+                toks, cv, ct, cn = t if isinstance(t, tuple) else (t.split(), nv, nt, nn)
+                corners = []
+                for c in toks:
+                    idx = (c.split('/') + ['', ''])[:3]
+                    corners.append([(int(s) - 1 if int(s) > 0 else n + int(s)) if s else -1
+                                    for s, n in zip(idx, (cv, ct, cn))])
+                for k2 in range(1, len(corners) - 1):
+                    rows.append([corners[0], corners[k2], corners[k2 + 1]])
+                    rgid.append(g)
+            C = np.array(rows, np.int64).reshape(-1, 3, 3)
+            gid = rgid
+    return {'V': V, 'VT': VT, 'VN': VN, 'C': C, 'gid': np.asarray(gid, np.int32), 'groups': groups, 'mtllibs': mtllibs}
+
+
+def convert_up(P, up, normals=False):
+    """Coordonnees du fichier -> jeu (Z en haut) : Y en haut (Blender, glTF) -> (x, -z, y) ; Z en haut : telles quelles."""
+    import numpy as np
+    P = np.asarray(P, np.float64)
+    return np.stack([P[:, 0], -P[:, 2], P[:, 1]], 1) if up == 'y' else P
+
+
+def groups_from_arrays(A, scale=39.37, up='y', max_verts=MAX_MODEL_VERTS, keep=None, rename_obj=None, rename_mtl=None):
+    """parse_obj_arrays -> groupes de parse_obj_groups. keep : ensemble d'indices de groupes a garder (None = tous) ;
+    rename_obj(objet) / rename_mtl {ancien: nouveau} : noms dans la scene fusionnee de plusieurs fichiers."""
+    import numpy as np
+    V = convert_up(A['V'], up) * scale if len(A['V']) else np.zeros((0, 3))
+    VN = convert_up(A['VN'], up) if len(A['VN']) else np.zeros((0, 3))
+    VT = A['VT']
+    C, gid = A['C'], A['gid']
+    order = np.argsort(gid, kind='stable')
+    bounds = np.searchsorted(gid[order], np.arange(len(A['groups']) + 1))
+    out = []
+    for g, (obj, mtl) in enumerate(A['groups']):
+        if keep is not None and g not in keep:
+            continue
+        sel = order[bounds[g]:bounds[g + 1]]
+        if not len(sel):
+            continue
+        F = C[sel]                                            # (n, 3, 3)
+        has_uv = len(VT) > 0 and bool((F[:, :, 1] >= 0).all())
+        has_n = len(VN) > 0 and bool((F[:, :, 2] >= 0).all())
+        keys = F.reshape(-1, 3).copy()
+        if not has_uv:
+            keys[:, 1] = -1
+        if not has_n:
+            keys[:, 2] = -1
+        name_o = rename_obj(obj) if rename_obj else obj
+        name_m = (rename_mtl or {}).get(mtl, mtl)
+        uniq, first, inv = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+        if max_verts and len(uniq) > max_verts:              # decoupe : comme avant, sommet par sommet
+            # sommets / UV / normales de ce groupe seulement (avant : tout le fichier recopie a chaque groupe decoupe)
+            loc, src = F.copy(), []
+            for j, arr in enumerate((V, VT, VN)):
+                col = F[:, :, j]
+                ok = col >= 0
+                u, inv_j = np.unique(col[ok], return_inverse=True)
+                loc[:, :, j][ok] = inv_j
+                src.append([tuple(x) for x in arr[u].tolist()] if len(u) else [])
+            faces = [tuple(tuple(None if v < 0 else v for v in c) for c in f) for f in loc.tolist()]
+            for i, (pos, nrm, uvs, tris) in enumerate(_assemble(src[0], src[1], src[2], faces, max_verts)):
+                out.append({'object': name_o, 'material': name_m, 'part': i, 'pos': pos, 'nrm': nrm, 'uvs': uvs, 'tris': tris})
+            continue
+        rank = np.empty(len(uniq), np.int64)                  # ordre d'apparition des sommets (comme _assemble)
+        o = np.argsort(first, kind='stable')
+        rank[o] = np.arange(len(uniq))
+        verts = uniq[o]
+        tris = rank[inv.reshape(-1)].reshape(-1, 3)
+        out.append({'object': name_o, 'material': name_m, 'part': 0,
+                    'pos': [tuple(p) for p in V[verts[:, 0]].tolist()],
+                    'nrm': [tuple(n) for n in VN[verts[:, 2]].tolist()] if has_n else None,
+                    'uvs': [tuple(t) for t in VT[verts[:, 1]].tolist()] if has_uv else None,
+                    'tris': [tuple(t) for t in tris.tolist()]})
+    return out
 
 
 def _sub(a, b):

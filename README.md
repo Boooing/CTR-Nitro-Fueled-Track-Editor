@@ -2,7 +2,7 @@
 
 **A track editor for Crash Team Racing Nitro-Fueled (PS4, v1.21, CUSA13795), for the [shadPS4](https://github.com/shadps4-emu/shadPS4) emulator and the OCTR PC port.**
 
-Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**, turn it into a playable race in a few clicks, and add it to the game as a **brand new track** or in place of an existing one, with AI opponents, item crates, boosters, respawns, a minimap, menu images, your own music, lights and even teleporters.
+Import your own map (OBJ / COLLADA / glTF) or **build one from scratch in the editor**, turn it into a playable race in a few clicks, and add it to the game as a **brand new track** or in place of an existing one, with AI opponents, item crates, boosters, respawns, a minimap, menu images, your own music, lights and even teleporters.
 
 > 🇫🇷 Version française plus bas.
 >
@@ -10,7 +10,34 @@ Import your own map (OBJ / COLLADA) or **build one from scratch in the editor**,
 
 ---
 
-## What's new in v0.8.2
+## What's new in v0.8.5
+
+### New look
+- **"Race night" theme**: night blue panels, Wumpa orange highlights and a narrow racing font across the whole editor.
+
+### Import your map
+- **glTF / GLB import** (.glb, or .gltf with its .bin): textures embedded in the file or next to it, transparency, nodes and their transforms. Works like OBJ and COLLADA: one model per object and material, collision per material, scale suggested from the road width.
+- **Much faster folder import**: each file is read once and kept in memory, so adding a file to the selection only reads the new one. On a 2.4 million triangle map: analysis 71 s → 3 s, adding a second file 87 s → 2 s, importing 1 million triangles 34 s → 19 s.
+- **Fog and sky volumes** of maps taken from other games (Height_Fog, sky boxes) are unchecked by default: imported, they become a giant grey box around the track. Tick them again in *Elements to import* if you want them.
+- The **road width** is shown right under the scale. A standard road is 30 to 70 m wide; the suggested scale aims at 50 m.
+- **New map** asks how to start: **Create from scratch** (drive the paver) or **Import a map** (opens the folder import on the new empty map).
+
+### Roads that split (Creation)
+- **Secondary roads**: the **Fork** piece (the road splits in two and joins again, one side can be shorter), a **shortcut** you drive with the kart from the road, or a **suspended road** reached by a jump. They are generated with the track and drawn under the main road where both meet.
+- The course follows them: fork checkers, one position spline per road and AI lanes on each side.
+
+### Objects
+- **Booster effect on any object**: right-click › **⚡ Booster effect** gives a turbo (power and reserve of your choice) when a kart drives on the object or through it. No pad is drawn: the object is the booster. Its settings are in the right panel, and the turbo zone follows the object when you move, turn or resize it.
+- **Right-click on several selected objects** now keeps the whole selection for the menu.
+
+### AI lanes seen from above
+- **Fix a lane** mode (default): choose a lane in the list or by clicking it, then draw over it: only the part between the two ends of your stroke changes. Adding a lane is a separate **Add a lane** mode, so no lane is created by mistake.
+- The top view is no longer hidden by a huge object around the map.
+
+### Memory gauge
+- The memory load now counts the **files of the track archive** (limit 2,612) instead of the number of models: an imported map with many models sharing a few textures is no longer flagged as too heavy.
+
+## What was new in v0.8.2
 
 ### Tunnels
 - **Tunnel while driving** (Creation › drive the road): press **U** (or the pad button) to start or stop a tunnel. Dig down into the ground or drive through a hill you raised: the ground is left above the road as a roof.
@@ -385,9 +412,36 @@ Third-party: [three.js](https://threejs.org) (MIT, `ctr_tools/editor/vendor/thre
 
 **Éditeur de pistes pour Crash Team Racing Nitro-Fueled (PS4 v1.21, CUSA13795), pour l'émulateur shadPS4 et le portage PC OCTR.**
 
-Importe ta map (OBJ / COLLADA) ou **construis-la de zéro dans l'éditeur**, transforme-la en course jouable en quelques clics et ajoute-la au jeu comme **nouvelle piste** ou à la place d'une piste existante : IA, caisses, boosters, réapparitions, mini-carte, images de menu, ta propre musique, lumières et même téléporteurs.
+Importe ta map (OBJ / COLLADA / glTF) ou **construis-la de zéro dans l'éditeur**, transforme-la en course jouable en quelques clics et ajoute-la au jeu comme **nouvelle piste** ou à la place d'une piste existante : IA, caisses, boosters, réapparitions, mini-carte, images de menu, ta propre musique, lumières et même téléporteurs.
 
 Ce dossier contient l'éditeur seul. **CTR Track Installer**, l'appli à part pour les joueurs, n'en fait pas partie.
+
+### Nouveautés de la v0.8.5
+
+#### Nouveau look
+- **Thème « Nuit de course »** : panneaux bleu nuit, touches orange Wumpa et police de course étroite dans tout l'éditeur.
+
+#### Importer ta map
+- **Import glTF / GLB** (.glb, ou .gltf avec son .bin) : textures intégrées au fichier ou à côté, transparence, nœuds et leurs transformations. Comme pour OBJ et COLLADA : un modèle par objet et matériau, collision par matériau, échelle proposée d'après la largeur de la route.
+- **Import d'un dossier beaucoup plus rapide** : chaque fichier est lu une fois et gardé en mémoire, ajouter un fichier à la sélection ne lit que le nouveau. Sur une map de 2,4 millions de triangles : analyse 71 s → 3 s, ajout d'un 2e fichier 87 s → 2 s, import d'un million de triangles 34 s → 19 s.
+- Les **volumes de brouillard et de ciel** des maps venues d'autres jeux (Height_Fog, boîtes de ciel) sont décochés d'office : importés, ils deviennent une boîte grise géante autour de la piste. Recoche-les dans *Éléments à importer* si tu les veux.
+- La **largeur de la route** s'affiche juste sous l'échelle. Une route standard fait 30 à 70 m ; l'échelle proposée vise 50 m.
+- **Nouvelle map** demande comment commencer : **Créer de zéro** (conduire le paveur) ou **Importer une map** (ouvre l'import d'un dossier sur la nouvelle map vide).
+
+#### Routes qui se séparent (Création)
+- **Routes secondaires** : la pièce **Fourche** (la route se sépare en deux puis se rejoint, un côté peut être plus court), un **raccourci** conduit au kart depuis la route, ou une **route suspendue** atteinte par un saut. Elles sont générées avec la piste et passent sous la route principale là où les deux se touchent.
+- Le parcours les suit : embranchements, une spline de position par route et des voies IA de chaque côté.
+
+#### Objets
+- **Effet booster sur n'importe quel objet** : clic droit › **⚡ Effet booster** donne un turbo (puissance et réserve au choix) quand un kart roule sur l'objet ou le traverse. Pas de plaque dessinée : l'objet est le booster. Ses réglages sont dans le panneau de droite, et la zone du turbo suit l'objet quand tu le déplaces, le tournes ou l'agrandis.
+- **Clic droit sur plusieurs objets sélectionnés** : la sélection entière est gardée pour le menu.
+
+#### Voies IA vues du dessus
+- Mode **Corriger une voie** (par défaut) : choisis une voie dans la liste ou d'un clic, puis dessine par-dessus : seule la portion entre les deux bouts de ton trait change. Ajouter une voie se fait dans le mode **Ajouter une voie**, à part : plus de voie créée par erreur.
+- La vue de dessus n'est plus cachée par un énorme objet autour de la map.
+
+#### Jauge mémoire
+- La charge mémoire compte maintenant les **fichiers de l'archive de la piste** (limite 2 612) au lieu du nombre de modèles : une map importée avec beaucoup de modèles qui se partagent peu de textures n'est plus signalée comme trop lourde.
 
 ### Nouveautés de la v0.8.2
 

@@ -87,7 +87,7 @@ from decor import ENTITY_TYPES, DecorFile, model_logical_path, model_mesh  # noq
 from igz import IgzFile  # noqa: E402
 from model_build import (TEMPLATE, build_model, build_model_multi, complete_mesh, model_materials, obj_extents, obj_material_extents,  # noqa: E402
                          obj_summary, parse_mtl,
-                         parse_obj_groups, set_material)
+                         parse_obj_groups, set_material, parse_obj_arrays, groups_from_arrays, convert_up, MAX_MODEL_VERTS)
 from havok import Packfile  # noqa: E402
 from race_entities import RaceSystemEditor, TTRStatsEditor  # noqa: E402
 from race_system import RaceSystem  # noqa: E402
@@ -252,9 +252,15 @@ def load_track(track):
         crates = []
     cols = iter(boost_colors(track))                   # couleur de la plaque au sol de chaque booster
     free = iter(read_boost_free(track))                # case « posé au sol et aligné » decochee
+    objs = iter(read_boost_objects(track))             # booster lie a un objet du decor : sans plaque (2026-11-27)
     for c in crates:
         if c['kind'] == 'boost':
-            c['color'] = next(cols, 'bleu' if c.get('super') else 'orange')
+            o = next(objs, None)
+            if o:
+                c['obj'] = {'file': o['file'], 'id': o['id']}
+                c['color'] = o.get('color') or ('bleu' if c.get('super') else 'orange')
+            else:
+                c['color'] = next(cols, 'bleu' if c.get('super') else 'orange')
             c['free'] = next(free, False)
     return {'track': track, 'source': src, 'saved': src.startswith(OUT_DIR), 'splines': splines,
             'transitions': transitions, 'forks': rs['fork_checkers'], 'player_starts': rs['player_starts'],
@@ -1147,7 +1153,19 @@ def route_layout(req):
         note = (note + ' ; ' if note else '') + (f"tracé écarté d'objets solides posés sur la route "
                                                  f"({loop['obstacles']} point(s) déplacé(s))")
     obs = ai_gen.Obstacles(ground)
-    lay = route_gen.layout(loop, max(1, int(req.get('sections', 4))), avoid=obs.crosses)
+    # routes secondaires de la Creation (2026-11-26) : abscisses de depart / retour sur la boucle (lignes de la generation)
+    forks = []
+    if exact and req.get('forks'):
+        E = np.asarray(exact, np.float64)
+        cumE = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(E[:, :2], axis=0), axis=1))])
+        for f in req['forks']:
+            B = np.asarray(f.get('exact') or [], np.float64)
+            if len(B) < 4 or not (0 <= int(f['a']) < len(E) and 0 <= int(f['b']) < len(E)):
+                continue
+            forks.append({'sa': float(cumE[int(f['a'])]), 'sb': float(cumE[int(f['b'])]), 'points': B[:, :3].tolist(),
+                          'half_width': float(np.median(B[:, 3])) / 2, 'air': B[:, 4].tolist() if B.shape[1] > 4 else []})
+        forks.sort(key=lambda f: f['sa'])
+    lay = route_gen.layout(loop, max(1, int(req.get('sections', 4))), avoid=obs.crosses, forks=forks)
     respawns = {}
     for k, names in enumerate(req.get('respawns') or []):
         if k < len(lay['section_paths']) and names:
@@ -1159,7 +1177,7 @@ def route_layout(req):
         json.dump(src, open(road_source_path(track), 'w'), indent=1)
     return {'loop': loop['points'], 'length': round(loop['length']), 'sections': lay['sections'], 'note': note,
             'transitions': lay['transitions'], 'respawns': respawns, 'design_moves': design_moves,
-            'race_moves': race_moves, 'jumps': loop.get('jumps', 0), 'preview': loop.get('preview')}
+            'race_moves': race_moves, 'jumps': loop.get('jumps', 0), 'preview': loop.get('preview'), 'forks': lay.get('forks') or []}
 
 
 def exact_loop(line, step=300.0):
@@ -1487,7 +1505,7 @@ def gen_ai_splines(req):
                               randomness=float(req.get('randomness', 0.5)), margin=float(req.get('margin', 0.15)),
                               seed=int(req.get('seed', 1)), point_spacing=float(req.get('spacing', 2500)),
                               keep_air=bool(req.get('keep_air')), road_ground=road,
-                              spread=float(req.get('spread', 0.7)))
+                              spread=float(req.get('spread', 0.7)), avoid_refs=req.get('avoid_refs'))
     w = [a + b for a, b in r['widths']]
     r['width_summary'] = {'min': round(min(w)), 'median': round(float(np.median(w))), 'max': round(max(w))}
     r['widths'] = [[round(a), round(b)] for a, b in r['widths']]
@@ -1622,6 +1640,30 @@ def write_boost_free(track, flags):
 def read_boost_free(track):
     try:
         return [bool(v) for v in json.load(open(_boost_free_path(track)))]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _boost_objects_path(track):
+    return os.path.join(OUT_DIR, f'{track}_boost_objects.json')
+
+
+def write_boost_objects(track, links):
+    """Boosters lies a un objet du decor (2026-11-27, « effet booster » d'un objet, clic droit) : par booster dans
+    l'ordre, None ou {file, id, color}. Ces boosters n'ont pas de plaque au sol (l'objet est le booster) ; la couleur
+    n'est donc pas lue sur une plaque. Fichier retire s'il n'y en a aucun."""
+    p = _boost_objects_path(track)
+    if any(links):
+        with open(p, 'w') as f:
+            json.dump(links, f)
+    elif os.path.exists(p):
+        os.remove(p)
+
+
+def read_boost_objects(track):
+    try:
+        out = json.load(open(_boost_objects_path(track)))
+        return [o if isinstance(o, dict) and 'file' in o and 'id' in o else None for o in out]
     except (OSError, ValueError, TypeError):
         return []
 
@@ -1881,6 +1923,41 @@ def plan_sections(tr, n):
     return out
 
 
+FORK_ED = 'ForkChecker_Ed_'
+
+
+def write_fork_checkers(ed, items):
+    """items = [{name, position, yaw, dimensions, position_path, ai_paths}] -> lignes du rapport."""
+    out = []
+    want = {f['name']: f for f in items if str(f.get('name', '')).startswith(FORK_ED)}
+    for name in [n for n in ed.forks() if n.startswith(FORK_ED) and n not in want]:
+        ed.remove_entity(name)
+    templ = next((n for n in ed.forks() if not n.startswith(FORK_ED)), None) or next(iter(ed.forks()), None)
+    if want and templ is None:
+        return ['ATTENTION : aucun embranchement (ForkChecker) dans cette piste à copier : les routes secondaires '
+                "n'auront pas de classement propre"]
+    z = ed.igz
+    for name, f in want.items():
+        if name not in ed.by_name:
+            ed.add_entity_copy(name, templ)
+        ent = ed.by_name[name]
+        comp = ed.component(ent, 'CRaceTrackForkCheckerComponentData')
+        pp = f['position_path']
+        off = _field(z, 'CRaceTrackForkCheckerComponentData', '_positionPath')
+        struct.pack_into('<Q', *z._loc(comp + off), 0x80000000 | z.ext_index(pp, ed._ns_of(pp)))
+        z._mark('RHND', comp + off)
+        lst = z.deref(comp + _field(z, 'CRaceTrackForkCheckerComponentData', '_aiPaths'))
+        if lst is not None:
+            z.set_handle_list(lst, [(n, ed._ns_of(n)) for n in f.get('ai_paths') or [] if n in ed.by_name])
+        try:
+            start_finish.set_transition_pose(ed, name, pos=f['position'], yaw=f.get('yaw'), dims=f.get('dimensions'))
+        except ValueError:                                   # embranchement sans transformation : boite non tournee
+            start_finish.set_transition_pose(ed, name, pos=f['position'], dims=f.get('dimensions'))
+    if want:
+        out.append(f'{len(want)} embranchement(s) des routes secondaires')
+    return out
+
+
 def save_track(req):
     track = req['track']
     rs_data, _ = base_file(track, race_file(track))
@@ -1989,6 +2066,12 @@ def save_track(req):
             struct.pack_into('<3f', *ed.igz._loc(ed.by_name[name] + 0x20), *[float(c) for c in pos])
             report.append(f'{name} deplace')
 
+    # embranchements des routes secondaires de la Creation (2026-11-26) : ForkChecker_Ed_* = copies d'un embranchement
+    # du jeu (Crash Cove : RaceSystem_ForkChecker_jpross), une boite en travers de chaque route apres la separation ;
+    # la liste envoyee est complete (ceux d'avant qui n'y sont plus sont retires)
+    if req.get('fork_checkers') is not None:
+        report += write_fork_checkers(ed, req['fork_checkers'])
+
     # reapparitions rangees dans le _RaceSystem (Sewer Speedway, Slide Coliseum, Turbo Track...) : ecrites ici, le
     # reste va au _Design ci-dessous (« Creer le parcours » les envoie toutes dans design_poses)
     design_poses = dict(req.get('design_poses') or {})
@@ -2077,9 +2160,14 @@ def save_track(req):
             z.save(saved_path(logical))
             report.append(msg)
         # boosters « libres » (case decochee dans l'editeur : ni pose au sol ni aligne automatiquement), dans l'ordre
-        write_boost_free(track, [bool(c.get('free')) for c in req['crates'] if c['kind'] == 'boost'])
+        sent = [c for c in req['crates'] if c['kind'] == 'boost']
+        write_boost_free(track, [bool(c.get('free')) for c in sent])
+        # boosters lies a un objet (2026-11-27) : pas de plaque, couleur gardee a part
+        write_boost_objects(track, [{'file': c['obj']['file'], 'id': int(c['obj']['id']), 'color': boost_settings(c)['color']}
+                                    if isinstance(c.get('obj'), dict) else None for c in sent])
         # dessin au sol des boosters (aussi s'il n'est plus a jour : sol modifie, ancienne version mal placee)
-        vis = sync_boost_visuals(track, [c for c in want if c['kind'] == 'boost'])
+        vis = sync_boost_visuals(track, [w for w, c in zip([c for c in want if c['kind'] == 'boost'], sent)
+                                         if not isinstance(c.get('obj'), dict)])
         if vis and vis != 'aucun booster':
             report.append(vis)
 
@@ -2906,6 +2994,7 @@ def remove_boosters(track, measure=True):
         safe_compact(track, logical, z)
         z.save(saved_path(logical))
     vis = sync_boost_visuals(track, [])
+    write_boost_objects(track, [])
     return f'{n} booster(s) retiré(s)' if n else (None if vis == 'aucun booster' else 'plaques de booster retirées')
 
 
@@ -3170,7 +3259,10 @@ def boosts_from_decor(track):
     if logical is None:
         return None
     cur = read_track_crates(track)
-    old = [c for c in cur if c['kind'] == 'boost']
+    allb = [c for c in cur if c['kind'] == 'boost']
+    links = read_boost_objects(track)
+    linked = [(c, links[i]) for i, c in enumerate(allb) if i < len(links) and links[i]]   # (2026-11-27) sans plaque
+    old = [c for i, c in enumerate(allb) if not (i < len(links) and links[i])]
     if not vis and not old:
         return None
     new = []
@@ -3190,10 +3282,17 @@ def boosts_from_decor(track):
         for n, o in zip(new, old))
     if same:
         return None
-    want = [c for c in cur if c['kind'] != 'boost'] + new
+    # boosters lies a un objet : remis apres ceux des plaques, leurs liens dans le meme ordre
+    want = [c for c in cur if c['kind'] != 'boost'] + new + [c for c, _ in linked]
     z, _ = write_crates_file(track, want)
     safe_compact(track, logical, z)
     z.save(saved_path(logical))
+    if linked or links:
+        write_boost_objects(track, [None] * len(new) + [o for _, o in linked])
+        free = read_boost_free(track)
+        fl = [free[i] if i < len(free) else False for i, c in enumerate(allb)]
+        keep = [f for i, f in enumerate(fl) if not (i < len(links) and links[i])]
+        write_boost_free(track, (keep + [False] * len(new))[:len(new)] + [True] * len(linked))
     return f'boosters mis a jour depuis les plaques du decor : {len(new)}'
 
 
@@ -3239,6 +3338,8 @@ def _tracked_files(track):
             (f'{track}_newmap.json', newmap_path(track)), (f'{track}_road.json', road_source_path(track)),
             (f'{track}_minimap.json', os.path.join(OUT_DIR, f'{track}_minimap.json')),
             (f'{track}_light.json', light_path(track)),
+            (f'{track}_boost_free.json', _boost_free_path(track)),
+            (f'{track}_boost_objects.json', _boost_objects_path(track)),
             (f'{track}_menu.json', menu_settings_path(track)),
             (f'{track}_lights.json', lights_path(track)),
             (f'{track}_animated.json', animated_path(track)),
@@ -5331,7 +5432,7 @@ def import_model(req):
     track = req['track']
     catalog = {m['id']: m for m in material_catalog(track)}
     progress.step('découpage du modèle', 0.0)
-    groups = [g for g in parse_obj_groups(req['obj'], float(req.get('scale', 39.37)), req.get('up', 'y')) if g['tris']]
+    groups = req.get('groups') or [g for g in parse_obj_groups(req['obj'], float(req.get('scale', 39.37)), req.get('up', 'y')) if g['tris']]
     if not groups:
         raise ValueError('aucune face dans l\'OBJ')
     mapping = req.get('materials') or {}
@@ -5358,10 +5459,14 @@ def import_model(req):
     base = _clean_name(req.get('name'))
     batch = f"{base} — {time.strftime('%d/%m %H:%M')}"     # lot d'import (« Nouvelle map » : retirer un import entier)
     taken = {os.path.basename(k).lower() for k in custom_models(track)}
+    # fichiers deja presents (toutes pistes) lus une fois : un test d'existence par nom essaye prenait 20 s sur une
+    # map de 600 modeles importee une 2e fois (2026-11-27)
+    mdir = os.path.join(OUT_DIR, 'models')
+    taken |= {f.lower() for f in os.listdir(mdir)} if os.path.isdir(mdir) else set()
 
     def free_name(want):
         name, n = want, 1
-        while f'{name}.igz'.lower() in taken or os.path.exists(custom_model_path(f'{name}.igz')):
+        while f'{name}.igz'.lower() in taken:
             n += 1
             name = f'{want}_{n}'
         taken.add(f'{name}.igz'.lower())
@@ -5807,136 +5912,186 @@ def _find_file(folder, name):
     return None
 
 
-def _folder_materials(folder, text):
-    summ = obj_summary(text)
+MODEL_EXT = ('.obj', '.dae', '.glb', '.gltf')
+# fichiers lus (2026-11-27) : tableaux (model_build.parse_obj_arrays) + materiaux + axe vertical, par fichier, cle =
+# (chemin, taille, date) ; ajouter un fichier a la selection ne relit plus ceux deja lus. Quelques fichiers seulement
+# (MoltenMile : ~250 Mo de tableaux).
+_src_cache = {}
+SRC_CACHE_MAX = 4
+
+
+def _obj_materials(folder, mtllibs):
+    """Materiaux d'un .obj : ses mtllib, sinon tous les .mtl du dossier."""
     mtl = {}
-    for lib in summ['mtllibs']:
+    for lib in mtllibs:
         p = _find_file(folder, lib)
         if p:
             mtl.update(parse_mtl(open(p, encoding='utf-8', errors='replace').read()))
-    if not summ['mtllibs']:                              # sans mtllib : tous les .mtl du dossier
+    if not mtllibs:                                      # sans mtllib : tous les .mtl du dossier
         for f in os.listdir(folder):
             if f.lower().endswith('.mtl'):
                 mtl.update(parse_mtl(open(os.path.join(folder, f), encoding='utf-8', errors='replace').read()))
-    return summ, mtl
-
-
-MODEL_EXT = ('.obj', '.dae')
-_dae_cache = {}
+    return mtl
 
 
 def _load_source(folder, name):
-    """(texte OBJ, materiaux {nom: {'texture', 'color'}}, resume, axe vertical propose) d'un .obj (+ .mtl) ou
-    d'un .dae (converti par dae_import ; resultat garde en cache tant que le fichier ne change pas)."""
-    path = os.path.join(folder, name)
-    if name.lower().endswith('.dae'):
+    """Fichier .obj (+ .mtl), .dae ou .glb / .gltf lu en tableaux, garde en cache tant qu'il ne change pas :
+    {'key', 'A' (tableaux), 'mtl' {nom: {'texture', 'color'...}}, 'up', 'ntri' (par groupe), 'lo' / 'hi' (boite de
+    chaque groupe, repere du jeu, Z en haut, unites du fichier), 'objects' [(objet, triangles)]}."""
+    path = os.path.abspath(os.path.join(folder, name))
+    st = os.stat(path)
+    key = (path, st.st_size, st.st_mtime_ns)
+    if key in _src_cache:
+        _src_cache[key] = _src_cache.pop(key)            # le plus recent en dernier
+        return _src_cache[key]
+    low = name.lower()
+    if low.endswith(('.glb', '.gltf')):
+        import gltf_import
+        A, mtl, up = gltf_import.gltf_to_arrays(path)
+    elif low.endswith('.dae'):
         import dae_import
-        st = os.stat(path)
-        key = (path, st.st_size, st.st_mtime_ns)
-        if key not in _dae_cache:
-            if len(_dae_cache) >= 8:                   # plusieurs .dae importes ensemble : gardes tous
-                _dae_cache.pop(next(iter(_dae_cache)))
-            _dae_cache[key] = dae_import.dae_to_obj(path)
-        text, mtl, up = _dae_cache[key]
-        return text, mtl, obj_summary(text), up
-    text = open(path, encoding='utf-8', errors='replace').read()
-    summ, mtl = _folder_materials(folder, text)
-    return text, mtl, summ, 'y'
-
-
-def _obj_objects(text):
-    """[(objet `o`/`g`, triangles)] d'un OBJ, dans l'ordre du fichier (objets sans face ignores)."""
-    counts, obj = {}, ''
-    for line in text.splitlines():
-        if line.startswith(('o ', 'g ')):
-            obj = line[2:].strip()
-        elif line.startswith('f '):
-            counts[obj] = counts.get(obj, 0) + len(line.split()) - 3
-    return list(counts.items())
+        text, mtl, up = dae_import.dae_to_obj(path)
+        A = parse_obj_arrays(text)
+    else:
+        A = parse_obj_arrays(open(path, encoding='utf-8', errors='replace').read())
+        mtl, up = _obj_materials(folder, A['mtllibs']), 'y'
+    A['C'] = A['C'].astype(np.int32)                     # memoire : moitie moins
+    G = len(A['groups'])
+    ntri = np.bincount(A['gid'], minlength=G) if len(A['gid']) else np.zeros(G, np.int64)
+    lo, hi = np.full((G, 3), np.inf), np.full((G, 3), -np.inf)
+    if len(A['gid']):
+        Vg = convert_up(A['V'], up)
+        tv = Vg[A['C'][:, :, 0]]                         # (T, 3, 3)
+        np.minimum.at(lo, A['gid'], tv.min(1))
+        np.maximum.at(hi, A['gid'], tv.max(1))
+    objects = {}
+    for g, (o, _) in enumerate(A['groups']):
+        if ntri[g]:
+            objects[o] = objects.get(o, 0) + int(ntri[g])
+    src = {'key': key, 'A': A, 'mtl': mtl, 'up': up, 'ntri': ntri, 'lo': lo, 'hi': hi, 'objects': list(objects.items())}
+    while len(_src_cache) >= SRC_CACHE_MAX:
+        _src_cache.pop(next(iter(_src_cache)))
+    _src_cache[key] = src
+    return src
 
 
 # axe vertical d'un fichier -> celui de la scene fusionnee (y : (x, -z, y) dans le jeu ; z : tel quel)
-_UP_CONVERT = {('z', 'y'): lambda x, y, z: (x, z, -y), ('y', 'z'): lambda x, y, z: (x, -z, y)}
+_UP_CONVERT = {('z', 'y'): lambda P: np.stack([P[:, 0], P[:, 2], -P[:, 1]], 1),
+               ('y', 'z'): lambda P: np.stack([P[:, 0], -P[:, 2], P[:, 1]], 1)}
 
 
-def _filter_obj(text, keep, base, rename_obj=None, rename_mtl=None, conv=None):
-    """OBJ reduit aux faces des objets gardes (keep(objet)), sommets / UV / normales inutiles retires, indices a
-    partir de base = (sommets, UV, normales) deja ecrits ; objets / materiaux renommes, axe vertical converti.
-    -> (texte, nombres ecrits (sommets, UV, normales))."""
-    src, faces, obj, mtl = ([], [], []), [], '', ''
-    for line in text.splitlines():
-        p = line.split()
-        if not p:
-            continue
-        k = {'v': 0, 'vt': 1, 'vn': 2}.get(p[0])
-        if k is not None:
-            src[k].append(p[1:4] if k != 1 else p[1:3])
-        elif p[0] in ('o', 'g'):
-            obj = ' '.join(p[1:])
-        elif p[0] == 'usemtl':
-            mtl = ' '.join(p[1:])
-        elif p[0] == 'f' and keep(obj):
-            cs = []
-            for c in p[1:]:
-                idx = (c.split('/') + ['', ''])[:3]
-                cs.append(tuple((int(s) - 1 if int(s) > 0 else len(src[j]) + int(s)) if s else None for j, s in enumerate(idx)))
-            faces.append((obj, mtl, cs))
-    remap = ({}, {}, {})
-    for _, _, cs in faces:
-        for c in cs:
-            for j in range(3):
-                if c[j] is not None and c[j] not in remap[j]:
-                    remap[j][c[j]] = len(remap[j])
-    out = []
-    for j, tag in enumerate(('v', 'vt', 'vn')):
-        for i in remap[j]:                             # ordre d'apparition dans les faces
-            vals = src[j][i]
-            if conv and j != 1:
-                vals = ['%.6f' % c for c in conv(*map(float, vals))]
-            out.append(f'{tag} {" ".join(vals)}')
-    cur = None
-    for obj, mtl, cs in faces:
-        if (obj, mtl) != cur:
-            out.append(f'o {rename_obj(obj) if rename_obj else obj}')
-            out.append(f'usemtl {(rename_mtl or {}).get(mtl, mtl)}')
-            cur = (obj, mtl)
-        out.append('f ' + ' '.join('/'.join('' if c[j] is None else str(base[j] + remap[j][c[j]] + 1) for j in range(3)).rstrip('/')
-                                   for c in cs))
-    return '\n'.join(out) + '\n', tuple(len(r) for r in remap)
+# volumes de brouillard / ciel des maps exportees de jeux (2026-11-27, demande utilisateur) : invisibles dans leur jeu,
+# importes ce sont d'enormes boites grises autour de la map (MoltenMile : Height_Fog_Global, cube de 6,5 km qui cachait
+# la vue de dessus et le ciel) -> elements decoches d'office (recochables dans « Éléments à importer »)
+VOLUME_HINT = re.compile(r'fog|sky_?(box|dome|sphere)|(^|[_\W])sky($|[_\W\d])', re.I)
 
 
-def _load_sources(folder, names, objects=None):
-    """Un ou plusieurs .obj / .dae du dossier fusionnes en une scene : (texte OBJ, materiaux, resume, axe vertical,
-    elements [{file, name, triangles}] de ces fichiers). objects = None (tout) ou ['fichier|objet', ...] a garder.
-    Plusieurs fichiers : objets prefixes du nom du fichier, materiaux homonymes differents renommes, axe vertical du
-    premier fichier (les autres convertis) ; memes echelle et placement pour tous (ils restent alignes)."""
+def _selection(folder, names, objects=None):
+    """Un ou plusieurs fichiers du dossier en une scene : {'parts' [{name, src, keep (indices de groupes | None),
+    ren {materiau: nouveau nom}, prefix}], 'mtl', 'up' (celui du premier fichier), 'elements', 'key'}. objects = None
+    (tout) ou ['fichier|objet', ...] a garder. Plusieurs fichiers : objets prefixes du nom du fichier, materiaux
+    homonymes differents renommes ; memes echelle et placement pour tous (ils restent alignes)."""
     names = list(dict.fromkeys(names))
     if objects is not None and not objects:
         raise ValueError('aucun élément choisi')
     keep_set = None if objects is None else set(objects)
-    srcs = [(name,) + _load_source(folder, name) for name in names]
-    if len(srcs) == 1 and keep_set is None:            # un fichier entier : tel quel
-        name, text, mtl, summ, up = srcs[0]
-        return text, mtl, summ, up, [{'file': name, 'name': o, 'triangles': n} for o, n in _obj_objects(text)]
-    up0, multi = srcs[0][4], len(srcs) > 1
-    parts, mtl_all, elements, base = [], {}, [], (0, 0, 0)
-    for name, text, mtl, _, up in srcs:
+    srcs = [(name, _load_source(folder, name)) for name in names]
+    multi = len(srcs) > 1
+    parts, mtl_all, elements = [], {}, []
+    for name, src in srcs:
         stem = _clean_name(os.path.splitext(name)[0])
-        elements += [{'file': name, 'name': o, 'triangles': n} for o, n in _obj_objects(text)]
+        elements += [{'file': name, 'name': o, 'triangles': n} for o, n in src['objects']]
         ren = {}
-        for m, info in mtl.items():
+        for m, info in src['mtl'].items():
             new = m if m not in mtl_all or mtl_all[m] == info else f'{m}__{stem}'
             ren[m], mtl_all[new] = new, info
-        keep = (lambda o: True) if keep_set is None else (lambda o, name=name: f'{name}|{o}' in keep_set)
-        part, n = _filter_obj(text, keep, base, (lambda o, s=stem: f'{s}_{o}') if multi else None, ren,
-                              _UP_CONVERT.get((up, up0)))
-        parts.append(part)
-        base = tuple(b + k for b, k in zip(base, n))
-    text = ''.join(parts)
-    summ = obj_summary(text)
-    if not summ['triangles']:
-        raise ValueError('aucun triangle dans les éléments choisis')
-    return text, mtl_all, summ, up0, elements
+        keep = None if keep_set is None else {g for g, (o, _) in enumerate(src['A']['groups']) if f'{name}|{o}' in keep_set}
+        parts.append({'name': name, 'src': src, 'keep': keep, 'ren': ren if multi else {}, 'prefix': stem if multi else None})
+    # rien de choisi : volumes de brouillard / ciel laisses de cote (objet nomme ainsi, ou dont tous les materiaux le sont)
+    excluded = []
+    if keep_set is None:
+        drop = []
+        for pt in parts:
+            groups = pt['src']['A']['groups']
+            mats = defaultdict(list)
+            for o, m in groups:
+                mats[o].append(m)
+            out = {o for o, ms in mats.items() if VOLUME_HINT.search(o) or all(VOLUME_HINT.search(m) for m in ms)}
+            out = {o for o in out if dict(pt['src']['objects']).get(o)}
+            drop.append(out)
+        kept = sum(n for pt, out in zip(parts, drop) for o, n in pt['src']['objects'] if o not in out)
+        if kept and any(drop):                           # jamais toute la scene
+            for pt, out in zip(parts, drop):
+                if out:
+                    pt['keep'] = {g for g, (o, _) in enumerate(pt['src']['A']['groups']) if o not in out}
+                    excluded += [f"{pt['name']}|{o}" for o, _ in pt['src']['objects'] if o in out]
+    key = tuple((pt['src']['key'], None if pt['keep'] is None else tuple(sorted(pt['keep'])), tuple(sorted(pt['ren'].items())))
+                for pt in parts)
+    return {'parts': parts, 'mtl': mtl_all if multi else srcs[0][1]['mtl'], 'up': srcs[0][1]['up'], 'elements': elements, 'key': key,
+            'excluded': excluded}
+
+
+def _part_groups(pt):
+    """Indices des groupes gardes d'un fichier de la selection (avec des triangles)."""
+    n = pt['src']['ntri']
+    return [g for g in range(len(n)) if n[g] and (pt['keep'] is None or g in pt['keep'])]
+
+
+def _part_vertices(pt, up0, up=None):
+    """Sommets d'un fichier de la selection dans le repere du jeu (Z en haut, unites du fichier) : fichier d'un autre
+    axe d'abord ramene a celui de la scene (up0), puis axe choisi `up` (defaut : up0)."""
+    A, fu = pt['src']['A'], pt['src']['up']
+    V = A['V']
+    if fu != up0:
+        V = _UP_CONVERT[(fu, up0)](V)
+    return convert_up(V, up or up0)
+
+
+def _selection_summary(sel):
+    """Triangles par materiau, sommets utilises, boite (repere du fichier principal) et emprise de chaque materiau
+    (plus grand cote horizontal, hauteur ; unites du fichier) de la selection."""
+    tris, lo, hi, nv = {}, {}, {}, 0
+    up0 = sel['up']
+    for pt in sel['parts']:
+        src, gs = pt['src'], _part_groups(pt)
+        if not gs:
+            continue
+        # boites des groupes dans le repere du jeu : le meme quel que soit l'axe du fichier (fichier Z ramene a Y puis
+        # converti pour le jeu = fichier Z tel quel), rien a convertir entre fichiers
+        glo, ghi = src['lo'], src['hi']
+        for g in gs:
+            m = pt['ren'].get(src['A']['groups'][g][1], src['A']['groups'][g][1])
+            tris[m] = tris.get(m, 0) + int(src['ntri'][g])
+            lo[m] = np.minimum(lo.get(m, glo[g]), glo[g])
+            hi[m] = np.maximum(hi.get(m, ghi[g]), ghi[g])
+        if pt['keep'] is None:
+            nv += int(len(np.unique(src['A']['C'][:, :, 0])))
+        else:
+            mask = np.isin(src['A']['gid'], gs)
+            nv += int(len(np.unique(src['A']['C'][mask][:, :, 0])))
+    ext = {m: (float(max(hi[m][0] - lo[m][0], hi[m][1] - lo[m][1])), float(hi[m][2] - lo[m][2])) for m in tris}
+    bounds = None
+    if tris:
+        L = np.min(list(lo.values()), 0)
+        H = np.max(list(hi.values()), 0)
+        # repere du jeu -> repere du fichier principal (affichage de la taille, echelle proposee)
+        bounds = ([float(L[0]), float(L[2]), float(-H[1])], [float(H[0]), float(H[2]), float(-L[1])]) if up0 == 'y' \
+            else (L.tolist(), H.tolist())
+        bounds = [list(bounds[0]), list(bounds[1])]
+    return {'triangles': tris, 'vertices': nv, 'bounds': bounds, 'extents': ext}
+
+
+def _selection_groups(sel, scale, up, max_verts=MAX_MODEL_VERTS):
+    """Groupes de import_model (comme parse_obj_groups sur le texte fusionne) d'apres les tableaux de la selection."""
+    up0, out = sel['up'], []
+    for pt in sel['parts']:
+        A, fu = pt['src']['A'], pt['src']['up']
+        if fu != up0:                                      # fichier d'un autre axe : ramene a celui de la scene
+            A = dict(A, V=_UP_CONVERT[(fu, up0)](A['V']), VN=_UP_CONVERT[(fu, up0)](A['VN']) if len(A['VN']) else A['VN'])
+        keep = set(_part_groups(pt))
+        pre = pt['prefix']
+        out += groups_from_arrays(A, scale, up, max_verts, keep, (lambda o, s=pre: f'{s}_{o}') if pre else None, pt['ren'])
+    return [g for g in out if g['tris']]
 
 
 def _chosen_files(req, objs):
@@ -5945,7 +6100,7 @@ def _chosen_files(req, objs):
     return files or objs[:1]
 
 
-ROAD_WIDTH_TARGET = 30.0       # m : largeur de route visee (Crash Cove : ~48 m au plus large, routes CTR 20-40 m)
+ROAD_WIDTH_TARGET = 50.0       # m : largeur de route visee (2026-11-27, utilisateur : une map standard fait 30 a 70 m)
 
 
 def _nice(raw):
@@ -5962,36 +6117,45 @@ def _suggest_scale(bounds, up):
     return _nice(500.0 / side)
 
 
-def _road_scale(text, up):
+def _road_scale(sel, up=None):
     """Echelle d'apres la ROUTE : surface des materiaux « road » la plus grande (si elle couvre une part notable de
     la scene), largeur mediane mesuree sur son squelette (vue de dessus) -> ROAD_WIDTH_TARGET. Les maps contiennent
     souvent un decor de fond tres lointain (nuages, montagnes) : l'emprise totale ne dit rien de la taille de la
-    route (Mario Circuit 3 : fichier de 82 000 unites, route de 4 200). -> (echelle, materiau, largeur brute) | None."""
-    key = (hash(text), up)                              # analyse puis import : meme fichier, calcul fait une fois
+    route (Mario Circuit 3 : fichier de 82 000 unites, route de 4 200). -> (echelle, materiau, largeur brute) | None.
+    Calcul garde pour la meme selection (analyse puis import : fait une fois)."""
+    key = (sel['key'], up or sel['up'])
     if key not in _road_scale_cache:
-        _road_scale_cache.clear()
-        _road_scale_cache[key] = _road_scale_calc(text, up)
+        if len(_road_scale_cache) > 16:
+            _road_scale_cache.clear()
+        _road_scale_cache[key] = _road_scale_calc(sel, up)
     return _road_scale_cache[key]
 
 
 _road_scale_cache = {}
 
 
-def _road_scale_calc(text, up):
+def _road_scale_calc(sel, up=None):
     import route_gen
-    groups = [g for g in parse_obj_groups(text, 1.0, up) if re.search(r'road', g['material'] or '', re.I)]
     by_mat = defaultdict(list)
-    for g in groups:
-        P = g['pos']
-        by_mat[g['material']] += [(P[a], P[b], P[c]) for a, b, c in g['tris']]
-    best = None
-    for m, tris in by_mat.items():
-        if len(tris) < 200:
+    for pt in sel['parts']:
+        A, gs = pt['src']['A'], _part_groups(pt)
+        road = [g for g in gs if re.search(r'road', pt['ren'].get(A['groups'][g][1], A['groups'][g][1]) or '', re.I)]
+        if not road:
             continue
-        T = np.array(tris)
+        V = _part_vertices(pt, sel['up'], up)
+        mask = np.isin(A['gid'], road)
+        C, gid = A['C'][mask][:, :, 0], A['gid'][mask]
+        for g in road:
+            m = pt['ren'].get(A['groups'][g][1], A['groups'][g][1])
+            by_mat[m].append(V[C[gid == g]])
+    best = None
+    for m, chunks in by_mat.items():
+        T = np.concatenate(chunks)
+        if len(T) < 200:
+            continue
         ext = T[:, :, :2].max((0, 1)) - T[:, :, :2].min((0, 1))
         cell = max(float(ext.max()) / 300, 1e-6)
-        road = route_gen.largest_component(route_gen.close_holes(route_gen.rasterize(tris, cell)[0], 1))
+        road = route_gen.largest_component(route_gen.close_holes(route_gen.rasterize(T, cell)[0], 1))
         area = float(road.sum()) * cell * cell
         sk = route_gen.thin(road)
         width = 2 * float(np.median(route_gen.depth(road)[sk])) * cell if sk.any() else 0.0
@@ -6012,16 +6176,20 @@ def folder_scan(req):
     folder = _folder(req)
     objs = sorted(f for f in os.listdir(folder) if f.lower().endswith(MODEL_EXT))
     if not objs:
-        raise ValueError(f'aucun fichier .obj ou .dae dans {folder}')
+        raise ValueError(f'aucun fichier .obj, .dae, .glb ou .gltf dans {folder}')
     files = _chosen_files(req, objs)
     obj = ', '.join(files)
     progress.step(f'lecture de {obj}', 0.02)
-    text, mtl, summ, up, elements = _load_sources(folder, files, req.get('objects'))
+    sel = _selection(folder, files, req.get('objects'))
+    mtl, up, elements = sel['mtl'], sel['up'], sel['elements']
     progress.step('taille des matériaux', 0.3)
+    summ = _selection_summary(sel)
+    if not summ['triangles']:
+        raise ValueError('aucun triangle dans les éléments choisis')
     # decor de fond (montagnes, nuages, sol a perte de vue : bien plus grand que la route) : sans collision par
     # defaut — ses triangles de plusieurs km faisaient exploser la collision (4 millions de morceaux, non encodable)
     # (un grand sol PLAT garde sa collision : sinon les karts tombent en sortant de la route)
-    ext = obj_material_extents(text, up)
+    ext = summ['extents']
     roads = [e[0] for m, e in ext.items() if re.search(r'road', m, re.I) and summ['triangles'].get(m, 0) >= 200]
     ref = max(roads) if roads else float(np.median([e[0] for e in ext.values()] or [1.0])) * 2
     mats = []
@@ -6035,17 +6203,35 @@ def folder_scan(req):
                      'texture_missing': info.get('texture') if info.get('texture') and not tex else None,
                      'color': info.get('color'), 'background': background,
                      'collision': not NO_COLLISION_HINT.search(name) and not background,
-                     'alpha': bool(tex) and texture_build.image_has_alpha(open(tex, 'rb').read())})
+                     # glTF alphaMode OPAQUE : canal alpha de l'image ignore (alpha False dans le materiau)
+                     'alpha': bool(tex) and info.get('alpha') is not False and _image_alpha(tex)})
     images = sum(1 for f in os.listdir(folder) if f.lower().endswith(IMAGE_EXT))
     progress.step('largeur de la route (échelle proposée)', 0.75)
+    # elements decoches d'office (volumes) : la page part de cette selection
+    chosen = req.get('objects')
+    if sel['excluded']:
+        chosen = [f"{e['file']}|{e['name']}" for e in elements if f"{e['file']}|{e['name']}" not in set(sel['excluded'])]
     return {'folder': folder, 'objs': objs, 'obj': obj, 'files': files, 'elements': elements,
-            'objects': req.get('objects'), 'materials': mats, 'vertices': summ['vertices'],
+            'objects': chosen, 'auto_excluded': sel['excluded'], 'materials': mats, 'vertices': summ['vertices'],
             'triangles': sum(summ['triangles'].values()), 'bounds': summ['bounds'], 'images': images,
-            'up': up, **_scale_info(text, summ['bounds'], up)}
+            'up': up, **_scale_info(sel, summ['bounds'], up)}
 
 
-def _scale_info(text, bounds, up):
-    rs = _road_scale(text, up)
+_alpha_cache = {}
+
+
+def _image_alpha(path):
+    """texture_build.image_has_alpha d'une image, garde tant que le fichier ne change pas (analyse relancee a chaque
+    fichier ou element coche : les images n'etaient plus relues que pour ca)."""
+    st = os.stat(path)
+    key = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+    if key not in _alpha_cache:
+        _alpha_cache[key] = texture_build.image_has_alpha(open(path, 'rb').read())
+    return _alpha_cache[key]
+
+
+def _scale_info(sel, bounds, up):
+    rs = _road_scale(sel)
     if rs:
         scale, mat, width = rs
         return {'scale': scale, 'road_width_raw': width, 'road_material': mat,
@@ -6054,20 +6240,20 @@ def _scale_info(text, bounds, up):
             'scale_reason': "d'après la taille de la scène (~500 m de côté ; pas de matériau « road » assez grand)"}
 
 
-ROAD_WIDTH_OK = (8.0, 80.0)    # m : largeur de route acceptee a l'import (une route CTR : 20 a 40 m)
+ROAD_WIDTH_OK = (15.0, 140.0)  # m : largeur de route acceptee a l'import (une route CTR : 30 a 70 m)
 
 
-def _check_import_scale(text, req):
+def _check_import_scale(sel, req):
     """Refuse une echelle qui donne une route absurde (sauf req['force']) : a l'echelle 1 au lieu de 0,1, map3
     faisait 4 km (montagnes de 70 km) et la creation du parcours, la collision et l'enregistrement n'en finissaient
     plus."""
-    rs = None if req.get('force') else _road_scale(text, req.get('up', 'y'))
+    rs = None if req.get('force') else _road_scale(sel, req.get('up', 'y'))
     if not rs:
         return
     proposed, mat, width = rs
     w = width * float(req.get('scale', 39.37)) / 39.37
     if not ROAD_WIDTH_OK[0] <= w <= ROAD_WIDTH_OK[1]:
-        raise ValueError(f'echelle douteuse : la route ({mat}) ferait {w:.0f} m de large (une route CTR : 20 a 40 m). '
+        raise ValueError(f'echelle douteuse : la route ({mat}) ferait {w:.0f} m de large (une route CTR : 30 a 70 m). '
                          f'Echelle proposee : {proposed} m par unite.')
 
 
@@ -6082,11 +6268,14 @@ def import_folder(req):
     folder = _folder(req)
     wanted = req.get('files') or ([req['obj']] if req.get('obj') else [])
     if not wanted or any(not os.path.isfile(os.path.join(folder, f)) or not f.lower().endswith(MODEL_EXT) for f in wanted):
-        raise ValueError('fichier .obj / .dae introuvable dans le dossier')
+        raise ValueError('fichier .obj / .dae / .glb / .gltf introuvable dans le dossier')
     obj = wanted[0] if len(wanted) == 1 else os.path.basename(os.path.normpath(folder)) + '.obj'
     progress.step(f'lecture de {", ".join(wanted)}', 0.01)
-    text, mtl, summ, _, _ = _load_sources(folder, wanted, req.get('objects'))
-    _check_import_scale(text, req)
+    sel = _selection(folder, wanted, req.get('objects'))
+    mtl, summ = sel['mtl'], _selection_summary(sel)
+    if not summ['triangles']:
+        raise ValueError('aucun triangle dans les éléments choisis')
+    _check_import_scale(sel, req)
     choice = req.get('materials') or {}
     mapping, made, reused, plain = {}, 0, 0, 0
     # taille des textures : 'auto' = 512 pour celles qui ne servent qu'au decor de fond, sinon 1024 ; ou 512 / 1024
@@ -6107,7 +6296,7 @@ def import_folder(req):
             if not tex:
                 continue
             st, data = os.stat(tex), open(tex, 'rb').read()
-            alp = (choice.get(name) or {}).get('alpha')
+            alp = (choice.get(name) or {}).get('alpha', mtl.get(name, {}).get('alpha'))
             alp = texture_build.image_has_alpha(data) if alp is None else bool(alp)
             size, source = tex_size(tex), [os.path.abspath(tex), st.st_size, int(st.st_mtime)]
             if any(i.get('source') == source and bool(i.get('alpha')) == alp and i.get('size', 1024) == size for i in reg.values()):
@@ -6127,7 +6316,7 @@ def import_folder(req):
                 st = os.stat(tex)
                 r = create_texture(track, os.path.splitext(os.path.basename(tex))[0], open(tex, 'rb').read(),
                                    source=[os.path.abspath(tex), st.st_size, int(st.st_mtime)],
-                                   alpha=(choice.get(name) or {}).get('alpha'), size=tex_size(tex))
+                                   alpha=(choice.get(name) or {}).get('alpha', info.get('alpha')), size=tex_size(tex))
             else:                                            # pas d'image : couleur unie du materiau (Kd)
                 col = tuple(int(max(0, min(1, c)) * 255) for c in (info.get('color') or (0.6, 0.6, 0.6)))
                 buf = io.BytesIO()
@@ -6141,7 +6330,9 @@ def import_folder(req):
             collide = c.get('collision', not NO_COLLISION_HINT.search(name))
             mapping[name] = {'material': r['id'], 'surface': c.get('surface', 'auto') if collide else 'none'}
     with progress.span(0.35, 1.0):
-        res = import_model({'track': track, 'name': os.path.splitext(obj)[0], 'obj': text,
+        # groupes faits directement depuis les tableaux (2026-11-27 : plus de texte OBJ fusionne puis relu)
+        res = import_model({'track': track, 'name': os.path.splitext(obj)[0],
+                            'groups': _selection_groups(sel, float(req.get('scale', 39.37)), req.get('up', 'y')),
                             'scale': req.get('scale', 39.37), 'up': req.get('up', 'y'),
                             'placement': req.get('placement', 'view'), 'pos': req.get('pos'), 'file': req.get('file'),
                             'materials': mapping, 'anchor_material': req.get('road_material')})
@@ -8352,10 +8543,12 @@ def _preinstall_check(track):
                # plaques de couleur aussi (BoostPad_rose, _vert...) : comptees comme dans boosts_from_decor (2026-11-17,
                # « 7 boosters mais 5 plaques » a tort sur T922)
                if re.search(r'\\boostpad(super|_[a-z]+)?\.igb$', (o['model'] or '').lower())]
-        if len(vis) != len(boosts):
-            add('attention', 'Boosters', f'{len(boosts)} booster(s) mais {len(vis)} plaque(s) au sol → Enregistrer', fix='boosters')
+        on_obj = sum(1 for o in read_boost_objects(track)[:len(boosts)] if o)    # objets boosters : sans plaque
+        if len(vis) != len(boosts) - on_obj:
+            add('attention', 'Boosters', f'{len(boosts) - on_obj} booster(s) mais {len(vis)} plaque(s) au sol → Enregistrer', fix='boosters')
         else:
-            add('ok', 'Boosters', f'{len(boosts)} booster(s) avec leur plaque')
+            add('ok', 'Boosters', f'{len(boosts) - on_obj} booster(s) avec leur plaque'
+                + (f', {on_obj} objet(s) booster' if on_obj else ''))
     # 5) fichiers
     used = set()
     for art in art_files(track):
@@ -8431,7 +8624,7 @@ def _preinstall_check(track):
         nb = lambda v: f'{v:,}'.replace(',', ' ')
         load, files_lim = w.get('load', 0), LOAD_LIMIT['files']
         parts = [f"archive {w['after']} Mo / {w['budget']} Mo",
-                 f"{nb(w['models'])} modèles différents / {nb(w['models_max'])}",
+                 f"{nb(w['models'])} modèles différents",
                  f"{nb(w['files'])} fichiers / {nb(files_lim)}",
                  f"charge estimée {load} %"]
         if w['collision']:
@@ -8439,11 +8632,12 @@ def _preinstall_check(track):
         level, why = 'ok', []
         if w['after'] > w['budget']:
             level = 'erreur'; why.append('archive trop lourde même après réduction des textures → retire du décor ou réduis les textures')
-        if w['models'] > w['models_max'] or load >= 100:
-            level = 'erreur'; why.append('trop de modèles différents ou de fichiers : le jeu plantera au chargement → moins de sortes d\'objets')
-        elif w['models'] > w['models_ok'] or load >= 90:
+        # en fichiers (2026-11-27) : T928 charge avec 1 663 modeles importes, qui se partagent peu de textures
+        if load >= 100:
+            level = 'erreur'; why.append('trop de fichiers dans l\'archive (modèles, matériaux, textures) : le jeu plantera au chargement → moins de sortes d\'objets')
+        elif load >= 90:
             level = 'attention' if level == 'ok' else level
-            why.append('proche de la limite de modèles / fichiers (1 082 modèles chargent, 1 126 plantent) → à essayer en jeu, sinon moins de sortes d\'objets')
+            why.append('proche de la limite de fichiers (2 528 fichiers chargent, 2 696 plantent) → à essayer en jeu, sinon moins de sortes d\'objets')
         if w['collision'] and w['collision'] > w['collision_budget']:
             level = 'attention' if level == 'ok' else level
             why.append('collision lourde → décor loin de la piste sans collision, ou collision simplifiée')
@@ -8458,7 +8652,7 @@ def _preinstall_check(track):
             opts = {'fix': 'texmax'} if w['after'] > w['budget'] and w['texture_max'] != 512 else {'ui': 'dlight'}
         add(level, 'Mémoire du jeu', text, **opts)
         # modeles rares a retirer en premier (2026-11-18), quand la limite de modeles approche
-        if w['models'] > w['models_ok']:
+        if load >= 90:
             rare, n_rare = rare_models(track)
             if rare:
                 names = ', '.join(f'{nm} ({c})' for nm, c in rare[:10])
@@ -9371,13 +9565,13 @@ def map_weight(track, texture_max=None):
             'textures': stats.get('textures', 0), 'budget': PAK_BUDGET // 2**20, 'collision': coll,
             'collision_budget': COLLISION_BUDGET, 'texture_max': int(light_settings(track).get('texture_max') or 0),
             'decor_reach': light_settings(track).get('decor_reach', 100), **counts,
-            'models_ok': MODELS_OK, 'models_max': MODELS_MAX, **_rare_fields(track, counts)}
+            'files_ok': FILES_OK, 'files_max': LOAD_LIMIT['files'], **_rare_fields(track, counts)}
     try:
         if texture_max is not None:
             raise ValueError('apercu')                     # essai d'un autre reglage : pas la mesure de la jauge
         _weight_exact[track] = (_weight_key(track), {'models': out['models'], 'files': out['files'], 'load': out['load'],
                                                      'size': out['after'], 'budget': out['budget'], 'collision': coll,
-                                                     'models_max': MODELS_MAX, 'files_max': LOAD_LIMIT['files'], 'exact': True})
+                                                     'files_max': LOAD_LIMIT['files'], 'exact': True})
     except Exception:  # noqa: BLE001 - jauge : estimation a la place
         pass
     return out
@@ -9399,8 +9593,11 @@ def _rare_fields(track, counts):
 # fichiers. Le jeu reserve de la memoire par fichier charge, pas seulement par octet : la taille d'archive ne suffit pas.
 # Pistes du jeu : 89 a 154 modeles. Limite mesuree en jeu le meme jour sur T922 (objets de la bibliotheque ajoutes
 # 200 par 200 puis 50 par 50, sans collision, textures 512) : 797 / 989 / 1 082 modeles chargent, 1 126 et 1 173 plantent.
-MODELS_OK = 1000         # marge sous 1 082 (charge)
-MODELS_MAX = 1100        # 1 126 plantait : au-dela, erreur
+# 2026-11-27 : T928 (MoltenMile importee, 1 663 modeles mais 74 materiaux / 156 textures, 2 088 fichiers) CHARGE : le
+# nombre de modeles seul n'est pas la limite (un modele importe, petit et sans texture propre, ne coute qu'un fichier).
+# Seul le nombre de FICHIERS de l'archive colle a toutes les mesures (T922 : 2 528 charge, 2 696 plante ; T928 : 2 088
+# charge) : la charge est comptee en fichiers (modeles + materiaux + textures + le reste), voir LOAD_LIMIT.
+FILES_OK = 2350          # 90 % de LOAD_LIMIT : avertissement
 
 
 def archive_counts(per_archive, track):
@@ -9417,9 +9614,9 @@ def archive_counts(per_archive, track):
     return out
 
 
-# charge memoire estimee (2026-11-18) : part de la limite mesuree en jeu sur T922 (plantage entre 1 082 et 1 126 modeles,
-# entre 2 528 et 2 696 fichiers ; les deux montent ensemble, la plus haute des deux parts compte)
-LOAD_LIMIT = {'models': 1104, 'files': 2612}
+# charge memoire estimee (2026-11-18 ; en fichiers seulement depuis le 2026-11-27) : part de la limite mesuree en jeu sur
+# T922 (plantage entre 2 528 et 2 696 fichiers dans l'archive de la piste)
+LOAD_LIMIT = {'files': 2612}
 
 
 def load_estimate(counts):
@@ -9447,8 +9644,10 @@ def _weight_key(track):
 def weight_live(track):
     """GET /api/weight_live : charge memoire ESTIMEE en direct (pastille de la barre d'etat, 2026-11-20), sans preparer
     l'installation (map_weight : ~10 s et reecrit des fichiers) : modeles de l'archive d'origine + modeles du decor
-    enregistre qui n'y sont pas (bibliotheque, imports) ; fichiers = archive + ~2,2 par modele ajoute (materiaux,
-    textures) non compte. En memoire tant que les fichiers de decor enregistres ne changent pas."""
+    enregistre qui n'y sont pas (bibliotheque, imports). Charge en FICHIERS (2026-11-27) : archive d'origine + modeles
+    ajoutes + materiaux / textures des modeles importes qui servent (registre des textures, fichiers communs comptes une
+    fois) + ~2 par modele de bibliotheque (ses materiaux / textures ; mesure : T913 2,5, T920 2,0, T927 1,7). En memoire
+    tant que les fichiers de decor enregistres ne changent pas."""
     arts = list(art_files(track))
     key = _weight_key(track)
     ex = _weight_exact.get(track)
@@ -9469,11 +9668,19 @@ def weight_live(track):
         except Exception:  # noqa: BLE001 - fichier illisible : ignore
             continue
     added = {m for m in used if m.startswith('models/') and m not in orig}
-    # charge d'apres les modeles seuls : le nombre de fichiers installes depend du nettoyage fait a l'installation
-    # (fichiers d'origine inutilises retires), et les modeles sont la limite atteinte en premier (T922 : 54 % / 45 %)
     models = len(orig) + len(added)
-    out = {'models': models, 'added': len(added), 'load': load_estimate({'models': models}), 'models_max': MODELS_MAX,
-           'exact': False}
+    # fichiers des modeles importes : materiaux / textures du registre qui servent (une texture commune comptee une fois)
+    cmods = {k.lower().replace('\\', '/'): v for k, v in custom_models(track).items()}
+    mats = {(cmods.get(m) or {}).get('material') for m in added}
+    extra = set()
+    for t in custom_textures(track).values():
+        if t.get('material_id') in mats:
+            for v in (t.get('files') or {}).values():
+                extra.update(x.lower().replace('\\', '/') for x in (v if isinstance(v, list) else [v]))
+    library = sum(1 for m in added if m not in cmods)
+    files = len(names) + len(added) + len(extra - names) + 2 * library
+    out = {'models': models, 'added': len(added), 'files': files, 'load': load_estimate({'files': files}),
+           'files_max': LOAD_LIMIT['files'], 'exact': False}
     _weight_live_cache.clear()
     _weight_live_cache[key] = out
     return out
@@ -9902,6 +10109,7 @@ def _creator_diff(saved, req):
         return {k: v for k, v in (t or {}).items() if k not in ('trim_m', 'aih')} if isinstance(t, dict) else t
     marks = lambda m: {k: bool((m or {}).get(k)) for k in track_creator.MARK_KEYS}
     checks = [('la route', lambda d: (d.get('points') or [], bool(d.get('closed')), float(d.get('ground_z') or 0.0))),
+              ('les routes secondaires', lambda d: d.get('branches') or []),
               ('le thème', lambda d: d.get('kit') or 'sable'),
               ('les barrières', lambda d: d.get('barriers') or 'curves'),
               ('le marquage', lambda d: marks(d.get('marks'))),
@@ -9982,8 +10190,9 @@ def create_build(req):
     marks = {k: bool((req.get('marks') or {}).get(k)) for k in track_creator.MARK_KEYS}
     # ajouts d'Edition gardes : sol de la generation precedente (avant qu'il soit remplace), pour les reposer sur le nouveau
     old_ground = None if req.get('wipe') else creator_ground_load(track)
+    branches = [b for b in (req.get('branches') or []) if isinstance(b, dict)]      # routes secondaires (2026-11-26)
     obj, mtl, info = track_creator.build(pts, bool(req.get('closed')), ground_z, kit, terrain, barriers, waters, marks,
-                                         _prop_footprints(kit, req.get('props')))
+                                         _prop_footprints(kit, req.get('props')), branches)
     folder = os.path.join(OUT_DIR, 'creator', track)
     os.makedirs(folder, exist_ok=True)
     creator_ground_save(track, info['_ground'])
@@ -10008,7 +10217,7 @@ def create_build(req):
     route_changed = not prev or len(prev) != len(pts) or any(
         abs(float(a) - float(b)) > 1.0 for p, q in zip(prev, pts) for a, b in zip(p[:3], q[:3]))
     with open(creator_path(track), 'w') as f:                # json.dumps : encodeur en C (2026-11-21, vitesse)
-        f.write(json.dumps({'points': pts, 'closed': bool(req.get('closed')), 'ground_z': ground_z, 'kit': kit, 'terrain': terrain,
+        f.write(json.dumps({'points': pts, 'branches': branches, 'closed': bool(req.get('closed')), 'ground_z': ground_z, 'kit': kit, 'terrain': terrain,
                             'barriers': barriers, 'marks': marks, 'signs': req.get('signs') or {}, 'props': req.get('props') or [],
                             'waters': waters, 'water_falls': info['water_falls']},   # zones de chute de l'eau profonde (auto_falls)
                            separators=(',', ':')))
@@ -10055,7 +10264,9 @@ def create_build(req):
     if kept_boosts:                                      # plaques des boosters gardes, couleurs d'avant, sur le nouveau sol
         cur = [c for c in read_track_crates(track) if c['kind'] == 'boost']
         if len(cur) == len(kept_boosts):
-            sync_boost_visuals(track, [{**c, 'color': k.get('color')} for c, k in zip(cur, kept_boosts)], measure=False)
+            linked = read_boost_objects(track)
+            sync_boost_visuals(track, [{**c, 'color': k.get('color')} for i, (c, k) in enumerate(zip(cur, kept_boosts))
+                                       if not (i < len(linked) and linked[i])], measure=False)
     # decor seme (onglet Creation, mode Decor) : objets du jeu poses sur le sol genere, semis precedent remplace
     gnd = info.pop('_ground')
     items, dropped = track_creator.props_items(kit, req.get('props'), gnd, kit_prop_dims)
@@ -10103,6 +10314,7 @@ def create_build(req):
                       + (f" — ATTENTION {n_on_road} objet(s) retouché(s) dans Édition touchent la route (gardés)" if n_on_road else '')]
                       + reseated + res.get('report', []),
             'road': road, 'guide': info['guide'], 'exact': info['exact'], 'start': info['start'], 'yaw': info['yaw'],
+            'branches': info.get('branches') or [],           # routes secondaires : fourches du parcours (page)
             'water_falls': len(info['water_falls']), 'uids': uids, 'route_changed': bool(route_changed),
             # plancher de chute 30 m sous le point le plus bas (celui enregistre peut venir d'une ancienne map plus haute :
             # T905 a z 9512 au-dessus d'un sol a 6812 -> les karts « tombaient » des le depart)
@@ -11352,7 +11564,7 @@ def pick_folder(req):
     initial = req.get('initial') or ''
     if initial and not os.path.isabs(initial):
         initial = os.path.join(PROJECT_DIR, initial)
-    path = ask_folder('Dossier de la map à importer (OBJ ou DAE + textures)', initial if os.path.isdir(initial) else PROJECT_DIR)
+    path = ask_folder('Dossier de la map à importer (OBJ, DAE ou GLB + textures)', initial if os.path.isdir(initial) else PROJECT_DIR)
     if not path:
         return {'ok': False}
     rel = os.path.relpath(path, PROJECT_DIR) if os.path.splitdrive(path)[0].lower() == os.path.splitdrive(PROJECT_DIR)[0].lower() else path

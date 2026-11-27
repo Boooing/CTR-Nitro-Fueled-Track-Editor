@@ -108,6 +108,7 @@ def main():
            '--add-data', f'{os.path.join(HERE, "clay.js")}{sep}.',         # sol en pate a modeler (2026-11-24)
            '--add-data', f'{os.path.join(HERE, "vendor")}{sep}vendor',
            '--hidden-import', 'server', '--hidden-import', 'updater',
+           '--hidden-import', 'dae_import', '--hidden-import', 'gltf_import',   # import COLLADA / glTF (2026-11-27)
            '--collect-submodules', 'webview', '--hidden-import', 'webview.platforms.qt']
     for m in EXCLUDE:
         cmd += ['--exclude-module', m]

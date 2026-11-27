@@ -1427,7 +1427,7 @@ def _tight_turns(T, closed):
     return 2 * STEP / np.maximum(np.abs(turn), 1e-6), np.sign(turn)
 
 
-def _markings(ob, C, T, left, right, rows, gap, closed, s, marks, zfun=None):
+def _markings(ob, C, T, left, right, rows, gap, closed, s, marks, zfun=None, quiet=None):
     """Marquage au sol sur la route : lignes de bord, ligne centrale en tirets, vibreurs a l'interieur des virages serres,
     fleches avant ces virages. Points pris ENTRE les bords reels de la route (devers, bords edites) : la peinture suit la
     surface. zfun(x, y, z approche) -> hauteur du sol (metres) : map existante (onglet Edition), chaque point pose sur
@@ -1436,6 +1436,8 @@ def _markings(ob, C, T, left, right, rows, gap, closed, s, marks, zfun=None):
     if not any(marks.values()):
         return {}
     n, lift = len(C), np.array([0.0, 0.0, MARK_LIFT])
+    # quiet : echantillons sans ligne centrale ni vibreurs (fourche de la route principale, 2026-11-26)
+    quiet = np.zeros(n, bool) if quiet is None else np.asarray(quiet, bool)
     width = np.linalg.norm(left[:, :2] - right[:, :2], axis=1)
 
     def P(i, q):                                   # q : 0 = bord droit, 1 = bord gauche
@@ -1475,7 +1477,7 @@ def _markings(ob, C, T, left, right, rows, gap, closed, s, marks, zfun=None):
             out['MarkWhite'] += strip('MarkWhite', lambda k: True, q0, q1)
     if marks['center']:
         h = fq(MARK_CENTER_W / 2)
-        out['MarkWhite'] += strip('MarkWhite', lambda k: (s[k] % MARK_PERIOD) < MARK_DASH,
+        out['MarkWhite'] += strip('MarkWhite', lambda k: (s[k] % MARK_PERIOD) < MARK_DASH and not quiet[rows[k]] and not quiet[rows[k + 1]],
                                   lambda i: 0.5 - h(i), lambda i: 0.5 + h(i))
     radius, sign = _tight_turns(T, closed)
     tight = radius < CURVE_R
@@ -1516,6 +1518,7 @@ def _markings(ob, C, T, left, right, rows, gap, closed, s, marks, zfun=None):
             for e in range(-CURVE_EXTEND // 2, CURVE_EXTEND // 2 + 1):
                 j = (idx + e) % n if closed else np.clip(idx + e, 0, n - 1)
                 inside[side][j] = True
+            inside[side] &= ~quiet
         a = fq(MARK_CURB_W)
         out['MarkCurb'] += strip('MarkCurb', lambda k: inside[-1][rows[k]] and inside[-1][rows[k + 1]],
                                  lambda i: 0.0, a, MARK_CURB_REP)
@@ -1866,7 +1869,76 @@ def _water(ob, xs, ys, H, waters, hole, terrain=None, C=None):
     return count, zones, report, kinds, wet
 
 
-def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curves', waters=None, marks=None, keep=None):
+JUNCTION_DROP = 0.05            # m : route secondaire sous la principale la ou elles se chevauchent (depart, arrivee)
+JUNCTION_PAD = 3.0               # m : deux routes plus proches que leurs demi-largeurs + ca = elles se touchent
+
+
+def _near_roads(C, others):
+    """Echantillons de C qui touchent une autre route (centres plus proches que les demi-largeurs + JUNCTION_PAD, a
+    moins de 4 m de hauteur) : depart / arrivee d'une route secondaire. Ni barriere ni marquage la (ils fermeraient le
+    passage), prolonge de CURVE_EXTEND echantillons."""
+    near = np.zeros(len(C), bool)
+    for O in others:
+        d = np.hypot(C[:, None, 0] - O[None, :, 0], C[:, None, 1] - O[None, :, 1]) - (C[:, 3:4] + O[None, :, 3]) / 2
+        dz = np.abs(C[:, None, 2] - O[None, :, 2])
+        near |= ((d < JUNCTION_PAD) & (dz < 4.0)).any(1)
+    idx = np.nonzero(near)[0]
+    for e in range(-CURVE_EXTEND, CURVE_EXTEND + 1):
+        near[np.clip(idx + e, 0, len(C) - 1)] = True
+    return near
+
+
+BRANCH_BLEND = 40.0             # m : hauteur des bouts d'une route secondaire calee sur la route principale lissee
+
+
+def _main_surface(C, left, right, P):
+    """Surface de la route principale sous les points P (n, 2 ou 3, metres) : (hauteur, distance hors de la route : 0
+    dessus). Rangee la plus proche, position dans la largeur entre ses bords reels."""
+    P = np.asarray(P, np.float64)
+    j = np.argmin(np.hypot(P[:, None, 0] - C[None, :, 0], P[:, None, 1] - C[None, :, 1]), axis=1)
+    R, L = right[j], left[j]
+    v = L[:, :2] - R[:, :2]
+    w2 = np.maximum((v * v).sum(1), 1e-9)
+    u = ((P[:, :2] - R[:, :2]) * v).sum(1) / w2
+    uc = np.clip(u, 0.0, 1.0)
+    z = R[:, 2] + (L[:, 2] - R[:, 2]) * uc
+    out = np.abs(u - uc) * np.sqrt(w2)
+    # au-dela de la rangee (bout de route ouvert, ou point loin) : distance a son centre moins la demi-largeur
+    return z, out
+
+
+def _branch_lines(points_in, branches, C_main=None):
+    """Routes secondaires (2026-11-26) -> [{C, a, b, air}] : ligne de chaque branche (depart = point a du trace, sauf
+    en l'air ; arrivee = point b), meme lissage que la route principale."""
+    out = []
+    for br in branches or []:
+        try:
+            a, b, pts = br.get('a'), int(br['b']), [list(q) for q in br.get('pts') or []]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if len(pts) < 2 or not (0 <= b < len(points_in)) or (not br.get('air') and (a is None or not 0 <= int(a) < len(points_in))):
+            continue
+        head = [] if br.get('air') else [list(points_in[int(a)])[:4]]
+        line = head + pts + [list(points_in[b])[:4]]
+        C = centerline(line, False)
+        if len(C) < 4:
+            continue
+        # raccords : la route principale generee est lissee en hauteur (Z_SMOOTH), la branche part des points bruts ->
+        # ses bouts sont cales sur la route principale (fondu sur BRANCH_BLEND m ; depart en l'air : seulement l'arrivee)
+        if C_main is not None:
+            s = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(C[:, :2], axis=0), axis=1))])
+            near = lambda q: int(np.argmin(np.hypot(C_main[:, 0] - q[0], C_main[:, 1] - q[1]) + 0.5 * np.abs(C_main[:, 2] - q[2])))
+            dz1 = C_main[near(C[-1]), 2] - C[-1, 2]
+            C[:, 2] += dz1 * np.clip(1 - (s[-1] - s) / BRANCH_BLEND, 0, 1)
+            if not br.get('air'):
+                dz0 = C_main[near(C[0]), 2] - C[0, 2]
+                C[:, 2] += dz0 * np.clip(1 - s / BRANCH_BLEND, 0, 1)
+        out.append({'C': C, 'a': None if a is None else int(a), 'b': b, 'air': bool(br.get('air'))})
+    return out
+
+
+def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curves', waters=None, marks=None, keep=None,
+          branches=None):
     """-> (texte OBJ, texte MTL, infos {length, guide, exact (pouces), start, yaw, ground_tiles, min_z (pouces), ...}).
     barriers : 'none' | 'curves' (exterieur des virages serres) | 'all' (les deux bords partout, sauf sauts).
     marks : {edges, center, curbs, arrows} (marquage au sol, _markings). keep : [(x, y, rayon)] (m), emprise des objets
@@ -1876,8 +1948,10 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
     C = centerline(points_in, closed)
     if len(C) < 4:
         raise ValueError('tracé trop court')
+    BR = _branch_lines(points_in, branches, C)
+    C_all = np.vstack([C] + [b['C'] for b in BR]) if BR else C       # toutes les routes : emprise, distances, objets
     gz = ground_z / INCH
-    xs, ys, H, M, cell = _terrain_grid(terrain, C, gz)
+    xs, ys, H, M, cell = _terrain_grid(terrain, C_all, gz)
     T, L = _frames(C, closed)
     half = C[:, 3:4] / 2
     road_z = C[:, 2] + ROAD_LIFT
@@ -1905,6 +1979,51 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
         for q in range(ns):                                   # de droite (q = 0) a gauche
             ob.quad(ids[k][q], ids[k + 1][q], ids[k + 1][q + 1], ids[k][q + 1])
 
+    # routes secondaires : meme ruban, un objet par branche ; sous la principale la ou elles se chevauchent (5 cm)
+    for k, b in enumerate(BR):
+        Cb = b['C']
+        Tb, Lb = _frames(Cb, False)
+        hb = Cb[:, 3:4] / 2
+        zb = Cb[:, 2] + ROAD_LIFT
+        dd = np.hypot(Cb[:, None, 0] - C[None, :, 0], Cb[:, None, 1] - C[None, :, 1]) - C[None, :, 3] / 2
+        jm = dd.argmin(1)
+        d_main = dd[np.arange(len(Cb)), jm]
+        # la ou elle recouvre encore la route principale (depart, arrivee) : a sa hauteur, 5 cm dessous ; fondu sur 10 m
+        # au-dela du bord (sinon les deux routes s'empilaient a quelques metres l'une de l'autre)
+        w = np.clip(1 - d_main / 10.0, 0.0, 1.0)
+        zb = zb * (1 - w) + road_z[jm] * w
+        zb = zb - np.where(d_main < 0.5, JUNCTION_DROP, 0.0)
+        b['road_z'] = zb
+        b['T'], b['L'] = Tb, Lb
+        b['left'] = _unfold(np.hstack([Cb[:, :2] + Lb * hb, (zb + Cb[:, 5])[:, None]]), Tb)
+        b['right'] = _unfold(np.hstack([Cb[:, :2] - Lb * hb, (zb - Cb[:, 5])[:, None]]), Tb)
+
+        def on_main(V):
+            """Sommets de la branche poses sur la surface de la route principale (5 cm dessous) la ou elle la recouvre,
+            fondu sur 10 m au-dela de son bord : la route principale est souvent en pente sous une branche large posee
+            en biais, une hauteur par rangee ne suffisait pas (3 m d'ecart sur la copie de T922)."""
+            zm, out = _main_surface(C, left, right, V)
+            w = np.clip(1 - out / 10.0, 0.0, 1.0)
+            V = V.copy()
+            V[:, 2] = V[:, 2] * (1 - w) + (zm - np.where(out < 0.5, JUNCTION_DROP, 0.0)) * w
+            return V
+        b['left'], b['right'] = on_main(b['left']), on_main(b['right'])
+        b['gap'] = Cb[:, 4] > 0.5
+        b['rows'] = list(range(len(Cb)))
+        b['s'] = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(Cb[:, :2], axis=0), axis=1))])
+        ob.obj(f'CreatorRoadB{k + 1}', 'Road')
+        nsb = road_strips(Cb)
+        grid = np.array([[b['right'][i] + (b['left'][i] - b['right'][i]) * (q / nsb) for q in range(nsb + 1)] for i in range(len(Cb))])
+        grid = on_main(grid.reshape(-1, 3)).reshape(len(Cb), nsb + 1, 3)
+        # hauteur du milieu de la route telle que posee (parcours, voies IA, ponts : la surface, pas la rangee d'avant)
+        b['road_z'] = (grid[:, nsb // 2, 2] + grid[:, (nsb + 1) // 2, 2]) / 2
+        idb = [[ob.vert(grid[i, q], (1.0 - q / nsb, b['s'][i] / K['road_repeat'])) for q in range(nsb + 1)] for i in range(len(Cb))]
+        for i in range(len(Cb) - 1):
+            if b['gap'][i] or b['gap'][i + 1]:
+                continue
+            for q in range(nsb):
+                ob.quad(idb[i][q], idb[i + 1][q], idb[i + 1][q + 1], idb[i][q + 1])
+
     # ligne de depart : damier au sol en travers de la route au depart (START_ROWS rangees de cases de START_CELL m),
     # juste au-dessus de la route, sans collision (on roule sur la route dessous)
     if not gap[0]:
@@ -1924,9 +2043,15 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
     # (ponts de terre / tunnels du 2026-11-11 SUPPRIMES le 2026-11-16 a la demande de l'utilisateur : une butte montee
     # au bord d'une zone « creusee sous la route » devenait un pont de terre au-dessus de la route)
     dig = _dig_mask(terrain, xs, ys)
+    sculpt0 = H - gz
     H = _conform(xs, ys, H, C, closed, left, right, dig,
-                 float((terrain or {}).get('blend') or BLEND_SLOPE), H - gz)
+                 float((terrain or {}).get('blend') or BLEND_SLOPE), sculpt0)
+    for b in BR:                                         # routes secondaires : raccordees ensuite, sur le sol deja raccorde
+        H = _conform(xs, ys, H, b['C'], False, b['left'], b['right'], dig,
+                     float((terrain or {}).get('blend') or BLEND_SLOPE), sculpt0)
     H, _ = _clear_road(xs, ys, H, left, right, rows, gap, ns)
+    for b in BR:
+        H, _ = _clear_road(xs, ys, H, b['left'], b['right'], b['rows'], b['gap'], road_strips(b['C']))
     roof = None
     # sauts : seule la route s'arrete, le sol dessous reste (demande du 2026-11-05 ; avant : _hole_cells, trou jusqu'au
     # plancher de chute)
@@ -1934,7 +2059,7 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
     trim = float((terrain or {}).get('trim_m') or 0)
     TF = None                                            # valeur de decoupe par sommet (<= 0 : garde)
     if trim > 0:                                         # carte loin de la route retiree (demande a la generation)
-        TF = _trim_field(xs, ys, H, C, trim, keep, waters, terrain)
+        TF = _trim_field(xs, ys, H, C_all, trim, keep, waters, terrain)
         out4 = (TF[:-1, :-1] > 0) & (TF[:-1, 1:] > 0) & (TF[1:, 1:] > 0) & (TF[1:, :-1] > 0)
         hole = out4                                      # case retiree : ses 4 coins dehors (bord : coupe en biais)
     MATS = paint_materials(kit)
@@ -1999,7 +2124,7 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
         n_clay = int(len(clay['tris']))
 
     # eau des creux (outil du Relief « Remplir d'eau », 2026-11-12) : surface plane au niveau, sans collision
-    n_water, water_falls, water_rep, water_kinds, wet = _water(ob, xs, ys, H, waters, hole, terrain, C)
+    n_water, water_falls, water_rep, water_kinds, wet = _water(ob, xs, ys, H, waters, hole, terrain, C_all)
 
     # ponts : la ou la route passe nettement au-dessus du terrain (au-dessus d'elle-meme), tablier en roche
     # (flancs de DECK m sous les bords et dessous) ; la collision n'est que la route
@@ -2010,15 +2135,35 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
     # jupe : bord de route qui surplombe le sol (virage releve, grille du terrain trop large pour le suivre) : flanc de
     # roche jusqu'au sol, pas de vide visible sous la route
     skirts = []
+    near_m = _near_roads(C, [b['C'] for b in BR]) if BR else np.zeros(len(C), bool)   # jonctions : pas de flanc
     for k in range(len(ring) - 1):
         i, j = ring[k], ring[k + 1]
-        if gap[i] or gap[j] or high[i] or high[j]:
+        if gap[i] or gap[j] or high[i] or high[j] or near_m[i] or near_m[j]:
             continue
         for e0, e1 in ((left[i], left[j]), (right[j], right[i])):
             g0, g1 = _mesh_height(xs, ys, H, e0[0], e0[1]), _mesh_height(xs, ys, H, e1[0], e1[1])
             if max(e0[2] - g0, e1[2] - g1) > SKIRT_MIN:
                 skirts.append((e0, e1, g0 - 0.5, g1 - 0.5))
-    if high.any() or skirts:
+    b_high = []                                          # routes secondaires : flancs de pont et jupes, meme regle
+    for b in BR:
+        Cb, gb = b['C'], b['gap']
+        g_b = np.array([_height(xs, ys, H, x, y) for x, y in Cb[:, :2]])
+        # bords poses sur la route principale (ou a moins de 10 m) : ni flanc ni tablier (rebord sur l'autre route)
+        on_l = _main_surface(C, left, right, b['left'])[1] < 10.0
+        on_r = _main_surface(C, left, right, b['right'])[1] < 10.0
+        hi_b = ((b['road_z'] - g_b) > BRIDGE_MIN) & ~gb & ~on_l & ~on_r
+        b_high.append(hi_b)
+        for i in range(len(Cb) - 1):
+            j = i + 1
+            if gb[i] or gb[j] or hi_b[i] or hi_b[j]:
+                continue
+            for e0, e1, on in ((b['left'][i], b['left'][j], on_l[i] or on_l[j]), (b['right'][j], b['right'][i], on_r[i] or on_r[j])):
+                if on:
+                    continue
+                g0, g1 = _mesh_height(xs, ys, H, e0[0], e0[1]), _mesh_height(xs, ys, H, e1[0], e1[1])
+                if max(e0[2] - g0, e1[2] - g1) > SKIRT_MIN:
+                    skirts.append((e0, e1, g0 - 0.5, g1 - 0.5))
+    if high.any() or skirts or any(h.any() for h in b_high):
         ob.obj('CreatorBridge', 'Bridge')
         for e0, e1, g0, g1 in skirts:
             b0, b1 = np.array([e0[0], e0[1], g0]), np.array([e1[0], e1[1], g1])
@@ -2036,11 +2181,38 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
             br0, br1 = right[i] - [0, 0, DECK], right[j] - [0, 0, DECK]
             ob.quad(ob.vert(bl0, (0, 0)), ob.vert(bl1, (1, 0)), ob.vert(br1, (1, 1)), ob.vert(br0, (0, 1)))   # dessous
         n_bridges = max(n_bridges, 1)
+    for b, hi_b in zip(BR, b_high):
+        if not hi_b.any():
+            continue
+        L_, R_ = b['left'], b['right']
+        for i in range(len(b['C']) - 1):
+            j = i + 1
+            if not (hi_b[i] or hi_b[j]):
+                continue
+            n_bridges += bool(hi_b[j] and not hi_b[i])
+            for e0, e1 in ((L_[i], L_[j]), (R_[j], R_[i])):
+                b0, b1 = e0 - [0, 0, DECK], e1 - [0, 0, DECK]
+                ob.quad(ob.vert(b0, (0, 0)), ob.vert(b1, (1, 0)), ob.vert(e1, (1, 0.1)), ob.vert(e0, (0, 0.1)))
+            bl0, bl1, br0, br1 = L_[i] - [0, 0, DECK], L_[j] - [0, 0, DECK], R_[i] - [0, 0, DECK], R_[j] - [0, 0, DECK]
+            ob.quad(ob.vert(bl0, (0, 0)), ob.vert(bl1, (1, 0)), ob.vert(br1, (1, 1)), ob.vert(br0, (0, 1)))
 
     n_roof = 0                                           # tunnels / ponts de terre supprimes (2026-11-16)
 
-    n_walls = _barriers(ob, C, L, left, right, rows, gap, closed, barriers)
-    mark_used = _markings(ob, C, T, left, right, rows, gap, closed, s, marks)
+    near_main = _near_roads(C, [b['C'] for b in BR]) if BR else np.zeros(len(C), bool)
+    # fourches (2026-11-26, « enlève et gère mieux les lignes et vibreurs ») : sur la route principale, de la separation au
+    # retour (+ CURVE_EXTEND), ni ligne centrale ni vibreurs ; lignes de bord coupees la ou les routes se touchent ; rien
+    # sur les routes secondaires
+    quiet = np.zeros(len(C), bool)
+    for b in BR:
+        ends = [int(np.argmin(np.hypot(C[:, 0] - q[0], C[:, 1] - q[1]) + 0.5 * np.abs(C[:, 2] - q[2]))) for q in (b['C'][0], b['C'][-1])]
+        i0, i1 = ends[0] - CURVE_EXTEND, ends[1] + CURVE_EXTEND
+        idx = np.arange(i0, i1 + 1) if i1 >= i0 else np.arange(i0, i1 + len(C) + 1)
+        quiet[idx % len(C)] = True
+    n_walls = _barriers(ob, C, L, left, right, rows, gap | near_main, closed, barriers)
+    mark_used = _markings(ob, C, T, left, right, rows, gap | near_main, closed, s, marks, quiet=quiet)
+    for k, b in enumerate(BR):
+        near_b = _near_roads(b['C'], [C] + [o['C'] for i, o in enumerate(BR) if i != k])
+        n_walls += _barriers(ob, b['C'], b['L'], b['left'], b['right'], b['rows'], b['gap'] | near_b, False, barriers)
     # fondus : images composees apres coup (mix_textures), leurs deux peintures doivent etre decodees
     mix_used = [x for i, x in enumerate(mixes) if MIX0 + i in used]
     base_used = {m for m in used if m < MIX0} | {m for x in mix_used for m in x[:2]}
@@ -2055,6 +2227,21 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
     guide = (C[::2, :2] * INCH).round(1).tolist()
     exact = np.hstack([C[:, :2], road_z[:, None], C[:, 3:4]]) * INCH      # route (surface), largeur
     exact = np.hstack([exact, gap[:, None].astype(np.float64)])            # + saut (en l'air)
+    # routes secondaires pour le parcours (fourches de la course, voies IA) : ligne exacte, echantillons de la route
+    # principale ou elles partent / reviennent (en l'air : point d'appel du saut, le bout manquant est un saut)
+    br_info = []
+    for b in BR:
+        Cb = b['C']
+        ex = np.hstack([Cb[:, :2], b['road_z'][:, None], Cb[:, 3:4]]) * INCH
+        ex = np.hstack([ex, b['gap'][:, None].astype(np.float64)])
+        near_i = lambda p: int(np.argmin(np.hypot(C[:, 0] - p[0], C[:, 1] - p[1]) + 0.5 * np.abs(C[:, 2] - p[2])))
+        ia, ib = near_i(Cb[0]), near_i(Cb[-1])
+        if b['air'] and b['a'] is not None:              # appel du saut : point du trace a, puis en l'air jusqu'a la branche
+            pa = np.asarray(_edge_cols(points_in[b['a']])[:3], np.float64) / INCH
+            ia = near_i(pa)
+            head = np.array([[C[ia, 0] * INCH, C[ia, 1] * INCH, road_z[ia] * INCH, C[ia, 3] * INCH, 1.0]])
+            ex = np.vstack([head, ex])
+        br_info.append({'exact': ex.round(1).tolist(), 'a': ia, 'b': ib, 'air': b['air']})
     info = {'length': float(s[-1]), 'guide': guide, 'exact': exact.round(1).tolist(), 'start': (C[0, :3] * INCH).tolist(),
             'trimmed_pct': round(100 * float(hole.mean())) if trim > 0 else 0,
             'yaw': yaw, 'ground_tiles': tile, 'materials': [MATS[m][0] for m in sorted(base_used)],
@@ -2065,7 +2252,8 @@ def build(points_in, closed, ground_z, kit='sable', terrain=None, barriers='curv
             'min_z': float(min(H.min(), road_z.min())) * INCH,
             'clay_tris': n_clay,
             'waters': int(n_water), 'water_falls': water_falls, 'water_report': water_rep, 'water_kinds': sorted(water_kinds),
-            '_ground': (xs, ys, H, hole, C, roof, wet, clay),          # sol genere (metres) : hauteur des objets semes
+            'branches': br_info,
+            '_ground': (xs, ys, H, hole, C_all, roof, wet, clay),      # sol genere (metres) : hauteur des objets semes
             '_sign_spots': sign_spots(C, T, L, left, right, closed, gap)}   # panneaux de virage (create_build)
     return ob.text(MTL_NAME), mtl, info
 

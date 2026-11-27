@@ -5,8 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CTRNFTE</title>
 <style>
-  :root { --bg:#14161a; --panel:#1d2026; --panel2:#262a32; --line:#2f3540; --text:#dde1e8; --muted:#8f97a5; --accent:#f2b134;
-          --blue:#3fa9ff; --ok:#5fcf80; --err:#ff6b6b; --new:#7ee08a; --side:340px; --details:340px; }
+  :root { --bg:#0d1226; --panel:#151b35; --panel2:#1f2748; --line:#2c3661; --text:#eef0fb; --muted:#8e96c0; --accent:#ffab1f;
+          --blue:#2fc0ff; --ok:#3ee08a; --err:#ff4b3e; --new:#7df2a6; --side:340px; --details:340px;
+          --field:#10152c; --deep:#0a0e1e; --hover:#262f58; --kerb:#e8322b; --ink:#1a1206;
+          --disp:Bahnschrift,'DIN Alternate','Barlow Semi Condensed','Roboto Condensed','Arial Narrow',sans-serif;
+          --num:Bahnschrift,'DIN Alternate','Segoe UI',system-ui,sans-serif; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, "Segoe UI", sans-serif; overflow:hidden; }
   #top { position:fixed; inset:0 0 auto 0; background:var(--panel); border-bottom:1px solid var(--line); z-index:5; }
@@ -22,15 +25,15 @@
   .spacer { flex:1; }
   .group { display:inline-flex; gap:6px; align-items:center; }
   #statusbar { position:fixed; left:0; right:0; bottom:0; height:var(--bot,30px); z-index:6; display:flex; gap:8px; align-items:center; padding:0 10px 0 14px;
-               border-top:1px solid var(--line); background:#181b20; font-size:13px; }
+               border-top:1px solid var(--line); background:#0b1022; font-size:13px; }
   #status { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; cursor:pointer; }
   #statusbar button { padding:2px 9px; font-size:12px; }
   /* pastilles d'etat (2026-11-15, refonte) : enregistrement, base a generer, longueur de la route */
   #sbchips { display:flex; gap:6px; align-items:center; flex:none; }
   #sbchips [hidden] { display:none !important; }          /* (#statusbar button mettait display:inline-flex : toujours visibles) */
-  #sbchips button { border-radius:10px; padding:1px 9px; font-size:11.5px; background:#ffb13d1f; color:#ffb13d; border:1px solid #ffb13d66; }
-  #sbchips button:hover { background:#ffb13d38; }
-  #sbchips #sblen { font:11.5px ui-monospace, monospace; color:var(--muted); padding:0 4px; }
+  #sbchips button { border-radius:10px; padding:1px 9px; font-size:11.5px; background:#ffab1f1f; color:#ffab1f; border:1px solid #ffab1f66; }
+  #sbchips button:hover { background:#ffab1f38; }
+  #sbchips #sblen { font:11.5px var(--num); color:var(--muted); padding:0 4px; }
   #statusbar button.on { border-color:var(--accent); color:var(--accent); }
   .bpop { position:fixed; bottom:calc(var(--bot,30px) + 6px); right:calc(var(--details) + 12px); z-index:7; background:var(--panel); border:1px solid var(--line);
           border-radius:10px; box-shadow:0 8px 24px #000b; padding:8px 10px; font-size:12.5px; }
@@ -40,12 +43,12 @@
   .bphead button { padding:0 7px; border:none; background:none; color:var(--muted); }
   #histpanel { left:calc(var(--side) + 12px); width:min(720px, calc(100vw - var(--side) - var(--details) - 24px)); }
   #histlist { max-height:45vh; overflow:auto; display:flex; flex-direction:column; gap:4px; }
-  #histlist .h { display:grid; grid-template-columns:58px 1fr; gap:8px; padding:3px 4px; border-bottom:1px solid #262a32; white-space:pre-wrap; word-break:break-word; }
-  #histlist .h time { color:var(--muted); font-family:ui-monospace, monospace; font-size:11.5px; }
+  #histlist .h { display:grid; grid-template-columns:58px 1fr; gap:8px; padding:3px 4px; border-bottom:1px solid var(--panel2); white-space:pre-wrap; word-break:break-word; }
+  #histlist .h time { color:var(--muted); font-family:var(--num); font-size:11.5px; }
   #histlist .h.err { color:var(--err); } #histlist .h.ok { color:var(--ok); }
   #help table { border-collapse:collapse; }
   #help td { padding:3px 8px; vertical-align:top; }
-  #help td:first-child { color:var(--accent); white-space:nowrap; font-family:ui-monospace, monospace; font-size:12px; }
+  #help td:first-child { color:var(--accent); white-space:nowrap; font-family:var(--num); font-size:12px; }
   select, button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:7px; padding:6px 11px; font:inherit; cursor:pointer; }
   button:hover:not(:disabled) { border-color:var(--accent); }
   button:disabled { cursor:default; opacity:.55; }
@@ -69,7 +72,7 @@
            padding:5px; box-shadow:0 8px 24px #000b; z-index:30; display:flex; flex-direction:column; }
   .mdrop .sub { top:-6px; left:calc(100% - 4px); }
   .mi { position:relative; display:flex; gap:8px; align-items:center; padding:6px 10px; border-radius:6px; cursor:pointer; white-space:nowrap; user-select:none; }
-  .mi:hover { background:#2c313a; }
+  .mi:hover { background:var(--hover); }
   .mi.off { opacity:.4; cursor:default; }
   .mi.off:hover { background:none; }
   .mi .ck { width:14px; color:var(--accent); flex:none; }
@@ -87,7 +90,7 @@
   #side[hidden] { display:none; }
   #side.win details.sec:not(.shown) { display:none; }
   .resizer { position:fixed; top:var(--top,44px); bottom:var(--bot,30px); width:7px; cursor:col-resize; z-index:3; }
-  .resizer:hover, .resizer.drag { background:#f2b13455; }
+  .resizer:hover, .resizer.drag { background:#ffab1f55; }
   .resizer[hidden] { display:none; }
   #sideresize { left:calc(var(--side) - 4px); }
   #detresize { right:calc(var(--details) - 4px); }
@@ -104,18 +107,18 @@
           background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; box-shadow:0 4px 18px #0009; }
   #prog .phead { display:flex; justify-content:space-between; gap:8px; }
   #prog .pstep { color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #prog .pbar { height:6px; background:#262a32; border-radius:3px; overflow:hidden; margin-top:6px; }
+  #prog .pbar { height:6px; background:var(--panel2); border-radius:3px; overflow:hidden; margin-top:6px; }
   #prog .pfill { height:100%; width:0; background:var(--accent); transition:width .3s; }
   #prog.indet .pfill { width:30%; animation:pindet 1.2s infinite linear; }
   @keyframes pindet { from { margin-left:-30%; } to { margin-left:100%; } }
   #dctx .ctxi { padding:5px 10px; border-radius:5px; cursor:pointer; white-space:nowrap; }
-  #dctx .ctxi:hover { background:#2c313a; }
+  #dctx .ctxi:hover { background:var(--hover); }
   #dctx .ctxi.off { opacity:.4; cursor:default; }
   #dctx .ctxi.off:hover { background:none; }
   #side { position:fixed; top:var(--top,44px); bottom:var(--bot,30px); left:0; width:var(--side); overflow:auto; background:var(--panel);
           border-right:1px solid var(--line); padding:10px 12px 40px; z-index:1; }
   #side h3 { margin:12px 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
-  .sec { border:1px solid var(--line); border-radius:10px; margin:0 0 10px; background:#1a1d22; }
+  .sec { border:1px solid var(--line); border-radius:10px; margin:0 0 10px; background:#121831; }
   .sec > summary { list-style:none; cursor:pointer; padding:9px 12px; font-weight:600; display:flex; gap:8px; align-items:center; user-select:none; }
   .sec > summary::-webkit-details-marker { display:none; }
   .sec > summary::after { content:'▾'; margin-left:auto; color:var(--muted); transition:transform .15s; }
@@ -131,8 +134,8 @@
   .sw { width:10px; height:10px; border-radius:2px; flex:none; }
   .row label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
   .row.sel label { color:#fff; font-weight:600; }
-  .card { background:#262a32; border-radius:6px; padding:8px; margin-bottom:8px; }
-  .card .xyz { font-family:ui-monospace, monospace; color:var(--muted); margin:4px 0 8px; }
+  .card { background:var(--panel2); border-radius:6px; padding:8px; margin-bottom:8px; }
+  .card .xyz { font-family:var(--num); color:var(--muted); margin:4px 0 8px; }
   .card .btns { display:flex; flex-wrap:wrap; gap:6px; }
   .links { display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; margin:4px 0 8px; }
   .links label { display:flex; gap:4px; align-items:center; white-space:nowrap; overflow:hidden; font-size:12px; }
@@ -147,17 +150,17 @@
   #viewbar { position:fixed; top:calc(var(--top,44px) + 8px); left:calc(var(--side) + 8px); right:calc(var(--details) + 8px); z-index:3;
              display:flex; flex-wrap:wrap; gap:6px; align-items:center; pointer-events:none; }
   #viewbar > * { pointer-events:auto; }
-  #viewbar .tabs, #viewbar > button, #dispbtn { background:#1d2026e6; }
+  #viewbar .tabs, #viewbar > button, #dispbtn { background:#151b35e8; }
   #viewbar .tabs button { padding:4px 10px; font-size:12.5px; }
   #viewbar > button, #dispbtn { padding:5px 10px; font-size:12.5px; }
-  #viewbar kbd { font:11px ui-monospace, monospace; padding:0 4px; border:1px solid currentColor; border-radius:3px; opacity:.7; margin-left:2px; }
+  #viewbar kbd { font:11px var(--num); padding:0 4px; border:1px solid currentColor; border-radius:3px; opacity:.7; margin-left:2px; }
   #gizmobar button.on { background:var(--blue); color:#111; }
   #dispwrap { position:relative; }
   #dispmenu { position:absolute; left:0; top:calc(100% + 6px); min-width:290px; background:var(--panel); border:1px solid var(--line); border-radius:9px;
               padding:6px; box-shadow:0 8px 24px #000b; display:flex; flex-direction:column; gap:2px; }
   #dispmenu[hidden], #dispmenu [hidden] { display:none; }
   #dispmenu label { display:flex; gap:8px; align-items:center; padding:5px 8px; font-size:12.5px; border-radius:6px; cursor:pointer; }
-  #dispmenu label:hover { background:#2c313a; }
+  #dispmenu label:hover { background:var(--hover); }
   #dispmenu .cnt { color:var(--muted); font-size:11.5px; }
   #dispmenu details.dsec { border-top:1px solid var(--line); }
   #dispmenu details.dsec:first-child { border-top:0; }
@@ -166,12 +169,12 @@
   #dispmenu details.dsec > summary::-webkit-details-marker { display:none; }
   #dispmenu details.dsec > summary::after { content:'▸'; }
   #dispmenu details.dsec[open] > summary::after { content:'▾'; }
-  #dispmenu details.dsec > summary:hover { background:#2c313a; color:var(--text); }
+  #dispmenu details.dsec > summary:hover { background:var(--hover); color:var(--text); }
   #dispmenu details.dsec[open] { padding-bottom:4px; }
   #tourhud { position:fixed; left:calc(var(--side) + 12px); right:calc(var(--details) + 12px); bottom:calc(var(--bot,30px) + 12px); z-index:6; background:#000c; border:1px solid var(--line);
              border-radius:10px; padding:8px 12px; display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; font-size:12.5px; }
   #tourhud[hidden] { display:none; }
-  #tourhud .tinfo { font-family:ui-monospace, monospace; color:var(--text); }
+  #tourhud .tinfo { font-family:var(--num); color:var(--text); }
   #tourhud input[type=range] { flex:1 1 220px; min-width:140px; }
   #tourhud label { display:flex; gap:4px; align-items:center; white-space:nowrap; color:var(--muted); }
   #tourwarn { flex-basis:100%; color:#ff8a5a; font-weight:600; }
@@ -190,7 +193,7 @@
   #menuPage .mpcat.empty { opacity:.75; border-style:dashed; }
   #menuPage .mpcat .chead { display:flex; gap:6px; align-items:center; margin-bottom:8px; }
   #menuPage .mpcat .chead input { flex:1; min-width:0; font-weight:600; }
-  #menuPage .lvl { display:flex; gap:6px; align-items:center; padding:4px 6px; border-radius:6px; background:#1a1d22; margin-bottom:4px; }
+  #menuPage .lvl { display:flex; gap:6px; align-items:center; padding:4px 6px; border-radius:6px; background:#121831; margin-bottom:4px; }
   #menuPage .lvl .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #menuPage .lvl select { padding:3px 6px; font-size:12px; max-width:130px; }
   #menuPage .lvl button, #menuPage .chead button { padding:3px 7px; font-size:12px; }
@@ -204,15 +207,15 @@
   #hubPage .hubgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:10px; }
   #hubPage .hubcard { display:flex; gap:10px; align-items:flex-start; text-align:left; background:var(--panel); border:1px solid var(--line);
     border-radius:10px; padding:12px; cursor:pointer; color:var(--text); font:inherit; min-height:74px; }
-  #hubPage .hubcard:hover:not(:disabled) { border-color:var(--accent,#f5a623); background:var(--panel2); }
+  #hubPage .hubcard:hover:not(:disabled) { border-color:var(--accent,#ffab1f); background:var(--panel2); }
   #hubPage .hubcard:disabled { opacity:.45; cursor:default; }
   #hubPage .hubcard .hi { font-size:22px; line-height:1; width:28px; text-align:center; flex:none; }
   #hubPage .hubcard b { display:block; margin-bottom:3px; }
   #hubPage .hubcard .hd { color:var(--muted); font-size:12px; line-height:1.35; }
   #hubPage .hubcard .hn { flex:none; width:22px; height:22px; border-radius:50%; background:var(--panel2); border:1px solid var(--line);
     display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; }
-  #hubPage .hubcard.todo .hn { background:var(--accent,#f5a623); color:#111; border-color:transparent; }
-  #hubPage .hubcard .hs { display:block; margin-top:4px; font-size:11px; color:var(--accent,#f5a623); }
+  #hubPage .hubcard.todo .hn { background:var(--accent,#ffab1f); color:#111; border-color:transparent; }
+  #hubPage .hubcard .hs { display:block; margin-top:4px; font-size:11px; color:var(--accent,#ffab1f); }
   #hubPage .hubtrack { display:inline-block; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:1px 8px; font-weight:600; }
   @media (max-width:1100px) { :root { --side:300px; --details:260px; } }
   @media (max-width:760px) { #tourhud { left:12px; right:12px; bottom:calc(48vh + 12px); } }
@@ -225,14 +228,14 @@
   /* curseur « interdit » en tirant un curseur : le glisser partait sur le texte du libelle selectionne (2026-11-14) */
   input[type=range] { -webkit-user-drag:none; }
   label:has(input[type=range]) { user-select:none; }
-  * { scrollbar-width:thin; scrollbar-color:#3a414e transparent; }
+  * { scrollbar-width:thin; scrollbar-color:#34406f transparent; }
   ::-webkit-scrollbar { width:9px; height:9px; }
-  ::-webkit-scrollbar-thumb { background:#3a414e; border-radius:5px; border:2px solid transparent; background-clip:content-box; }
-  ::-webkit-scrollbar-thumb:hover { background:#566072; background-clip:content-box; }
+  ::-webkit-scrollbar-thumb { background:#34406f; border-radius:5px; border:2px solid transparent; background-clip:content-box; }
+  ::-webkit-scrollbar-thumb:hover { background:#4a5893; background-clip:content-box; }
   button { transition:border-color .12s, background-color .12s, color .12s; }
   button:active:not(:disabled) { transform:translateY(1px); }
   button:focus-visible, select:focus-visible, input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-  #top { background:linear-gradient(#22262d, var(--panel)); }
+  #top { background:linear-gradient(#1b2242, var(--panel)); }
   #bar { flex-wrap:nowrap; gap:10px; padding:7px 12px; }
   #bar .tabs button, #bar .group button { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
   #track { min-width:120px; max-width:230px; flex:0 1 230px; text-overflow:ellipsis; }
@@ -241,10 +244,10 @@
   #bar .tabs button { padding:5px 11px; }
   .ic[data-emo] { margin-right:5px; }
   /* inspecteur : blocs titres, champs X Y Z alignes, boutons en grille */
-  .ins { border:1px solid var(--line); border-radius:8px; background:#20242b; padding:8px; margin-top:8px; }
+  .ins { border:1px solid var(--line); border-radius:8px; background:#19203d; padding:8px; margin-top:8px; }
   .ins > h4 { margin:0 0 6px; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
   .ins .xyzhead, .ins .xyzrow { display:grid; grid-template-columns:62px repeat(3,1fr); gap:4px; align-items:center; margin:3px 0; }
-  .ins .xyzhead span { font:600 10px ui-monospace, monospace; text-align:center; }
+  .ins .xyzhead span { font:600 10px var(--num); text-align:center; }
   .ins .xyzrow > span { color:var(--muted); font-size:11.5px; }
   .ins .xyzrow.stack > span:first-child { grid-column:1 / -1; margin-top:3px; }
   .ins select { width:100%; padding:4px 8px; font-size:12.5px; }
@@ -258,23 +261,23 @@
   /* base modifiee depuis la derniere generation : pastille sur « Générer la piste » */
   /* dans le coin du bouton : la barre (#flow, overflow:hidden) coupait la moitie haute d'une pastille qui depassait */
   #gentrack.pending::after { content:''; position:absolute; top:2px; right:2px; width:8px; height:8px; border-radius:50%;
-    background:#ffb13d; box-shadow:0 0 0 2px var(--panel); }
+    background:#ffab1f; box-shadow:0 0 0 2px var(--panel); }
   #save.pending::after { content:''; position:absolute; top:2px; right:2px; width:8px; height:8px; border-radius:50%;
     background:#ff6b3d; box-shadow:0 0 0 2px var(--panel); }
   .ins .xyz { margin:0; }
-  .ins input[type=number], .ins input[type=text], .ins input:not([type]) { width:100%; min-width:0; background:#16181c; color:var(--text); border:1px solid var(--line); border-radius:5px; padding:3px 5px; font:12px ui-monospace, monospace; }
+  .ins input[type=number], .ins input[type=text], .ins input:not([type]) { width:100%; min-width:0; background:var(--field); color:var(--text); border:1px solid var(--line); border-radius:5px; padding:3px 5px; font:12px var(--num); }
   .ins input:disabled { opacity:.4; }
   .ins .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:5px; }
   .ins .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; }
   .ins .grid2 button, .ins .grid3 button { padding:5px 4px; font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .ins .grid2 button kbd, .ins .grid3 button kbd { font:10px ui-monospace, monospace; opacity:.6; margin-left:4px; }
+  .ins .grid2 button kbd, .ins .grid3 button kbd { font:10px var(--num); opacity:.6; margin-left:4px; }
   .ins .note2 { color:var(--muted); font-size:11px; margin-top:4px; }
   .inshead { display:flex; align-items:baseline; gap:8px; }
   .inshead b { font-size:14px; word-break:break-all; }
   .inssub { color:var(--muted); font-size:11px; word-break:break-all; margin-top:1px; }
-  .card .ins { background:#1c1f25; }
+  .card .ins { background:#141a33; }
   .card .ins:first-of-type { margin-top:8px; }
-  .scthumb { width:26px; height:26px; flex:none; border-radius:5px; background:#16181c; border:1px solid var(--line); object-fit:contain; }
+  .scthumb { width:26px; height:26px; flex:none; border-radius:5px; background:var(--field); border:1px solid var(--line); object-fit:contain; }
   #scinfo .scbig { width:72px; height:72px; float:right; margin:0 0 6px 8px; }
   #flow { gap:0; border:1px solid var(--line); border-radius:9px; overflow:hidden; background:var(--panel2); }
   #flow button { border:none; border-radius:0; border-left:1px solid #0006; padding:6px 12px; }
@@ -285,16 +288,16 @@
   @media (max-width:1380px) { #bar { flex-wrap:wrap; } }
   /* barre d'outils verticale de la vue 3D : icone + nom court + touche */
   #rail { position:fixed; top:calc(var(--top,44px) + 8px); left:calc(var(--side) + 8px); width:62px; display:flex; flex-direction:column; gap:2px;
-          padding:4px; background:#1d2026ee; border:1px solid var(--line); border-radius:12px; box-shadow:0 4px 14px #0006; }
+          padding:4px; background:#121830f0; border:1px solid var(--line); border-radius:12px; box-shadow:0 4px 14px #0006; }
   #rail #gizmobar { display:flex; flex-direction:column; gap:2px; }
   #rail .rb { position:relative; display:flex; flex-direction:column; align-items:center; gap:2px; width:100%; padding:7px 0 5px; border:none; background:none;
               border-radius:8px; font-size:10.5px; line-height:1.1; color:var(--muted); }
   #rail .rb .ic { width:20px; height:20px; color:var(--text); }
   #rail .rb:hover:not(:disabled) { background:var(--panel2); color:var(--text); }
-  #rail .rb.on { background:var(--blue); color:#0b1520; font-weight:600; }
-  #rail .rb.on .ic { color:#0b1520; }
+  #rail .rb.on { background:var(--blue); color:#06101f; font-weight:600; }
+  #rail .rb.on .ic { color:#06101f; }
   #rail #scenebtn.on { background:var(--accent); }
-  #rail .rb kbd { position:absolute; top:3px; right:4px; margin:0; font:9px ui-monospace, monospace; border:none; padding:0; opacity:.55; }
+  #rail .rb kbd { position:absolute; top:3px; right:4px; margin:0; font:9px var(--num); border:none; padding:0; opacity:.55; }
   #rail .rsep { height:1px; background:var(--line); margin:3px 6px; }
   #rail { max-height:calc(100vh - var(--top,44px) - 60px); overflow-y:auto; scrollbar-width:none; }
   #rail .rlab { font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); text-align:center; padding:2px 0 1px; }
@@ -311,7 +314,7 @@
   #dispbtn, #viewbar > button { display:inline-flex; align-items:center; gap:6px; }
   /* rappel de la souris dans la barre d'etat */
   #hints { display:flex; gap:12px; color:var(--muted); font-size:11.5px; white-space:nowrap; }
-  #hints kbd { font:10.5px ui-monospace, monospace; padding:1px 5px; border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; color:var(--text); background:var(--panel2); margin-right:4px; }
+  #hints kbd { font:10.5px var(--num); padding:1px 5px; border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; color:var(--text); background:var(--panel2); margin-right:4px; }
   body.creating #hints { display:none; }
   @media (max-width:1150px) { #hints { display:none; } }
   #statusbar button { display:inline-flex; align-items:center; gap:5px; }
@@ -319,16 +322,16 @@
   /* inspecteur unique : contexte (petit, gris) + nom (clair) + etat de la piste a droite */
   #inshd #inshdname { color:var(--text); font-size:12.5px; letter-spacing:.02em; text-transform:none; font-weight:600; flex:1; min-width:0;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #inshd #inshdstate { text-transform:none; letter-spacing:0; font-size:11px; padding:1px 7px; border-radius:9px; background:#ffb13d22; color:#ffb13d; border:1px solid #ffb13d55; white-space:nowrap; }
+  #inshd #inshdstate { text-transform:none; letter-spacing:0; font-size:11px; padding:1px 7px; border-radius:9px; background:#ffab1f22; color:#ffab1f; border:1px solid #ffab1f55; white-space:nowrap; }
   #details.nosel #raceDetails, #details.nosel #decorDetails { display:none; }
   #insEmpty .ttl { font-size:14px; font-weight:600; word-break:break-word; }
   #insEmpty .st { font-size:12px; margin:3px 0 0; color:var(--muted); }
-  #insEmpty .st.todo { color:#ffb13d; }
+  #insEmpty .st.todo { color:#ffab1f; }
   #insEmpty .cnt { display:grid; grid-template-columns:1fr auto; gap:2px 10px; font-size:12px; }
-  #insEmpty .cnt span:nth-child(even) { font:12px ui-monospace, monospace; color:var(--text); text-align:right; }
+  #insEmpty .cnt span:nth-child(even) { font:12px var(--num); color:var(--text); text-align:right; }
   #insEmpty .cnt span:nth-child(odd) { color:var(--muted); }
   #insEmpty .tips { color:var(--muted); font-size:11.5px; line-height:1.5; }
-  #insEmpty .tips kbd { font:10px ui-monospace, monospace; border:1px solid var(--line); border-radius:4px; padding:0 4px; }
+  #insEmpty .tips kbd { font:10px var(--num); border:1px solid var(--line); border-radius:4px; padding:0 4px; }
   #sidehead b { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
   /* objets de la scene */
   .scfind { display:flex; align-items:center; gap:6px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:0 4px 0 8px; color:var(--muted); }
@@ -338,22 +341,22 @@
   #scsum { margin:6px 2px; font-size:11.5px; }
   #dresults { margin:0 -6px; user-select:none; }
   .scrow { display:flex; align-items:center; gap:6px; padding:3px 6px; border-radius:6px; cursor:pointer; font-size:12.5px; min-height:24px; }
-  .scrow:hover { background:#262a32; }
-  .scrow.sel { background:#f2b13426; box-shadow:inset 2px 0 var(--accent); }
+  .scrow:hover { background:var(--panel2); }
+  .scrow.sel { background:#ffab1f26; box-shadow:inset 2px 0 var(--accent); }
   .scrow.sel .nm { color:#fff; }
   .scrow.cat { margin-top:6px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
-  .scrow.l1 { padding-left:12px; } .scrow.l2 { padding-left:38px; color:#c3c9d3; }
+  .scrow.l1 { padding-left:12px; } .scrow.l2 { padding-left:38px; color:#c2c8e6; }
   .scrow .tw { width:12px; flex:none; text-align:center; color:var(--muted); font-size:10px; transition:transform .12s; }
   .scrow.open > .tw { transform:rotate(90deg); }
   .scrow .dot { width:9px; height:9px; border-radius:3px; flex:none; }
   .scrow .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .scrow .ct { flex:none; font:11px ui-monospace, monospace; color:var(--muted); }
+  .scrow .ct { flex:none; font:11px var(--num); color:var(--muted); }
   .scrow .eye { flex:none; border:none; background:none; padding:0 2px; color:var(--muted); opacity:0; line-height:0; }
   .scrow:hover .eye, .scrow .eye.off { opacity:1; }
   .scrow .eye.off { color:var(--err); }
   .scrow.hid .nm { opacity:.45; text-decoration:line-through; }
   .scmore { padding:3px 6px 3px 38px; color:var(--muted); font-size:11px; }
-  #scinfo { position:sticky; bottom:-40px; margin:10px -4px 0; border:1px solid var(--line); background:#22262e; box-shadow:0 -8px 14px #1d2026; font-size:12px; }
+  #scinfo { position:sticky; bottom:-40px; margin:10px -4px 0; border:1px solid var(--line); background:#1a2140; box-shadow:0 -8px 14px var(--panel); font-size:12px; }
   #scinfo[hidden] { display:none; }
   #scinfo .ttl { font-weight:600; font-size:13px; margin-bottom:4px; word-break:break-all; }
   #scinfo dl { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin:0 0 8px; }
@@ -375,6 +378,128 @@
   #crload .bar { height:8px; border-radius:4px; background:rgba(255,255,255,.12); overflow:hidden; }
   #crload .fill { height:100%; width:0; border-radius:4px; background:var(--accent,#4c9aff); transition:width .35s ease; }
   #crload .tm { font-size:12px; color:var(--muted,#9aa); margin-top:6px; text-align:right; font-variant-numeric:tabular-nums; }
+
+  /* ==================== Thème « Nuit de course » (ctr_tools_design, 2026-11-25) ====================
+     asphalte de nuit (indigo), orange Wumpa pour l'action,
+     titres en Bahnschrift étroit (panneaux de circuit), chiffres en Bahnschrift tabulaire. Aucun id/classe/texte change. */
+  body { font:13.5px/1.45 'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif; letter-spacing:.005em; }
+  /* -- barre du haut -- */
+  #top { background:linear-gradient(180deg,#1b2347 0%,#121935 100%); border-bottom:1px solid #2a3462; }
+  #bar { padding:6px 14px 5px; }
+  #brand { font-family:var(--disp); font-stretch:condensed; font-weight:700; font-size:22px; letter-spacing:.01em; line-height:1;
+    color:var(--accent); display:inline-block; transform:skewX(-11deg); text-shadow:2px 2px 0 #b3400c; margin-right:12px; }
+  #brandver { font-family:var(--num); font-stretch:normal; color:var(--muted); text-shadow:none; font-size:12px; font-weight:400; margin-left:4px; }
+  #menubar > .mb > button { font-family:var(--disp); font-stretch:semi-condensed; font-weight:500; font-size:14.5px; color:#c9cdea; padding:5px 9px; border-radius:4px; }
+  #menubar > .mb > button:hover, #menubar > .mb.open > button { background:#ffffff12; color:var(--text); }
+  /* onglets : parallelogrammes, comme les panneaux de direction */
+  .tabs { background:#0c112699; border-color:#2a3462; border-radius:6px; padding:3px; gap:3px; }
+  .tabs button { font-family:var(--disp); font-stretch:semi-condensed; font-weight:500; font-size:14px; color:#b9bfe0; border-radius:3px;
+    clip-path:polygon(7px 0,100% 0,calc(100% - 7px) 100%,0 100%); padding:5px 13px !important; }
+  .tabs button:not(.on):hover:not(:disabled) { background:#ffffff10; color:var(--text); }
+  .tabs button.on { background:var(--accent); color:var(--ink); font-weight:700; }
+  #viewbar .tabs { background:#121830e8; }
+  #viewbar .tabs button { font-size:13px; padding:4px 12px !important; }
+  /* -- boutons -- */
+  select, button { background:var(--panel2); border-color:#323d6c; border-radius:5px; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button.primary, button.primary:hover:not(:disabled) { background:var(--accent); color:var(--ink); border-color:var(--accent); font-weight:700; }
+  button.primary:hover:not(:disabled) { background:#ffbd45; }
+  button.go { background:#14894a; border-color:#2fbf6e; color:#fff; }
+  button.go:hover:not(:disabled) { background:#18a058; border-color:var(--ok); }
+  #flow { border-radius:5px; border-color:#323d6c; background:#0d1329; }
+  #flow button { font-family:var(--disp); font-stretch:semi-condensed; font-size:14px; font-weight:600; padding:6px 11px; }
+  #flow button:not(.primary):not(.go) { color:#d4d8f0; }
+  #flow button.primary { clip-path:polygon(0 0,100% 0,calc(100% - 8px) 100%,0 100%); padding-right:18px; }
+  #flow button.go + button.go { border-left-color:#0b4f2b; }
+  select { background-color:var(--field); }
+  button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  /* -- titres de blocs : etroits, casse normale (plus de petites capitales espacees) -- */
+  #side h3, #details h3, .seltitle, .ins > h4, #details .dhead, #sidehead b, #hubPage h3, .scrow.cat {
+    font-family:var(--disp); font-stretch:semi-condensed; text-transform:none; letter-spacing:.01em; font-size:13px; font-weight:600; color:#aeb5dc; }
+  .ins > h4 { font-size:12.5px; color:#9aa2cf; }
+  #details .dhead { padding-bottom:8px; margin-bottom:10px; border-bottom:1px solid var(--line); }
+  #inshd #inshdname { font-family:var(--disp); font-stretch:semi-condensed; font-size:15px; font-weight:600; letter-spacing:0; }
+  #inshd #inshdstate { border-radius:3px; font-family:var(--disp); font-stretch:semi-condensed; font-size:12px; }
+  /* -- panneaux lateraux -- */
+  #side, #details { background:var(--panel); }
+  #details { border-left:1px solid #2a3462; }
+  #side { border-right:1px solid #2a3462; }
+  .sec { background:#121831; border-color:#283160; border-radius:6px; }
+  .sec > summary { font-family:var(--disp); font-stretch:semi-condensed; font-size:14.5px; font-weight:600; padding:9px 12px; border-radius:6px 6px 0 0; }
+  .sec[open] > summary { box-shadow:inset 3px 0 var(--accent); }
+  .sec > summary .hint { font-family:'Segoe UI',system-ui,sans-serif; }
+  .ins { background:#19203d; border-color:#283160; border-radius:6px; }
+  .card { border-radius:6px; }
+  .inshead b { font-family:var(--disp); font-stretch:semi-condensed; font-size:15.5px; font-weight:600; }
+  #insEmpty .ttl { font-family:var(--disp); font-stretch:semi-condensed; font-size:16px; }
+  .tag { border-radius:3px; background:#2a335f; }
+  .scrow { border-radius:4px; }
+  .scrow.sel { background:#ffab1f24; box-shadow:inset 3px 0 var(--accent); }
+  .scfind { border-radius:5px; background:var(--field); }
+  /* -- barre d'outils de la vue (rail) -- */
+  #rail { background:#0e1430f2; border:1px solid #2a3462; border-radius:8px; box-shadow:0 10px 26px #0009; padding:4px; }
+  #rail .rb { border-radius:5px; font-family:var(--disp); font-stretch:semi-condensed; font-size:11px; font-weight:500; color:#a7aed6; padding:6px 0 4px; }
+  #rail .rb:not(.on):hover:not(:disabled) { background:#ffffff12; }
+  #rail .rb.on { background:var(--blue); color:#03101e; font-weight:700; box-shadow:0 0 0 1px #8fe0ff inset; }
+  #rail #scenebtn.on { background:var(--accent); color:var(--ink); box-shadow:none; }
+  #rail .rb kbd { font-family:var(--num); font-size:9.5px; opacity:.6; }
+  #rail .rlab { font-family:var(--disp); font-stretch:condensed; text-transform:none; letter-spacing:.02em; font-size:11px; color:var(--accent); opacity:.85; }
+  #rail .rsep { background:#2a3462; }
+  #viewbar > button, #dispbtn { background:#121830e8; border-color:#2a3462; }
+  /* -- barre d'etat -- */
+  #statusbar { background:#080c1c; border-top:1px solid #222b52; }
+  #status { color:#a0a8d2; }
+  #sbchips button { border-radius:3px; background:#ffab1f1c; color:var(--accent); border-color:#ffab1f66; font-family:var(--disp); font-stretch:semi-condensed; font-size:12px; }
+  #sbchips button:hover { background:#ffab1f33; }
+  #hints { font-size:12px; }
+  #hints kbd, #insEmpty .tips kbd { font-family:var(--num); background:var(--panel2); border-color:#34407a; border-radius:3px; }
+  /* -- menus deroulants, popovers -- */
+  .mdrop, #moremenu, #dispmenu, .bpop { background:#141a34; border-color:#2e3866; border-radius:6px; box-shadow:0 18px 40px #000c, 0 0 0 1px #00000080; }
+  .mi { border-radius:4px; }
+  .mi:hover { background:var(--hover); box-shadow:inset 3px 0 var(--accent); }
+  .mi.off:hover { box-shadow:none; }
+  #dispmenu label:hover, #dctx .ctxi:hover { background:var(--hover); }
+  #dispmenu details.dsec > summary { font-family:var(--disp); font-stretch:semi-condensed; font-size:13px; color:#aeb5dc; }
+  /* -- fenetres (overlays construits dans le JS : cadre .card dans un fond plein ecran) -- */
+  div[style*="inset: 0px"][style*="z-index"] { background:#04071ad0 !important; backdrop-filter:blur(2px) saturate(.8); }
+  div[style*="inset: 0px"] > .card { background:var(--panel) !important; border:1px solid #2e3866 !important; border-top:3px solid var(--accent) !important;
+    border-radius:6px !important; box-shadow:0 30px 70px #000d, 0 0 0 1px #0008; padding:16px 18px 14px; }
+  div[style*="inset: 0px"] > .card > div:first-child > b:first-child, div[style*="inset: 0px"] > .card > b:first-child {
+    font-family:var(--disp); font-stretch:semi-condensed; font-size:18px; font-weight:600; letter-spacing:.005em; }
+  #crload .box { background:var(--panel); border-color:#2e3866; border-top:3px solid var(--accent); border-radius:6px; }
+  #crload .t { font-family:var(--disp); font-stretch:semi-condensed; font-size:17px; }
+  #crload .fill, #prog .pfill { background:repeating-linear-gradient(115deg,var(--accent) 0 10px,#ffc457 10px 20px); }
+  #crload .bar, #prog .pbar { background:#0a0e22; border-radius:2px; }
+  #crload .tm { font-family:var(--num); }
+  #prog { background:#141a34; border-color:#2e3866; border-radius:6px; }
+  /* -- pages Habillage / Jeu / Menu -- */
+  #hubPage, #menuPage { background:radial-gradient(1200px 600px at 80% -10%,#1b2450 0%,transparent 60%),var(--bg); }
+  #hubPage h2, #menuPage .mphead h2 { font-family:var(--disp); font-stretch:semi-condensed; font-size:26px; font-weight:700; letter-spacing:0; }
+  #hubPage .hubcard { background:#151b35; border-color:#2a3462; border-radius:6px; }
+  #hubPage .hubcard:hover:not(:disabled) { background:#1c2446; border-color:var(--accent); }
+  #hubPage .hubcard b { font-family:var(--disp); font-stretch:semi-condensed; font-size:15px; font-weight:600; }
+  #hubPage .hubcard .hn { border-radius:3px; font-family:var(--num); background:#0d1329; }
+  #hubPage .hubcard.todo .hn { color:var(--ink); }
+  #hubPage .hubtrack { font-family:var(--disp); font-stretch:semi-condensed; border-radius:3px; background:#0d1329; }
+  #menuPage .mpcat, #menuPage .mpnew { background:#151b35; border-color:#2a3462; border-radius:6px; }
+  #menuPage .lvl { background:#10162c; border-radius:4px; }
+  /* -- visite / historique -- */
+  #tourhud { background:#070b1ce0; border-color:#2a3462; border-radius:6px; }
+  #histlist .h { border-bottom-color:#222b52; }
+  * { scrollbar-color:#34407a transparent; }
+  ::-webkit-scrollbar-thumb { background:#34407a; background-clip:content-box; }
+  /* -- panneau Creation (styles injectes par creator.js : selecteurs plus precis) -- */
+  html body #creatorPanel .crcard { background:#19203d; border-color:#283160; border-radius:6px; }
+  html body #creatorPanel .crcard > h4, html body #creatorPanel .crcard > summary {
+    font-family:var(--disp); font-stretch:semi-condensed; text-transform:none; letter-spacing:.01em; font-size:13px; color:#aeb5dc; }
+  html body #creatorPanel .crsub button { font-family:var(--disp); font-stretch:semi-condensed; font-size:14px; font-weight:500; }
+  html body #creatorPanel .crsub button:first-child { border-radius:5px 0 0 5px; }
+  html body #creatorPanel .crsub button:last-child { border-radius:0 5px 5px 0; }
+  html body #creatorPanel .crsep { height:3px; border-radius:0; background:repeating-linear-gradient(90deg,var(--kerb) 0 12px,#f3f1fb 12px 24px); opacity:.5; }
+  #creatorPanel div[style*="uppercase"] { text-transform:none !important; font-family:var(--disp); font-stretch:semi-condensed; font-size:13px !important; letter-spacing:.01em !important; color:#aeb5dc !important; }
+  html body #crtopbar > label { background:#121830e8; border-color:#2a3462; border-radius:6px; }
+  html body #crtopbar > label > span { font-family:var(--disp); font-stretch:semi-condensed; font-size:13.5px; }
+  @media (prefers-reduced-motion:reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 </head>
 <body>
@@ -502,7 +627,7 @@
   <button id="sbgen" hidden title="La base a changé depuis la dernière génération : clique pour générer la piste">⚙ À générer</button>
   <button id="sbcourse" hidden title="Ta map importée n'a pas encore de parcours : clique pour le créer depuis sa route (départ, sens, IA)">🏁 Créer le parcours</button>
   <span id="sblen" hidden title="Longueur de la route de la base"></span>
-  <button id="sbload" hidden title="Charge mémoire estimée de la piste en jeu (modèles différents, d'après le décor enregistré) : au-delà de 100 %, le jeu plante au chargement. Clic : alléger la map"></button></span>
+  <button id="sbload" hidden title="Charge mémoire estimée de la piste en jeu (fichiers de l'archive : modèles, matériaux, textures, d'après le décor enregistré) : au-delà de 100 %, le jeu plante au chargement. Clic : alléger la map"></button></span>
  <span id="hints"><span><kbd>Clic</kbd>sélectionner</span><span><kbd>Clic droit</kbd>menu · tourner la vue</span><span><kbd>Molette</kbd>zoom</span></span>
  <button id="histbtn" title="Tous les messages depuis l'ouverture de l'éditeur"><svg class="ic"><use href="#i-clock"/></svg>Historique</button>
  <button id="helpbtn" title="Raccourcis clavier et souris"><svg class="ic"><use href="#i-keys"/></svg>Raccourcis</button></div>
@@ -571,7 +696,7 @@
    <div class="body"><p class="lead">Retire l'ancienne piste (sol, décor, effets) et, si besoin, ce que tu as déjà ajouté, pour repartir d'une map vide.</p>
     <div class="stack"><button id="dnewmap" class="primary" title="Retirer l'ancien sol, l'ancien décor et/ou tes ajouts (imports, objets de la bibliothèque, copies)">Vider la map…</button></div></div></details>
   <details class="sec" open><summary>📥 Importer ta map</summary>
-   <div class="body"><p class="lead">Un dossier contenant ton fichier .obj (+ .mtl) ou .dae et ses images : tout est importé d'un coup.</p>
+   <div class="body"><p class="lead">Un dossier contenant ton fichier .obj (+ .mtl), .dae, .glb ou .gltf et ses images : tout est importé d'un coup.</p>
     <div class="stack"><button id="dfolder" class="primary" title="OBJ + MTL + textures d'un dossier, en une fois">Importer un dossier…</button>
      <button id="dimport" title="Un seul fichier .obj (textures du jeu au choix)">Importer un modèle OBJ…</button></div></div></details>
   <details class="sec" open><summary>📚 Objets du jeu <span class="hint">palmiers, panneaux, rochers…</span></summary>
@@ -767,7 +892,8 @@ function syncStatusChips() {
   set('sblen', !!txt && (creator?.hasBase || creator?.active)); if (txt && $('sblen').textContent !== txt) $('sblen').textContent = txt;
 }
 $('sbsave').onclick = () => $('save').click();
-// charge memoire estimee en direct (2026-11-20) : /api/weight_live (modeles du decor enregistre, en memoire cote serveur)
+// charge memoire estimee en direct (2026-11-20) : /api/weight_live (fichiers de l'archive d'apres le decor enregistre,
+// en memoire cote serveur ; comptee en fichiers depuis le 2026-11-27)
 let loadKey = '';
 async function refreshLoadChip(force) {
   const b = $('sbload'); if (!b || !track || !decor) return;
@@ -780,8 +906,8 @@ async function refreshLoadChip(force) {
     // memes seuils que Verifier (2026-11-25) : orange a 90 %, rouge a 100 % ; detail au survol
     const c = w.load >= 100 ? 'var(--err)' : w.load >= 90 ? '#ffb13d' : 'var(--muted)';
     b.title = w.exact
-      ? `Charge mémoire mesurée (dernière vérification, rien de changé depuis) : ${w.load} % — archive ${w.size} Mo / ${w.budget} Mo, ${w.models} modèles différents / ${w.models_max}, ${w.files} fichiers / ${w.files_max}` + (w.collision ? `, collision ${w.collision} triangles` : '') + '. Clic : Alléger la map'
-      : `Charge mémoire estimée : ${w.load} % — ${w.models} modèles différents (le jeu plante vers ${w.models_max}). Taille de l'archive et fichiers exacts : lance Vérifier. Clic : Alléger la map`;
+      ? `Charge mémoire mesurée (dernière vérification, rien de changé depuis) : ${w.load} % — archive ${w.size} Mo / ${w.budget} Mo, ${w.models} modèles différents, ${w.files} fichiers / ${w.files_max}` + (w.collision ? `, collision ${w.collision} triangles` : '') + '. Clic : Alléger la map'
+      : `Charge mémoire estimée : ${w.load} % — environ ${w.files} fichiers dans l'archive (le jeu plante vers ${w.files_max}), ${w.models} modèles différents. Taille de l'archive et fichiers exacts : lance Vérifier. Clic : Alléger la map`;
     b.textContent = `🧠 ${w.load} %${w.exact ? '' : ' ~'}`;
     b.style.cssText = `color:${c};border-color:${c};background:transparent`;
     b.hidden = false;
@@ -815,7 +941,7 @@ const renderer = new THREE.WebGLRenderer({ antialias: !LOWGFX, powerPreference: 
 renderer.setPixelRatio(devicePixelRatio);
 view.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x14161a);
+scene.background = new THREE.Color(0x0d1226);
 const camera = new THREE.PerspectiveCamera(55, 1, 10, 2e6);
 camera.up.set(0, 0, 1);
 scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x303030, 1.0));
@@ -1536,16 +1662,17 @@ const BOOST_PRESETS = { classic: { speed: 700, duration: 0.5 }, super: { speed: 
 const boostDefaults = c => ({ color: BOOST_COLORS[c.color] ? c.color : (c.super ? 'bleu' : 'orange'),
   speed: c.speed ?? (c.super ? 1400 : 700), duration: c.duration ?? (c.super ? 1.6 : 0.5) });
 // fenetre des reglages d'un booster (ajout ou clic droit) -> {color, speed, duration} ou null (annule)
-function boostDialog(init, title) {
+// opt.noColor (objet booster, 2026-11-27) : pas de plaque au sol, donc pas de choix de couleur
+function boostDialog(init, title, opt = {}) {
   return new Promise(resolve => {
     const v = { ...boostDefaults(init || {}) };
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:30;display:flex;align-items:center;justify-content:center;padding:16px';
-    const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+    const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
     ov.innerHTML = `<div class="card" style="max-width:380px;width:100%;background:var(--panel);border:1px solid var(--line)">
       <div style="margin-bottom:8px"><b>${title}</b></div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Couleur de la plaque</div>
-      <div id="bdcol" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">${Object.entries(BOOST_COLORS).map(([k, c]) =>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px" ${opt.noColor ? 'hidden' : ''}>Couleur de la plaque</div>
+      <div id="bdcol" style="display:${opt.noColor ? 'none' : 'flex'};flex-wrap:wrap;gap:4px;margin-bottom:8px">${Object.entries(BOOST_COLORS).map(([k, c]) =>
         `<button data-c="${k}" title="${c.label}" style="width:40px;height:28px;padding:0;border-radius:6px;background:${c.css};border:2px solid transparent"></button>`).join('')}</div>
       <label style="font-size:12px;color:var(--muted)">Puissance du turbo (vitesse ajoutée ; classique 700, super 1400)
         <input id="bdsp" type="number" min="0" max="10000" step="50" style="${field}"></label>
@@ -1586,6 +1713,7 @@ async function editBoost(i) {
 }
 function renderBoostMarkers() {
   boostGroup.clear();
+  syncObjectBoosts();
   boosts.forEach((b, i) => {
     const sel = selected?.kind === 'boost' && selected.index === i, d = b.dims;
     // couleur choisie (plaque dessinee au sol de la meme couleur en jeu)
@@ -1599,7 +1727,9 @@ function renderBoostMarkers() {
     const arrow = new THREE.Mesh(new THREE.ConeGeometry(Math.min(d[0], d[1]) * 0.25, d[0] * 0.6, 3), new THREE.MeshBasicMaterial({ color: 0x000000, depthTest: false, transparent: true, opacity: 1 }));
     // noire et dessinee apres la plaque et les faces de la boite (rendu transparent, renderOrder) : bien visible
     arrow.rotation.z = -Math.PI / 2; arrow.position.z = 15; arrow.renderOrder = 13; arrow.raycast = () => {};
-    m.add(pad, arrow);
+    if (b.obj) {                                           // objet booster : pas de plaque, reglages par l'objet
+      m.add(arrow); m.raycast = () => {}; m.children[0].raycast = () => {};
+    } else m.add(pad, arrow);
     // rotation du jeu : R = Rz Ry Rx (inclinaison X puis Y, puis cap)
     m.position.set(b.pos[0], b.pos[1], b.pos[2]); m.rotation.order = 'ZYX';
     m.rotation.set(b.tilt?.[0] || 0, b.tilt?.[1] || 0, b.yaw || 0);
@@ -2100,6 +2230,69 @@ async function addBoostAtView() {
   const t = orbit.target; addBoost([t.x, t.y, t.z], undefined, undefined, r);
 }
 function selectBoost(i) { select(boostGroup.children.find(m => m.userData.index === i) || null); }
+// ---- objet booster (2026-11-27, demande utilisateur : clic droit sur un objet > Effet booster) ------------------------
+// Un booster du jeu (zone de turbo, puissance et reserve) lie a un objet du decor : sa zone prend la boite de l'objet,
+// tournee comme lui, de 1 m sous sa base a 4 m au-dessus de son sommet (karts qui roulent dessus) ; elle suit l'objet
+// deplace / tourne / agrandi. Pas de plaque dessinee au sol : l'objet lui-meme est le booster. Lien {file, id} garde
+// par le serveur (_boost_objects.json).
+const OBJ_BOOST_BELOW = 40, OBJ_BOOST_ABOVE = 160;          // po
+const objBoostMesh = link => decorGroup.children.find(m => m.userData.file === link.file && m.userData.obj?.id === link.id);
+const objBoostIndex = m => boosts.findIndex(b => b.obj && b.obj.file === m.userData.file && b.obj.id === m.userData.obj?.id);
+const _obq = new THREE.Quaternion(), _obs = new THREE.Vector3(), _obe = new THREE.Euler();
+function syncObjectBoosts() {
+  let changed = false;
+  for (const b of boosts) {
+    if (!b.obj) continue;
+    const m = objBoostMesh(b.obj), g = m?.geometry;
+    if (!g?.attributes?.position) continue;                  // decor pas encore charge : zone gardee telle quelle
+    if (!g.boundingBox) g.computeBoundingBox();
+    m.updateMatrixWorld(true);
+    m.getWorldQuaternion(_obq); m.getWorldScale(_obs);
+    _obe.setFromQuaternion(_obq, 'ZYX');
+    const bb = g.boundingBox, sz = bb.getSize(new THREE.Vector3());
+    const c = bb.getCenter(new THREE.Vector3()).applyMatrix4(m.matrixWorld)
+      .add(new THREE.Vector3(0, 0, (OBJ_BOOST_ABOVE - OBJ_BOOST_BELOW) / 2).applyQuaternion(_obq));
+    const nb = { pos: [c.x, c.y, c.z].map(v => Math.round(v * 10) / 10), yaw: _obe.z, tilt: [_obe.x, _obe.y],
+                 dims: [Math.max(50, Math.abs(sz.x * _obs.x)), Math.max(50, Math.abs(sz.y * _obs.y)),
+                        Math.max(50, Math.abs(sz.z * _obs.z) + OBJ_BOOST_BELOW + OBJ_BOOST_ABOVE)].map(v => Math.round(v * 10) / 10) };
+    const same = nb.pos.every((v, k) => Math.abs(v - b.pos[k]) < 0.5) && nb.dims.every((v, k) => Math.abs(v - b.dims[k]) < 0.5)
+      && Math.abs(nb.yaw - (b.yaw || 0)) < 1e-4 && nb.tilt.every((v, k) => Math.abs(v - (b.tilt?.[k] || 0)) < 1e-4);
+    if (!same) { Object.assign(b, nb); changed = true; }
+  }
+  return changed;
+}
+async function addObjectBoost(meshes) {
+  const ok = meshes.filter(m => !m.userData.isNew && objBoostIndex(m) < 0);
+  if (!ok.length) {
+    status(meshes.some(m => m.userData.isNew) ? 'Enregistre d\'abord : une copie pas encore enregistrée ne peut pas devenir un booster' : 'Ces objets sont déjà des boosters', 'err');
+    return;
+  }
+  const r = await boostDialog(boosts.find(b => b.obj) || boosts[boosts.length - 1] || {},
+                              ok.length === 1 ? `Effet booster : ${ok[0].userData.obj.name || 'objet'}` : `Effet booster : ${ok.length} objets`, { noColor: true });
+  if (!r) return;
+  for (const m of ok) boosts.push({ pos: m.position.toArray(), yaw: 0, dims: [...BOOST_DEFAULT], tilt: [0, 0], free: true,
+                                    obj: { file: m.userData.file, id: m.userData.obj.id }, ...r });
+  renderBoostMarkers(); markDirty(); renderDecorSel(); renderPanel();
+  status(`${ok.length} objet(s) booster : puissance ${r.speed}, réserve ${r.duration} s — le turbo agit en roulant dessus ou en le traversant ; enregistre puis installe`, 'ok');
+}
+async function editObjectBoost(meshes) {
+  const idx = meshes.map(objBoostIndex).filter(i => i >= 0);
+  if (!idx.length) return;
+  const r = await boostDialog(boosts[idx[0]], idx.length === 1 ? 'Réglages du booster de l\'objet' : `Réglages des ${idx.length} objets booster`, { noColor: true });
+  if (!r) return;
+  for (const i of idx) Object.assign(boosts[i], r);
+  renderBoostMarkers(); markDirty(); renderDecorSel();
+  status(`Objet(s) booster : puissance ${r.speed}, réserve ${r.duration} s — enregistre puis installe`, 'ok');
+}
+function removeObjectBoost(meshes) {
+  const keys = new Set(meshes.map(m => m.userData.file + '|' + m.userData.obj?.id));
+  const n = boosts.length;
+  boosts = boosts.filter(b => !(b.obj && keys.has(b.obj.file + '|' + b.obj.id)));
+  if (boosts.length === n) return;
+  if (selected?.kind === 'boost') select(null);
+  renderBoostMarkers(); markDirty(); renderDecorSel(); renderPanel();
+  status(`Effet booster retiré (${n - boosts.length} objet(s)) — enregistre puis installe`, 'ok');
+}
 function deleteBoost(i) { boosts.splice(i, 1); select(null); renderBoostMarkers(); markDirty(); renderPanel(); }
 function renderBoostsPanel() {
   const box = $('boosts'); if (!box) return;
@@ -2166,7 +2359,7 @@ function racePaths() {
 function openCrateAuto() {
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   ov.innerHTML = `<div class="card" style="max-width:480px;width:100%;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:6px"><b>Placement automatique des caisses</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Rangées de caisses « ? » en travers de la route, réparties sur le tour en suivant
@@ -2828,6 +3021,8 @@ renderer.domElement.addEventListener('pointerup', e => {
   // sol et route generes par la Creation : selectionnables, mais en dernier (sinon les zones de transition et de
   // chute, grandes boites qui les englobent, ne se cliquaient plus)
   let dHit = !hit && dec ? ray.intersectObjects(decorGroup.children.filter(m => m.visible && !isCreatorGround(m)), false)[0] : null;
+  // clic droit sur un objet deja selectionne (2026-11-27) : la selection (plusieurs objets) reste pour le menu
+  if (e.button === 2 && dHit && dMulti.includes(dHit.object)) return;
   // objet du decor de la base (apercu, pas encore genere) : ouvert dans l'outil Decor > Modifier, deja selectionne
   // (poignees W / E / R, Suppr, Ctrl+D) ; meme vue, la base reste en cours (2026-11-14)
   if (!hit && dec && basePreview) {
@@ -2907,6 +3102,22 @@ let replacedAi = {};                     // ancienne spline IA -> splines genere
 let designPoses = {}, raceEntityPositions = {};   // entites deplacees par « Creer le parcours » (reapparitions, zones)
 let lastDecorObjects = [];               // derniere selection du mode Decor (route importee)
 let forkAi = new Set();                  // splines IA citees par un embranchement (branches)
+// routes secondaires de la Creation (2026-11-26) : embranchements ForkChecker_Ed_* (une boite par route apres la
+// separation) ; envoyes a chaque enregistrement (liste complete)
+const FORK_ED = 'ForkChecker_Ed_', FORK_SUFFIX = '_Fork';
+let edForks = [];
+// spline de position la plus proche d'une voie IA (milieu de la voie) parmi `names` : section a deux routes
+function nearestPosition(lane, names) {
+  const pts = lane.points, mid = pts.slice(Math.floor(pts.length * 0.3), Math.ceil(pts.length * 0.7) || 1);
+  let best = names[0], bd = Infinity;
+  for (const n of names) {
+    const sp = byName(n); if (!sp) continue;
+    let d = 0;
+    for (const q of mid) { let m = Infinity; for (const r of sp.points) m = Math.min(m, Math.hypot(q[0] - r[0], q[1] - r[1], (q[2] - r[2]) * 2)); d += m; }
+    if (d < bd) { bd = d; best = n; }
+  }
+  return best;
+}
 function sectionOf(ref) {
   const [nk, pk] = ref.kind === 'position_paths' ? ['next_position', 'previous_position'] : ['next_ai', 'previous_ai'];
   const ts = Object.values(transitions);
@@ -2917,13 +3128,16 @@ function sectionOf(ref) {
   else if (start) existing = existing.filter(s => start.next_ai.includes(s.name));
   else if (end) existing = existing.filter(s => end.previous_ai.includes(s.name));
   else existing = ref.kind === 'ai_paths' ? [ref] : [];
+  // fourche (2026-11-26) : la section a deux splines de position ; ses voies sont rangees par route (la plus proche)
+  if (ref.kind === 'position_paths' && (start?.next_position?.length || 0) > 1)
+    existing = existing.filter(s => nearestPosition(s, start.next_position) === ref.name);
   return { start, end, existing };
 }
 function openAiGenerator(ref) {
   const { start, end, existing } = sectionOf(ref);
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const tn = t => t ? t.name.replace(/^.*?Transition_?/i, 'T') : '—';
   // place laissee par les autres sections dans le total que le jeu charge (2026-11-25)
   const elsewhere = splines.filter(s => s.kind === 'ai_paths' && !existing.includes(s)).length;
@@ -2952,7 +3166,9 @@ function openAiGenerator(ref) {
     ov.remove();
     status('Mesure de la route et génération…');
     try {
-      const r = await api('/api/gen_ai_splines', { track, reference: ref.points, ...opt });
+      // fourche : largeur limitee a mi-chemin de l'autre route de la section (2026-11-26)
+      const others = (start?.next_position || []).filter(n => n !== ref.name).map(n => byName(n)?.points).filter(Boolean);
+      const r = await api('/api/gen_ai_splines', { track, reference: ref.points, ...opt, ...(others.length ? { avoid_refs: others } : {}) });
       const report = applyGeneratedLanes(ref, r.lanes, { start, end, existing, replace, join });
       status(`${r.lanes.length} splines IA générées (route : ${Math.round(r.width_summary.min / 39.37)}–${Math.round(r.width_summary.max / 39.37)} m de large, surfaces ${r.road_surfaces.join(', ')})` +
              (report ? ' · ' + report : '') + ' — vérifie puis enregistre (Ctrl+Z pour annuler)', 'ok');
@@ -3012,19 +3228,31 @@ async function regenerateAllAi(opt) {
     .map(ref => ({ ref, ...sectionOf(ref) }));
   const specials = opt.specials && !opt.dropSpecials ? splines.filter(s => s.kind === 'ai_paths' && isSpecialAi(s)) : [];
   let k = 0;
-  for (const sec of sections) sec.n = opt.lanes || Math.round(sec.existing.length / (opt.share?.[sec.ref.name] || 1)) || 5;
+  // nombre de voies : celui demande, sinon celui de la section (au moins 3 : une section restee a 1 voie le gardait a chaque
+  // generation) ; fourche (2026-11-26) : 3 voies par route au plus, serrees au milieu de chacune (pres des raccords les
+  // deux routes se touchent et la largeur mesuree passait d'une route a l'autre : une voie traversait l'ilot)
+  for (const sec of sections) {
+    sec.fork = (sec.start?.next_position?.length || 0) > 1;
+    const e = Math.round(sec.existing.length / (opt.share?.[sec.ref.name] || 1));
+    sec.n = opt.lanes || (e ? Math.max(3, e) : 5);
+    if (sec.fork) sec.n = Math.min(sec.n, 3);
+  }
   // plus de voies en tout que le jeu n'en charge : chaque section ramenee a aiLaneCap() (2026-11-25, T922 : 9 x 5 = 42)
   // (chemins speciaux refaits : une voie chacun, comptee dans le total)
   const capped = specials.length + sections.reduce((a, sec) => a + sec.n, 0) > aiTotalMax;
-  const perSec = Math.max(2, Math.floor((aiTotalMax - specials.length) / Math.max(1, sections.length)));
-  if (capped) for (const sec of sections) sec.n = Math.min(sec.n, perSec);
+  // fourches (2026-11-26) : 2 voies par cote de fourche quand il faut se limiter, le reste aux sections ordinaires
+  const nFork = sections.filter(sec => sec.fork).length, nPlain = sections.length - nFork;
+  const forkCap = capped && nFork ? 2 : 3;
+  const perSec = Math.max(2, Math.floor((aiTotalMax - specials.length - forkCap * nFork) / Math.max(1, nPlain)));
+  if (capped) for (const sec of sections) sec.n = Math.min(sec.n, sec.fork ? forkCap : perSec);
   for (const sec of sections) {                       // calculs d'abord (rien n'est modifie si une requete echoue)
     status(`Génération : section ${++k}/${sections.length}…`);
     // keepAir (parcours cree depuis la route, splines a hauteur de route) : au-dessus d'un trou franchi, les voies
     // gardent la hauteur du parcours au lieu de descendre au fond du trou
-    sec.res = await api('/api/gen_ai_splines', { track, reference: sec.ref.points, lanes: sec.n, randomness: opt.randomness,
+    sec.res = await api('/api/gen_ai_splines', { track, reference: sec.ref.points, lanes: sec.n, randomness: sec.fork ? Math.min(0.3, opt.randomness ?? 0.3) : opt.randomness,
                                                 margin: opt.margin, seed: opt.seed + k, keep_air: !!opt.keepAir,
-                                                ...(opt.spread ? { spread: opt.spread } : {}) });
+                                                ...(sec.fork ? { spread: 0.45, avoid_refs: sec.start.next_position.filter(n => n !== sec.ref.name).map(n => byName(n)?.points).filter(Boolean) }
+                                                    : opt.spread ? { spread: opt.spread } : {}) });
   }
   for (const s of specials) {
     const gaps = s.points.slice(1).map((p, i) => Math.hypot(p[0] - s.points[i][0], p[1] - s.points[i][1]));
@@ -3309,7 +3537,7 @@ async function openRouteCreator() {
   const pre = new Set(lastDecorObjects.length ? lastDecorObjects.map(o => o.id) : pieces.checked);
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const have = pieces.objects.length;
   ov.innerHTML = `<div class="card" style="max-width:560px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:6px"><b>Créer le parcours depuis la route</b></div>
@@ -3419,6 +3647,7 @@ async function pickRoadInDecor(ticked) {
   };
 }
 async function createRoute(chain, source, opt) {
+  if (opt.exact) { clearForks(); chain = raceChain(); }       // routes secondaires d'une creation precedente retirees
   const fin = chain[0].transition;
   let changed = '';
   if (opt.sections && opt.sections !== chain.length) {    // transitions ajoutees / retirees, IA toutes refaites
@@ -3427,13 +3656,16 @@ async function createRoute(chain, source, opt) {
     opt = { ...opt, ai: true };
     changed = ` (${before} → ${chain.length} transitions)`;
   }
+  // routes secondaires (2026-11-26) : chacune dans sa propre section -> au moins 1 + 2 par fourche
+  const forksIn = opt.exact ? (opt.forks || []) : [];
+  if (forksIn.length && chain.length < 1 + 2 * forksIn.length) chain = await setSectionCount(1 + 2 * forksIn.length);
   status(opt.guide ? 'Calcul du tracé depuis le dessin…' : 'Analyse de la route et calcul du tracé…');
   // depart : ligne trouvee (objet Start / Finish, damier) ou ligne d'arrivee actuelle ; la ligne d'arrivee est
   // ensuite placee au debut du parcours cree
   const r = await api('/api/route_layout', { track, source, start: opt.start ? opt.start.pos : fin.position,
     heading: opt.start ? opt.start.yaw : (fin.yaw || 0), reverse: opt.reverse,
     sections: chain.length, respawns: chain.map(c => c.position.respawns || []), max_jump: opt.maxJump ?? 40,
-    ...(opt.guide ? { guide: opt.guide } : {}), ...(opt.exact ? { exact: opt.exact } : {}) });
+    ...(opt.guide ? { guide: opt.guide } : {}), ...(opt.exact ? { exact: opt.exact } : {}), ...(forksIn.length ? { forks: forksIn } : {}) });
   if (r.preview) showRoutePreview(r, source, opt);
   // splines de position et transitions, dans l'ordre de course
   chain.forEach((c, k) => {
@@ -3445,21 +3677,68 @@ async function createRoute(chain, source, opt) {
   designPoses = { ...designPoses, ...r.respawns, ...(opt.neutralize ? r.design_moves : {}) };
   raceEntityPositions = { ...raceEntityPositions, ...(opt.neutralize ? r.race_moves : {}) };
   const br = detachOldBranches(chain);
+  const forkNames = applyForks(chain, r.forks || []);
   let ai = '';
   if (opt.ai) ai = ' · ' + await regenerateAllAi({ lanes: 0, randomness: opt.randomness, margin: 0.15, seed: Math.floor(Math.random() * 1000),
                                                    specials: false, dropSpecials: true, keepAir: true,
-                                                   only: new Set(chain.map(c => c.position.name)), share: br.share });
+                                                   only: new Set([...chain.map(c => c.position.name), ...forkNames]), share: br.share });
   else { select(null); renderPanel(); markDirty(); }
+  forkCheckerLanes();
   return (r.note ? r.note + ' · ' : '') + `Parcours créé : ${Math.round(r.length / 39.37)} m, ${chain.length} sections${changed}, ${Object.keys(r.respawns).length} réapparitions` +
     (r.jumps ? `, ${r.jumps} saut(s) franchi(s)` : '') +
+    ((r.forks || []).length ? `, ${r.forks.length} route(s) secondaire(s)` : '') +
     (br.branches ? `, ${br.branches} branche(s) de l'ancien tracé retirée(s)` : '') +
     (opt.neutralize ? `, ${Object.keys(r.design_moves).length + Object.keys(r.race_moves).length} entités écartées` : '') + ai +
     ' — vérifie puis enregistre (Ctrl+Z pour annuler)';
+}
+// routes secondaires du parcours cree (2026-11-26) : pour chaque fourche, spline de position de la route secondaire (a
+// cote de celle de la section), citee par les transitions de debut et de fin de la section ; embranchements refaits.
+// Celles d'une creation precedente retirees. -> noms des splines de position des routes secondaires
+function clearForks() {
+  for (const sp of splines.filter(x => x.kind === 'position_paths' && x.name.endsWith(FORK_SUFFIX))) {
+    for (const t of Object.values(transitions)) for (const k of ['previous_position', 'next_position'])
+      if (t[k]?.includes(sp.name)) t[k] = t[k].filter(n => n !== sp.name);
+    sp.group?.removeFromParent(); splines = splines.filter(x => x !== sp);
+    if (!sp.isNew && !deleted.includes(sp.name)) deleted.push(sp.name);
+  }
+  edForks = [];
+}
+function applyForks(chain, forks) {
+  const names = [];
+  forks.forEach((f, i) => {
+    const c = chain[f.section], next = chain[(f.section + 1) % chain.length];
+    if (!c || !next) return;
+    const main = c.position, name = main.name + FORK_SUFFIX;
+    // deja dans le fichier (generation precedente, marquee a supprimer par clearForks) : reprise telle quelle (le serveur
+    // cree avant de supprimer : une copie du meme nom aurait ete retiree aussitot)
+    const del = deleted.indexOf(name);
+    if (del >= 0) deleted.splice(del, 1);
+    const sp = del >= 0 ? { name, kind: 'position_paths', points: f.controls, respawns: [] }
+                        : { name, kind: 'position_paths', points: f.controls, isNew: true, template: main.isNew ? main.template : main.name, respawns: [] };
+    splines.push(sp); buildSpline(sp); names.push(name);
+    c.transition.next_position = [main.name, name];
+    next.transition.previous_position = [...new Set([...(next.transition.previous_position || []).filter(n => n !== name), name])];
+    if (!next.transition.previous_position.includes(main.name)) next.transition.previous_position.unshift(main.name);
+    edForks.push({ name: `${FORK_ED}${i + 1}_A`, ...f.checker_main, position_path: main.name, ai_paths: [] },
+                 { name: `${FORK_ED}${i + 1}_B`, ...f.checker_branch, position_path: name, ai_paths: [] });
+  });
+  return names;
+}
+// voies IA de chaque embranchement : celles de la section qui suivent sa route
+function forkCheckerLanes() {
+  for (const f of edForks) {
+    const t = Object.values(transitions).find(x => (x.next_position || []).length > 1 && x.next_position.includes(f.position_path));
+    if (!t) continue;
+    f.ai_paths = t.next_ai.map(byName).filter(Boolean).filter(l => nearestPosition(l, t.next_position) === f.position_path).map(l => l.name);
+  }
 }
 // Apercu de dessus du parcours cree (route grise, parcours jaune, trous en rouge, depart vert) ; on peut dessiner
 // par-dessus : un trait ouvert remplace le morceau du tour entre ses deux bouts, un trait ferme remplace tout le tour ;
 // « Recréer » renvoie le trace obtenu au serveur (guide de route_gen.road_loop).
 let lastRoute = null;                                    // {r, source, opt} du dernier parcours cree
+// largeur libre entre les deux panneaux, pour les fenetres de vue du dessus
+const freeWidth = () => { const cs = getComputedStyle(document.documentElement);
+  return innerWidth - (parseFloat(cs.getPropertyValue('--side')) || 0) - (parseFloat(cs.getPropertyValue('--details')) || 0) - 48; };
 function spliceStroke(G, S) {
   const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const n = G.length, seg = G.map((p, i) => d(p, G[(i + 1) % n])), L = seg.reduce((a, b) => a + b, 0);
@@ -3480,7 +3759,7 @@ function showRoutePreview(r, source, opt) {
   let guide = base, strokes = [], cur = null;
   const box = document.createElement('div'); box.id = 'routeprev';
   box.style.cssText = 'position:fixed;right:calc(var(--details) + 12px);top:calc(var(--top,44px) + 52px);z-index:8;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #000b;padding:8px 10px;max-width:calc(100vw - var(--side) - var(--details) - 24px)';
-  const scale = Math.min(1.4, 560 / pv.w, (innerHeight - 260) / pv.h);
+  const scale = Math.min(1.8, Math.min(720, freeWidth()) / pv.w, (innerHeight - 230) / pv.h);
   box.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b style="flex:1">🗺 Parcours vu de dessus</b>
       <span style="color:var(--muted);font-size:12px">${Math.round(r.length / 39.37)} m</span><button id="rpclose" style="padding:0 8px" title="Fermer">×</button></div>
     <canvas id="rpcanvas" width="${Math.round(pv.w * scale)}" height="${Math.round(pv.h * scale)}" style="display:block;cursor:crosshair;border-radius:6px;touch-action:none"></canvas>
@@ -3722,17 +4001,21 @@ function openAiDraw(startRef) {
   if (!refs.length) { status('Pas de spline de position : crée d\'abord le parcours', 'err'); return; }
   setContext('race'); select(null);
   const box = document.createElement('div'); box.id = 'aidrawbox';
-  box.style.cssText = 'position:fixed;right:calc(var(--details) + 12px);top:calc(var(--top,44px) + 52px);z-index:8;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #000b;padding:8px 10px;max-width:calc(100vw - var(--side) - var(--details) - 24px)';
+  box.style.cssText = 'position:fixed;right:calc(var(--details) + 12px);top:calc(var(--top,44px) + 12px);z-index:8;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #000b;padding:8px 10px;max-width:calc(100vw - var(--side) - var(--details) - 24px)';
   document.body.appendChild(box);
-  const W = Math.min(620, innerWidth - 420);
-  aiDraw = { k: Math.max(0, refs.indexOf(startRef || selected?.spline)), refs, lane: null, cur: null };
+  const W = Math.max(320, Math.min(900, freeWidth()));
+  // mode 'fix' (defaut) : un trait corrige seulement la voie choisie ; 'add' : un trait ajoute une voie (2026-11-27)
+  aiDraw = { k: Math.max(0, refs.indexOf(startRef || selected?.spline)), refs, lane: null, cur: null, mode: 'fix' };
   const D = aiDraw;
   box.innerHTML = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><b style="flex:1">✏ Splines IA vues du dessus</b>
       <button id="adprev" title="Section précédente">◀</button><span id="adname" style="font-size:12px;min-width:120px;text-align:center"></span>
       <button id="adnext" title="Section suivante">▶</button><button id="adclose" style="padding:0 8px" title="Fermer">×</button></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+      <span class="tabs"><button id="admfix" title="Un trait corrige seulement la voie choisie, entre les deux bouts du trait">✏ Corriger une voie</button><button id="admadd" title="Un trait d'un bout à l'autre de la section ajoute une nouvelle voie">➕ Ajouter une voie</button></span>
+      <select id="adlane" style="background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px" title="Voie à corriger (ou clic sur une voie dans l'image)"></select></div>
     <canvas id="adcv" style="display:block;cursor:crosshair;border-radius:6px;touch-action:none"></canvas>
     <div id="adinfo" style="font-size:11.5px;color:var(--muted);margin:6px 0;max-width:${W}px"></div>
-    <div class="btns" style="display:flex;gap:6px;flex-wrap:wrap"><button id="adundo">↶ Annuler</button><button id="addesel">Aucune voie (nouvelle)</button>
+    <div class="btns" style="display:flex;gap:6px;flex-wrap:wrap"><button id="adundo">↶ Annuler</button>
       <button id="addel" class="danger">🗑 Supprimer la voie</button>
       <button id="addelall" class="danger" title="Retire toutes les voies IA de cette section, pour en dessiner de nouvelles">🗑 Supprimer toutes les splines de la section</button><span style="flex:1"></span>
       <label style="font-size:12px;display:flex;gap:4px;align-items:center" title="Les deux bouts de la voie restent à leur place : raccords aux transitions gardés"><input type="checkbox" id="adkeep" checked> Garder les bouts</label></div>`;
@@ -3762,13 +4045,15 @@ function openAiDraw(startRef) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
     for (const p of pts) { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); z1 = Math.max(z1, p[2]); }
     const m = 25 * 39.37; x0 -= m; y0 -= m; x1 += m; y1 += m;
-    const H = Math.max(160, Math.min(innerHeight - 280, Math.round(W * (y1 - y0) / (x1 - x0))));
+    const H = Math.max(200, Math.min(innerHeight - 230, Math.round(W * (y1 - y0) / (x1 - x0))));
     const w = (y1 - y0) * W / H;                                   // largeur ajustee au cadre (pas de deformation)
     const cx = (x0 + x1) / 2; x0 = cx - Math.max(w, x1 - x0) / 2; x1 = cx + Math.max(w, x1 - x0) / 2;
     const h = (x1 - x0) * H / W, cy = (y0 + y1) / 2; y0 = cy - h / 2; y1 = cy + h / 2;
     cv.width = W; cv.height = H;
     view = { x0, y0, x1, y1, W, H };
-    const cam = new THREE.OrthographicCamera(x0 - cx, x1 - cx, y1 - cy, y0 - cy, 1, 1e7);
+    // rien au-dessus de 40 m au-dessus du trace (2026-11-27) : une map importee avec un objet qui l'enveloppe (volume
+    // de brouillard « Height_Fog » de MoltenMile, ciel en boite) ne montrait que le toit de cet objet, tout gris
+    const cam = new THREE.OrthographicCamera(x0 - cx, x1 - cx, y1 - cy, y0 - cy, 200000 - 40 * 39.37, 1e7);
     cam.position.set(cx, cy, z1 + 200000); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
     const rt = new THREE.WebGLRenderTarget(W, H);
     const hide = [root, markers, gizmo, animGroup, weatherFx?.group].filter(Boolean).map(o => [o, o.visible]);
@@ -3777,6 +4062,8 @@ function openAiDraw(startRef) {
       instPrepare(); renderer.setRenderTarget(rt); renderer.render(scene, cam);
       const px = new Uint8Array(W * H * 4); renderer.readRenderTargetPixels(rt, 0, 0, W, H, px);
       const id = ctx.createImageData(W, H);
+      const lut = new Uint8Array(256); for (let i = 0; i < 256; i++) lut[i] = Math.min(255, Math.round(255 * Math.pow(i / 255, 0.6) * 1.08 + 10));
+      for (let i = 0; i < px.length; i += 4) { px[i] = lut[px[i]]; px[i + 1] = lut[px[i + 1]]; px[i + 2] = lut[px[i + 2]]; px[i + 3] = 255; }
       for (let r = 0; r < H; r++) id.data.set(px.subarray((H - 1 - r) * W * 4, (H - r) * W * 4), r * W * 4);
       img = id;
     } finally { renderer.setRenderTarget(null); instRestore(); hide.forEach(([o, v]) => o.visible = v); rt.dispose(); }
@@ -3803,10 +4090,17 @@ function openAiDraw(startRef) {
     if (D.cur) poly(D.cur, '#ffffff', 2);
     box.querySelector('#adname').textContent = `Section ${D.k + 1} / ${D.refs.length}`;
     box.querySelector('#addel').disabled = !D.lane;
+    // mode et liste des voies de la section (2026-11-27)
+    box.querySelector('#admfix').classList.toggle('on', D.mode === 'fix');
+    box.querySelector('#admadd').classList.toggle('on', D.mode === 'add');
+    const sl = box.querySelector('#adlane'), ls = lanes();
+    sl.hidden = D.mode !== 'fix';
+    sl.innerHTML = `<option value="">— choisis la voie à corriger —</option>` + ls.map((l, i) => `<option value="${i}" ${l === D.lane ? 'selected' : ''}>${esc(l.name)}</option>`).join('');
     // morceaux dans des <span> separes : chacun est traduit a part (i18n.js)
-    box.querySelector('#adinfo').innerHTML = `<span>Jaune : la spline de position (flèche = sens) · bleu : les ${lanes().length} voies IA de la section</span>`
-      + (D.lane ? ` · <b style="color:#ff8c1a">${esc(D.lane.name)}</b> <span>sélectionnée : dessine par-dessus pour corriger la portion entre les deux bouts de ton trait.</span>`
-                : ' <span>· aucune voie sélectionnée : clique une voie, ou dessine d\'un bout à l\'autre de la section pour</span> <b>ajouter une voie</b>.');
+    box.querySelector('#adinfo').innerHTML = `<span>Jaune : la spline de position (flèche = sens) · bleu : les ${ls.length} voies IA de la section</span>`
+      + (D.mode === 'add' ? ' · <span>dessine d\'un bout à l\'autre de la section pour</span> <b>ajouter une voie</b>.'
+         : D.lane ? ` · <b style="color:#ff8c1a">${esc(D.lane.name)}</b> <span>sélectionnée : dessine par-dessus pour corriger la portion entre les deux bouts de ton trait.</span>`
+         : ' · <span>choisis la voie à corriger (clic sur elle ou dans la liste), puis dessine par-dessus : seule la portion entre les deux bouts de ton trait change.</span>');
   };
   const at = e => { const b = cv.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; };
   const nearestLane = (u, v) => {
@@ -3828,11 +4122,17 @@ function openAiDraw(startRef) {
   cv.onpointerup = e => {
     const stroke = D.cur; D.cur = null;
     const [u, v] = at(e), click = !downAt || Math.hypot(u - downAt[0], v - downAt[1]) < 5;
-    if (click || !stroke || stroke.length < 3) {                 // simple clic : choisir une voie
-      D.lane = nearestLane(u, v); draw(); return;
+    if (click || !stroke || stroke.length < 3) {                 // simple clic : choisir une voie (a corriger)
+      D.lane = nearestLane(u, v); if (D.lane) D.mode = 'fix'; draw(); return;
     }
     const keep = box.querySelector('#adkeep').checked;
-    if (D.lane) {                                                // portion de la voie remplacee par le trait
+    // mode Corriger sans voie choisie : celle sous le debut du trait ; jamais de nouvelle voie dans ce mode
+    if (D.mode === 'fix' && !D.lane) {
+      const [u0, v0] = uv(stroke[0]);
+      D.lane = nearestLane(u0, v0);
+      if (!D.lane) { status('Choisis d\'abord la voie à corriger (clic sur elle ou dans la liste), ou commence ton trait sur elle', 'err'); draw(); return; }
+    }
+    if (D.mode === 'fix') {                                      // portion de la voie remplacee par le trait
       const P = D.lane.points, d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
       let i = 0, j = 0;
       P.forEach((p, k) => { if (d2(p, stroke[0]) < d2(P[i], stroke[0])) i = k; if (d2(p, stroke[stroke.length - 1]) < d2(P[j], stroke[stroke.length - 1])) j = k; });
@@ -3853,13 +4153,16 @@ function openAiDraw(startRef) {
       try {
         const rep = applyGeneratedLanes(r, [pts], { ...sec, replace: false, join: true, quiet: true });
         markDirty(); laneMap = null; D.lane = splines[splines.length - 1]?.kind === 'ai_paths' ? splines[splines.length - 1] : null;
+        if (D.lane) D.mode = 'fix';                               // voie ajoutee : choisie, prete a etre corrigee
         status('Nouvelle voie IA ajoutée à la section' + (rep ? ' · ' + rep : '') + ' — Ctrl+Z pour annuler', 'ok');
       } catch (err) { status('Erreur : ' + err.message, 'err'); }
     }
     draw();
   };
   box.querySelector('#adundo').onclick = () => { undo(); laneMap = null; D.lane = D.lane && splines.includes(D.lane) ? D.lane : null; setTimeout(draw, 50); };
-  box.querySelector('#addesel').onclick = () => { D.lane = null; draw(); };
+  box.querySelector('#admfix').onclick = () => { D.mode = 'fix'; draw(); };
+  box.querySelector('#admadd').onclick = () => { D.mode = 'add'; D.lane = null; draw(); };
+  box.querySelector('#adlane').onchange = e => { D.lane = e.target.value === '' ? null : lanes()[+e.target.value] || null; draw(); };
   box.querySelector('#addel').onclick = () => {
     if (!D.lane) return;
     if (!removeAiSpline(D.lane)) { status('Impossible : une transition n\'aurait plus aucune voie IA', 'err'); return; }
@@ -3982,7 +4285,7 @@ function softDragApply() {
 function openRegenerateAll() {
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const nsec = splines.filter(s => s.kind === 'position_paths').length, nai = splines.filter(s => s.kind === 'ai_paths').length;
   ov.innerHTML = `<div class="card" style="max-width:480px;width:100%;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:6px"><b>Régénérer toutes les splines IA</b></div>
@@ -4107,6 +4410,7 @@ addEventListener('keydown', e => {
   if (e.key === 'Insert') insertAfter();
 });
 function markDirty() {
+  if (mode === 'decor' && boosts.some(b => b.obj) && syncObjectBoosts()) renderBoostMarkers();   // objets booster
   dirty = true; status('Modifications non enregistrées'); if (!gizmo.dragging) pushHistory();
   if (mode === 'decor') scheduleCollisionMask();
 }
@@ -4655,7 +4959,7 @@ renderer.domElement.addEventListener('pointerdown', e => {
   e.preventDefault(); e.stopImmediatePropagation();
   orbit.enabled = false; gizmo.enabled = false;
   const el = document.createElement('div');
-  el.style.cssText = 'position:fixed;z-index:20;border:1px dashed var(--accent);background:#f2b13422;pointer-events:none';
+  el.style.cssText = 'position:fixed;z-index:20;border:1px dashed var(--accent);background:#ffab1f22;pointer-events:none';
   document.body.appendChild(el);
   boxDrag = { x0: e.clientX, y0: e.clientY, el, add: e.shiftKey || e.ctrlKey || e.metaKey };
   renderer.domElement.setPointerCapture?.(e.pointerId);
@@ -4788,7 +5092,7 @@ function selectionGroup() {                                // index du groupe si
 function askText(title, value) {
   return new Promise(resolve => {
     const ov = overlayCard(`<div style="margin-bottom:8px"><b>${esc(title)}</b></div>
-      <input id="atxt" type="text" maxlength="60" style="width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:5px 7px">
+      <input id="atxt" type="text" maxlength="60" style="width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:5px 7px">
       <div class="btns" style="justify-content:flex-end;margin-top:10px"><button id="atno">Annuler</button><button id="atok" class="primary">OK</button></div>`, 380);
     const i = ov.querySelector('#atxt'); i.value = value; setTimeout(() => { i.focus(); i.select(); }, 0);
     const done = v => { ov.remove(); resolve(v); };
@@ -5025,6 +5329,13 @@ async function openDecorMenu(x, y) {
              title: 'modèle importé seul : collision seule, les autres objets du même modèle changent aussi' })
     + item('Murs invisibles autour de la sélection…', 'zone', { disabled: sel.every(m => m.userData.obj.invisible),
              title: 'le long des bords de ces objets, jamais sur le parcours' })
+    // objet booster (2026-11-27) : un turbo du jeu (puissance, reserve) quand un kart roule dessus ou le traverse
+    + (sel.some(m => objBoostIndex(m) >= 0)
+      ? item('⚡ Réglages du booster…', 'boostset', { title: 'puissance du turbo et réserve d\'énergie' })
+        + (sel.some(m => objBoostIndex(m) < 0 && !m.userData.isNew) ? item('⚡ Effet booster aussi pour les autres…', 'boostadd') : '')
+        + item('Retirer l\'effet booster', 'boostdel')
+      : item('⚡ Effet booster (turbo)…', 'boostadd', { disabled: sel.every(m => m.userData.isNew),
+             title: sel.every(m => m.userData.isNew) ? 'enregistre d\'abord les copies' : 'l\'objet donne un turbo quand un kart roule dessus ou le traverse : puissance et réserve au choix' }))
     + sep
     + item('✏ Modifier la forme et les textures…', 'shape', { disabled: !(one && !obj.invisible),
              title: 'points déplaçables au gizmo, une texture par face ; l\'objet devient un modèle importé' })
@@ -5099,6 +5410,9 @@ async function openDecorMenu(x, y) {
     if (a === 'glow') return obj.glow == null ? glowGameObject(one) : setObjectGlow(one, !obj.glow);
     if (a === 'wall') return setInvisible(one, !obj.invisible);
     if (a === 'zone') { $('dwallzone').click(); return; }
+    if (a === 'boostadd') return addObjectBoost(sel);
+    if (a === 'boostset') return editObjectBoost(sel);
+    if (a === 'boostdel') return removeObjectBoost(sel);
     if (a === 'mv' || a === 'rot' || a === 'scl') { gizmo.setMode({ mv: 'translate', rot: 'rotate', scl: 'scale' }[a]); return; }
     if (a === 'focus') return focusSelection();
     if (a === 'drop') return dropDecorOnGround(sel);
@@ -5165,7 +5479,7 @@ function editSurfacePhys(list, surfaces) {
   const pct = v => Math.round(v * 100);
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:30;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const names = [...groups.keys()].map(s => surfaceLabel(s, surfaces)).join(', ');
   ov.innerHTML = `<div class="card" style="max-width:400px;width:100%;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:4px"><b>Vitesse et glissade du sol</b></div>
@@ -5278,7 +5592,7 @@ $('dmovez').onclick = () => {
   const fits = (b, off) => ob && b && [0, 1, 2].every(k => b[k][0] + off[k] >= ob[0][k] - M && b[k][1] + off[k] <= ob[1][k] + M);   // 1 m de tolerance (arrondis)
   let killz = null;                                     // plancher de chute : un kart qui tombe doit reapparaitre DANS l'emprise
   api('/api/scene_points', { track, names: [] }).then(r => { killz = r.killz; check(); }).catch(() => {});
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const ov = overlayCard(`<div style="margin-bottom:8px"><b>Déplacer toute la map</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Tout bouge ensemble : les ${all.length} objets du décor (la collision
     suit), le parcours et les splines IA, la grille, les caisses, les boosters, les zones de chute, les réapparitions, les lumières,
@@ -5331,7 +5645,7 @@ $('dscale').onclick = () => {
   const all = [...allDecorMeshes].filter(m => m.parent);
   const box = new THREE.Box3(); all.forEach(m => box.expandByPoint(m.position));
   const pivot = fin ? [...fin.position] : box.isEmpty() ? [0, 0, 0] : box.getCenter(new THREE.Vector3()).toArray();
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const ov = overlayCard(`<div style="margin-bottom:8px"><b>Changer l'échelle de toute la map</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Tout grandit ou rétrécit autour
     ${fin ? 'de la ligne d\'arrivée (elle ne bouge pas)' : 'du centre de la map'} : les ${all.length} objets du décor
@@ -5481,7 +5795,7 @@ $('dwallzone').onclick = async () => {
   const chosen = dMulti.filter(m => !m.userData.obj.invisible);
   if (!chosen.length) { status('Clique d\'abord une ou plusieurs parties de la map dans la vue 3D (Maj+clic pour en ajouter), puis « Murs autour de la sélection… »', 'err'); return; }
   if (chosen.some(m => m.userData.isNew)) { status('La sélection contient des copies pas encore enregistrées : enregistre le décor d\'abord', 'err'); return; }
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const names = chosen.slice(0, 6).map(m => esc(m.userData.obj.name || 'objet')).join(', ') + (chosen.length > 6 ? ` … (+${chosen.length - 6})` : '');
   const ov = overlayCard(`<div style="margin-bottom:8px"><b>Murs invisibles autour de la sélection</b></div>
     <div style="font-size:12px;margin-bottom:6px">${chosen.length} objet(s) : ${names}</div>
@@ -5506,7 +5820,7 @@ $('dwallzone').onclick = async () => {
   };
 };
 $('dwallauto').onclick = () => {
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const ov = overlayCard(`<div style="margin-bottom:8px"><b>Murs invisibles le long de la route</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Le long des deux bords de la ligne de course enregistrée (crée
     d'abord le parcours). Un mur est posé là où il n'y a plus de sol au niveau de la route (vide, chute) et, si tu coches la case,
@@ -5542,7 +5856,7 @@ $('dmarks').onclick = () => {
     ${ck('center', 'Ligne centrale en tirets', 'Tirets de 3 m tous les 9 m')}
     ${ck('curbs', 'Vibreurs dans les virages', "Bandes rouges et blanches à l'intérieur des virages serrés")}
     <label style="display:block;margin-top:8px" title="0 = mesurée sur la collision. Une largeur fixe, centrée sur la ligne de course, quand la route et ses bas-côtés ont le même sol (sable de Crash Cove…) et que la mesure déborde">Largeur de la route (m, 0 = mesurée)
-      <input id="mkw" type="number" min="0" max="80" step="1" value="${+saved.width || 0}" style="width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin-top:2px"></label>
+      <input id="mkw" type="number" min="0" max="80" step="1" value="${+saved.width || 0}" style="width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin-top:2px"></label>
     <div class="btns" style="justify-content:space-between;margin-top:10px"><button id="mkdel" class="danger">Tout retirer</button>
       <span><button id="mkno">Annuler</button> <button id="mkyes" class="primary">Peindre</button></span></div>`, 480);
   const q = s => ov.querySelector(s);
@@ -5703,7 +6017,7 @@ function arrangeDecor(mode) {
 // Copies = duplications ordinaires (Enregistrer, Ctrl+Z), posees au sol, groupees avec l'objet si demande.
 function repeatDialog(m) {
   return new Promise(resolve => {
-    const fld = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+    const fld = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
     const ov = overlayCard(`<div style="margin-bottom:8px"><b>↔ Répéter le long de la route</b></div>
       <div class="note2" style="margin:0 0 8px">${esc(m.userData.obj.name || 'objet')} : copies au même écart de la route, tournées comme elle, posées au sol.</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -5884,6 +6198,12 @@ function renderDecorSel(valuesOnly) {
         <button id="dsamesel" title="Sélectionne toutes les copies : déplacer, tourner, dupliquer, cacher en groupe">Sélectionner tous</button>
         <button id="dsamedel" class="danger" title="Supprime toutes les copies (Ctrl+Z pour annuler)">Supprimer tous</button>
       </div></div>` : ''}
+    ${objBoostIndex(m) >= 0 ? (b => `<div class="ins"><h4>⚡ Booster</h4>
+      <div style="display:flex;gap:8px;align-items:center;font-size:12px">
+      <span>Puissance <b>${b.speed}</b> · réserve <b>${b.duration} s</b></span>
+      <button id="dboostset" style="margin-left:auto;padding:3px 8px" title="Puissance du turbo et réserve d'énergie">⚙ Réglages…</button></div>
+      <div class="note2" style="margin:4px 0 0">Turbo en roulant sur l'objet ou en le traversant (zone jaune : boîte de l'objet + 4 m au-dessus).</div>
+      <div class="btns" style="margin-top:4px"><button id="dboostdel">Retirer l'effet booster</button></div></div>`)(boosts[objBoostIndex(m)]) : ''}
     <div class="ins"><h4>Infos</h4>
       <div style="color:#ff8a8a;font-size:11px">Collision liée (rouge) : ${esc(m.userData.linkNote || 'recherche…')}</div>
     ${obj.library ? `<div style="margin-top:6px;font-size:12px">📚 Objet de la bibliothèque (de ${esc(obj.library)})</div>` : ''}
@@ -5910,6 +6230,7 @@ function renderDecorSel(valuesOnly) {
     decorChanged();
   });
   $('ddup').onclick = duplicateDecor; $('ddel').onclick = deleteDecor;
+  if ($('dboostset')) { $('dboostset').onclick = () => editObjectBoost([m]); $('dboostdel').onclick = () => removeObjectBoost([m]); }
   $('ddrop').onclick = () => dropDecorOnGround();
   $('drepeat').onclick = () => repeatAlongRoad(m);
   $('dfocus').onclick = () => focusOn(m.position.toArray());
@@ -6133,7 +6454,7 @@ function meRenderPanel() {
         <button id="mefall">Toutes</button><button id="mefdel" class="danger" ${me.selF.size ? '' : 'disabled'}>Supprimer</button></div>
       <label style="color:var(--muted)">Texture des faces choisies
         <input id="metex" list="metexl" placeholder="chercher : wood, rock, sand…" ${me.selF.size ? '' : 'disabled'}
-          style="width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;margin-top:2px"></label>
+          style="width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px;margin-top:2px"></label>
       <datalist id="metexl"></datalist>`}
     <div style="margin:8px 0 4px;color:var(--muted)">Textures de l'objet</div>
     ${used.map(([p, k]) => `<div style="display:flex;gap:6px;align-items:center;margin:2px 0">
@@ -6444,6 +6765,11 @@ function duplicateDecor() {
 function deleteDecor() {
   if (!dMulti.length) return;
   const gone = dMulti;
+  if (gone.some(m => objBoostIndex(m) >= 0)) {               // objet booster supprime : son booster aussi
+    const keys = new Set(gone.map(m => m.userData.file + '|' + m.userData.obj?.id));
+    boosts = boosts.filter(b => !(b.obj && keys.has(b.obj.file + '|' + b.obj.id)));
+    renderBoostMarkers();
+  }
   setDecorSelection([]);
   for (const m of gone) {
     const { obj, file } = m.userData, e = editsOf(file);
@@ -6981,7 +7307,7 @@ function postcardPicker(opts) {
   const paint = async () => {
     const gen = ++paintGen, clean = q('#pcclean').checked;
     q('#pcgrid').innerHTML = PC_VIEWS.map(([k, label]) => `<div class="pccell" data-k="${k}" data-ok="1" style="cursor:pointer;border:2px solid var(--line);border-radius:6px;padding:3px">
-        <div class="pcimg" style="aspect-ratio:${opts.W}/${opts.H};background:#1d2026;display:flex;align-items:center;justify-content:center;border-radius:4px;overflow:hidden">
+        <div class="pcimg" style="aspect-ratio:${opts.W}/${opts.H};background:var(--field);display:flex;align-items:center;justify-content:center;border-radius:4px;overflow:hidden">
           <span style="font-size:11px;color:var(--muted)">…</span></div>
         <div style="font-size:11px;margin-top:3px;display:flex;gap:4px;align-items:center">${many ? '<input type="checkbox" tabindex="-1">' : ''}<span>${esc(label)}</span></div></div>`).join('');
     ov.querySelectorAll('.pccell').forEach(c => c.onclick = () => {
@@ -7311,7 +7637,7 @@ async function saveDecor(opts = {}) {
 $('dimport').onclick = () => {
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   ov.innerHTML = `<div class="card" style="max-width:640px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:8px"><b>Importer un modèle ou une scène OBJ</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Un modèle est créé par objet Blender et par matériau
@@ -7398,7 +7724,7 @@ $('dimport').onclick = () => {
     const [w, d, h] = up ? m : [m[0], m[2], m[1]];
     box.textContent = `Taille obtenue : ${w.toFixed(1)} × ${d.toFixed(1)} m, hauteur ${h.toFixed(1)} m` +
       (Math.max(w, d) > 3000 ? ' — très grand : vérifie l\'unité' : Math.max(w, d) < 20 ? ' — très petit : vérifie l\'unité' : '') +
-      ' (une piste CTR fait ~20 à 40 m de large).';
+      ' (une piste CTR fait ~30 à 70 m de large).';
   };
   ov.querySelector('#iscale').onchange = showSize;
   ov.querySelector('#icustom').oninput = showSize;
@@ -7458,7 +7784,7 @@ $('dlib').onclick = async () => {
   closeLib(); closeAnim();
   const ov = document.createElement('div');
   ov.id = 'libPanel';
-  const field = 'background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  const field = 'background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
   const groups = [...new Set(libCatalog.map(m => m.group))].sort((a, b) => a.localeCompare(b));
   ov.innerHTML = `<div class="dhead" style="display:flex;align-items:center;gap:6px"><span style="flex:1">📚 Objets du jeu</span>
       <button id="lcancel" title="Fermer la bibliothèque (Échap)">✕</button></div>
@@ -7469,7 +7795,7 @@ $('dlib').onclick = async () => {
       <optgroup label="Catégories d'objets"><option value="@ramp">⤴ Rampes, tremplins et half-pipes (${new Set(libCatalog.filter(m => m.kind === 'ramp').map(m => m.name)).size})</option></optgroup>
       <optgroup label="Pistes et dossiers">${groups.map(g => `<option>${esc(g)}</option>`).join('')}</optgroup></select>
     <div id="ll" style="overflow:auto;height:28vh;min-height:140px;border:1px solid var(--line);border-radius:6px;padding:2px"></div>
-    <div id="lv" style="width:100%;height:200px;margin-top:6px;border-radius:6px;overflow:hidden;background:#101216;position:relative">
+    <div id="lv" style="width:100%;height:200px;margin-top:6px;border-radius:6px;overflow:hidden;background:var(--deep);position:relative">
       <div id="lvmsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:12px">Choisis un objet dans la liste pour le voir ici.</div></div>
     <div id="linfo" style="font-size:12px;margin:6px 0;min-height:34px"></div>
     <label style="display:flex;gap:6px;align-items:center;font-size:12px;margin:4px 0">Rotation (°)
@@ -7918,14 +8244,14 @@ $('danim').onclick = async () => {
   }
   const ov = document.createElement('div');
   ov.id = 'libPanel';
-  const field = 'background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  const field = 'background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
   ov.innerHTML = `<div class="dhead" style="display:flex;align-items:center;gap:6px"><span style="flex:1">🎞 Objets animés</span>
       <button id="acancel" title="Fermer (Échap)">✕</button></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Animaux, personnages, bannières, ballons, voiles… des autres pistes, qui
     <b>bougent en jeu</b>. Sur la piste, ils sont montrés dans leur pose de départ en jeu ; ceux qui se déplacent ont leur trajet en pointillés orange. Ils sont copiés dans la piste à l'installation.</div>
     <input id="aq" placeholder="chercher : penguin, chicken, banner, balloon, bear…" style="${field};width:100%;margin-bottom:4px">
     <div id="al" style="overflow:auto;height:22vh;min-height:120px;border:1px solid var(--line);border-radius:6px;padding:2px"></div>
-    <div id="av" style="width:100%;height:170px;margin-top:6px;border-radius:6px;overflow:hidden;background:#101216;position:relative">
+    <div id="av" style="width:100%;height:170px;margin-top:6px;border-radius:6px;overflow:hidden;background:var(--deep);position:relative">
       <div id="avmsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:12px">Choisis un objet dans la liste pour le voir ici.</div></div>
     <label id="aanimrow" style="display:none;gap:6px;align-items:center;font-size:12px;margin:4px 0">Animation
       <select id="aanim" style="${field};flex:1;min-width:0"></select></label>
@@ -8112,12 +8438,12 @@ $('danim').onclick = async () => {
 $('dfolder').onclick = () => {
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   let lastFolder = 'map';
   try { lastFolder = localStorage.getItem('ctr_import_folder') || 'map'; } catch (e) { /* sans importance */ }
   ov.innerHTML = `<div class="card" style="max-width:680px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line)">
-    <div style="margin-bottom:8px"><b>Importer un dossier (OBJ ou DAE + textures)</b></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Le fichier .obj (avec son .mtl) ou .dae (COLLADA) du dossier est importé : chaque matériau reçoit
+    <div style="margin-bottom:8px"><b>Importer un dossier (OBJ, DAE ou GLB + textures)</b></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Le fichier .obj (avec son .mtl), .dae (COLLADA) ou .glb / .gltf (glTF, textures intégrées comprises) du dossier est importé : chaque matériau reçoit
     sa texture (image <code>map_Kd</code> convertie pour le jeu, 1024×1024 ; couleur unie si l'image manque). Les images déjà importées sont réutilisées.
     Utilise la colonne « Transp. » pour la transparence (feuillages). Grosse map : plusieurs minutes.</div>
     <div style="display:flex;gap:6px;align-items:flex-end"><label style="flex:1">Dossier (relatif au projet, ou chemin complet)
@@ -8126,17 +8452,18 @@ $('dfolder').onclick = () => {
       <button id="fscan" style="margin-bottom:8px">Analyser</button></div>
     <div id="finfo" style="font-size:12px;color:var(--muted);margin-bottom:8px">Clique sur « Analyser ».</div>
     <div id="fopts" hidden>
-      <div style="margin-bottom:4px">Fichiers .obj / .dae <span style="color:var(--muted);font-size:11px">(plusieurs : importés ensemble, même échelle et même placement)</span></div>
+      <div style="margin-bottom:4px">Fichiers .obj / .dae / .glb <span style="color:var(--muted);font-size:11px">(plusieurs : importés ensemble, même échelle et même placement)</span></div>
       <div id="ffiles" style="font-size:12px;max-height:18vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 6px;margin-bottom:8px"></div>
       <details id="felbox" style="margin-bottom:8px"><summary style="cursor:pointer">Éléments à importer <span id="felcount" style="color:var(--muted);font-size:12px"></span></summary>
         <div style="display:flex;gap:6px;align-items:center;margin:4px 0">
-          <input id="felq" placeholder="filtrer par nom…" style="flex:1;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px">
+          <input id="felq" placeholder="filtrer par nom…" style="flex:1;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px">
           <span class="btns"><button id="felall" title="Coche les éléments affichés (filtre)">Tout cocher</button><button id="felnone" title="Décoche les éléments affichés (filtre)">Tout décocher</button></span></div>
         <div id="fels" style="font-size:12px;max-height:28vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 6px"></div>
         <div style="font-size:11px;color:var(--muted);margin-top:3px">Les matériaux et l'échelle proposée se mettent à jour d'après les éléments cochés.</div></details>
       <label>Placement<select id="fplace" style="${field}"><option value="view">route (ou centre-bas de la scène) au centre de la vue</option>
         <option value="absolute">coordonnées de l'OBJ = coordonnées du jeu</option></select></label>
       <label>Mètres par unité de l'OBJ<input id="fscale" type="number" step="any" value="1" style="${field}"></label>
+      <div id="froad" style="font-size:12px;color:var(--muted);margin:-4px 0 8px"></div>
       <label>Axe vertical<select id="fup" style="${field}"><option value="y">Y (export Blender par défaut)</option><option value="z">Z</option></select></label>
       <label>Taille des textures<select id="ftsize" style="${field}"><option value="auto">1024, et 512 pour le décor de fond (conseillé)</option>
         <option value="512">tout en 512 (map plus légère)</option><option value="1024">tout en 1024</option></select></label>
@@ -8152,15 +8479,16 @@ $('dfolder').onclick = () => {
   q('#fno').onclick = () => ov.remove();
   let scan = null;
   const showSize = () => {
-    if (!scan?.bounds) { q('#fsize').textContent = ''; return; }
+    if (!scan?.bounds) { q('#fsize').textContent = q('#froad').textContent = ''; return; }
     const e = scan.bounds[1].map((h, k) => (h - scan.bounds[0][k]) * parseFloat(q('#fscale').value || 1));
     const [w, d, h] = q('#fup').value === 'z' ? e : [e[0], e[2], e[1]];
     const sc = parseFloat(q('#fscale').value || 1);
     const rw = scan.road_width_raw ? scan.road_width_raw * sc : null;
-    q('#fsize').innerHTML = `Taille obtenue (tout le fichier, décor de fond compris) : ${w.toFixed(0)} × ${d.toFixed(0)} m, hauteur ${h.toFixed(0)} m.<br>`
-      + (rw ? `<b style="color:${rw < 15 || rw > 60 ? 'var(--err)' : 'var(--ok)'}">Route (${esc(scan.road_material)}) : ${rw.toFixed(0)} m de large</b>`
-              + ` avec cette échelle (une route CTR : 20 à 40 m ; proposé : ${scan.scale}).`
-            : `Échelle proposée ${esc(scan.scale_reason || '')}. Vérifie après l'import qu'une route fait 20 à 40 m de large.`);
+    q('#fsize').textContent = `Taille obtenue (tout le fichier, décor de fond compris) : ${w.toFixed(0)} × ${d.toFixed(0)} m, hauteur ${h.toFixed(0)} m.`;
+    // largeur de route juste sous l'echelle (2026-11-27) ; route standard : 30 a 70 m
+    q('#froad').innerHTML = rw ? `<b style="color:${rw < 30 || rw > 70 ? 'var(--err)' : 'var(--ok)'}">Route (${esc(scan.road_material)}) : ${rw.toFixed(0)} m de large</b>`
+              + ` avec cette échelle (une route CTR : 30 à 70 m ; proposé : ${scan.scale}).`
+            : `Échelle proposée ${esc(scan.scale_reason || '')}. Vérifie après l'import qu'une route fait 30 à 70 m de large.`;
   };
   q('#fscale').oninput = showSize; q('#fup').onchange = showSize;
   const renderMats = () => {
@@ -8209,7 +8537,8 @@ $('dfolder').onclick = () => {
     const all = (scan.elements || []).map(elKey);
     selObjects ??= new Set(all);
     keys.forEach(k => on ? selObjects.add(k) : selObjects.delete(k));
-    if (selObjects.size === all.length) selObjects = null;
+    // tout coche a la main : la liste reste explicite (null = « rien choisi » : le serveur decocherait de nouveau les
+    // volumes de brouillard / ciel recoches, 2026-11-27)
     renderElements();
     if (selObjects?.size === 0) { q('#fyes').disabled = true; q('#finfo').textContent = 'Coche au moins un élément.'; return; }
     rescanSoon();
@@ -8228,9 +8557,12 @@ $('dfolder').onclick = () => {
       if (tok !== scanTok) return;
       scan = r;
       selFiles = scan.files;
+      // volumes de brouillard / ciel decoches d'office par le serveur (2026-11-27) : la selection part de la sienne
+      if (!selObjects && scan.auto_excluded?.length) selObjects = new Set(scan.objects);
       renderFiles(); renderElements();
       const found = scan.materials.filter(m => m.texture).length;
-      q('#finfo').textContent = `${scan.folder} : ${scan.obj}${selObjects ? ` (${selObjects.size} élément(s) choisi(s))` : ''} — ${scan.vertices} sommets, ${scan.triangles} triangles, ${scan.materials.length} matériaux (${found} avec texture trouvée), ${scan.images} image(s) dans le dossier.`;
+      q('#finfo').textContent = `${scan.folder} : ${scan.obj}${selObjects ? ` (${selObjects.size} élément(s) choisi(s))` : ''} — ${scan.vertices} sommets, ${scan.triangles} triangles, ${scan.materials.length} matériaux (${found} avec texture trouvée), ${scan.images} image(s) dans le dossier.`
+        + (scan.auto_excluded?.length ? ` Décoché(s) d'office (volume de brouillard / ciel, une boîte géante en jeu) : ${scan.auto_excluded.map(k => k.split('|').pop()).join(', ')}.` : '');
       q('#fopts').hidden = false; q('#fyes').disabled = false;
       // proposes pour ce fichier : axe du fichier (.dae : up_axis) et echelle donnant ~500 m de cote
       q('#fup').value = scan.up || 'y'; q('#fscale').value = scan.scale ?? 1;
@@ -8259,8 +8591,8 @@ $('dfolder').onclick = () => {
     // echelle qui donne une route absurde (ex. 1 au lieu de 0,1 : map de 4 km, editeur bloque) : confirmation
     const sc = parseFloat(q('#fscale').value || 1), rw = scan.road_width_raw ? scan.road_width_raw * sc : null;
     let force = false;
-    if (rw && (rw < 8 || rw > 80)) {
-      if (!(await ask(`Avec l'échelle ${sc}, la route ferait ${rw.toFixed(0)} m de large (une route CTR : 20 à 40 m ; échelle proposée : ${scan.scale}). `
+    if (rw && (rw < 15 || rw > 140)) {
+      if (!(await ask(`Avec l'échelle ${sc}, la route ferait ${rw.toFixed(0)} m de large (une route CTR : 30 à 70 m ; échelle proposée : ${scan.scale}). `
                       + `Une map trop grande rend la création du parcours, la collision et l'enregistrement extrêmement lents. Importer quand même ?`))) return;
       force = true;
     }
@@ -8340,7 +8672,7 @@ $('dlight').onclick = async () => {
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Moins de collision et des textures plus petites : chargement plus court,
     moins de saccades, enregistrements plus rapides. L'affichage des modèles ne change pas. Enregistré aussitôt (Annuler possible), réinstalle ensuite.</div>
     <div style="margin:6px 0 2px"><b>Poids en jeu</b> <span style="color:var(--muted);font-size:12px">(le jeu charge toute l'archive de la piste : trop lourde, il plante au chargement)</span></div>
-    <div id="lweight" style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:6px;background:#1d2026">Mesure en cours…</div>
+    <div id="lweight" style="font-size:12px;margin-bottom:6px;padding:6px 8px;border-radius:6px;background:var(--field)">Mesure en cours…</div>
     <div style="display:flex;gap:8px;align-items:center;margin:6px 0"><button id="lreco" class="primary" disabled title="Choisit les réglages utiles pour cette map d'après son poids, puis montre l'avant / après avant d'appliquer">⚡ Allègement recommandé</button>
       <span style="font-size:12px;color:var(--muted)">règle tout d'un coup ; rien n'est appliqué avant « Appliquer »</span></div>
     <div id="lreport" style="font-size:12px;margin-bottom:6px" hidden></div>
@@ -8372,10 +8704,11 @@ $('dlight').onclick = async () => {
       + (w.textures ? ` — ${w.before} Mo avant, ${w.textures} texture(s) réduite(s) de moitié avec les réglages enregistrés` : '')
       + (over ? '<br><span style="color:var(--err)">Trop lourde même ainsi : textures en 512 ou retire du décor.</span>' : '')
       + (w.collision != null ? `<br>Collision : ${k(w.collision)} triangles${w.collision > w.collision_budget ? ` <span style="color:var(--accent)">(lourde, au-delà de ${k(w.collision_budget)})</span>` : ''}` : '')
-      // nombre de modeles (2026-11-17) : le jeu plante aussi quand la map a trop de sortes d'objets, meme legere
-      + (w.models != null ? `<br><span style="color:${w.models > w.models_max ? 'var(--err)' : w.models > w.models_ok ? 'var(--accent)' : 'inherit'}">Modèles différents : <b>${w.models}</b></span> (${w.files} fichiers)`
-        + (w.models > w.models_max ? ' <span style="color:var(--err)">— trop : le jeu plantera, retire des sortes d\'objets</span>'
-           : w.models > w.models_ok ? ' <span style="color:var(--accent)">— proche de la limite (1 082 chargent, 1 126 plantent)</span>' : '') : '')
+      // nombre de fichiers (2026-11-17, en fichiers depuis le 2026-11-27) : le jeu plante aussi quand l'archive a trop de
+      // fichiers (modeles, materiaux, textures), meme legere ; T928 charge avec 1 663 modeles mais 2 088 fichiers
+      + (w.models != null ? `<br><span style="color:${w.files > w.files_max ? 'var(--err)' : w.files > w.files_ok ? 'var(--accent)' : 'inherit'}">Modèles différents : <b>${w.models}</b></span> (${w.files} fichiers)`
+        + (w.files > w.files_max ? ' <span style="color:var(--err)">— trop de fichiers : le jeu plantera, retire des sortes d\'objets</span>'
+           : w.files > w.files_ok ? ' <span style="color:var(--accent)">— proche de la limite (2 528 fichiers chargent, 2 696 plantent)</span>' : '') : '')
       // charge memoire estimee et modeles rares (2026-11-18)
       + (w.load != null ? `<br><span style="color:${w.load >= 100 ? 'var(--err)' : w.load >= 90 ? 'var(--accent)' : 'inherit'}">Charge mémoire estimée : <b>${w.load} %</b></span> de la limite mesurée en jeu` : '')
       + (w.rare?.length ? `<br><span style="color:var(--muted)">À retirer en premier (1 ou 2 exemplaires, ${w.rare_total} modèle(s)) : ${w.rare.slice(0, 12).map(([n, c]) => esc(n) + ' ×' + c).join(', ')}${w.rare_total > 12 ? '…' : ''}</span>` : '')
@@ -8403,12 +8736,12 @@ $('dlight').onclick = async () => {
     const clean = ov.querySelector('#lclean'); if (!clean.disabled) clean.checked = true;
     const collAfter = heavyColl ? Math.min(w.collision, r.collision[cell] ?? w.collision) : w.collision;
     const row = (label, a, b, unit = '') => `<tr><td>${label}</td><td style="text-align:right">${a}${unit}</td><td>→</td><td style="text-align:right"><b>${b}${unit}</b></td></tr>`;
-    const nothing = after === w && !heavyColl && !(w.models > w.models_ok);
+    const nothing = after === w && !heavyColl && !(w.files > w.files_ok);
     rep.innerHTML = `<b>Avant → après</b> (estimation)<table style="margin-top:4px">`
       + row('Archive', w.after, after.after, ' Mo') + (w.collision != null ? row('Collision', k(w.collision), k(collAfter), ' tri.') : '')
       + row('Modèles différents', w.models, w.models) + row('Charge estimée', w.load, after.load ?? w.load, ' %') + '</table>'
       + (nothing ? '<div style="color:var(--ok)">La map est déjà légère : rien d\'utile à réduire.</div>' : '')
-      + (w.models > w.models_ok ? `<div style="color:var(--accent)">Trop de sortes d'objets : retire d'abord ceux qui n'ont qu'1 ou 2 exemplaires (liste ci-dessus), l'allègement ne change pas leur nombre.</div>` : '')
+      + (w.files > w.files_ok ? `<div style="color:var(--accent)">Trop de sortes d'objets : retire d'abord ceux qui n'ont qu'1 ou 2 exemplaires (liste ci-dessus), l'allègement ne change pas leur nombre.</div>` : '')
       + '<div style="color:var(--muted)">Réglages choisis ci-dessous : « Appliquer » pour les garder.</div>';
   };
   ov.querySelector('#lbg').onclick = () => sels().forEach(s => { if (r.textures[+s.dataset.i].background) s.value = '512'; });
@@ -8514,7 +8847,7 @@ function showNewmapResult(r) {
 $('dexport').onclick = () => {
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const files = decor.files.map(f => `<label style="display:block"><input type="checkbox" class="xfile" value="${esc(f.file)}" checked>
     ${esc(f.label)} <span style="opacity:.6">(${f.objects.length} objets)</span></label>`).join('')
     + '<label style="display:block"><input type="checkbox" id="xextra" checked> Autres fichiers de carte avec des modèles (éclairage : géométrie lointaine)</label>';
@@ -9075,19 +9408,32 @@ async function newMapDialog() {
   try { menu = await api('/api/menu_layout'); } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
   status('Nouvelle map : choisis son nom et sa catégorie');
   const groups = menu.groups || [];
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
   const res = await new Promise(resolve => {
     const ov = overlayCard(`<div style="font-weight:600;margin-bottom:12px">🆕 Nouvelle map</div>
       <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center">
         <span>Nom</span><input type="text" id="nmname" maxlength="40" value="Custom Track" style="${field}">
         <span>Catégorie</span><select id="nmgroup" style="${field}">${groups.map((g, i) => `<option value="${esc(g.key)}" ${i === groups.length - 1 ? 'selected' : ''}>${esc(menuGroupTitle(g))}</option>`).join('')}</select>
       </div>
+      <div style="margin:12px 0 4px;font-size:12px;color:var(--muted)">Pour commencer</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <label class="nmchoice" style="display:flex;gap:8px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer">
+          <input type="radio" name="nmstart" value="scratch" checked style="margin-top:3px">
+          <span><b>🛣 Créer de zéro</b><span style="display:block;font-size:11px;color:var(--muted)">Tu conduis le paveur pour poser la route, puis relief et décor.</span></span></label>
+        <label class="nmchoice" style="display:flex;gap:8px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:8px;cursor:pointer">
+          <input type="radio" name="nmstart" value="import" style="margin-top:3px">
+          <span><b>📁 Importer une map</b><span style="display:block;font-size:11px;color:var(--muted)">Un dossier avec ta map en .obj, .dae ou .glb et ses images.</span></span></label>
+      </div>
       <div class="note" style="margin:10px 0 14px">Map vide (copie vidée de Crash Cove), ajoutée au jeu dans cette catégorie. Aucune piste existante n'est modifiée. ≈ 1 à 2 min et ≈ 360 Mo en plus. Ferme shadPS4 avant.</div>
-      <div class="btns" style="justify-content:flex-end"><button id="nmno">Annuler</button><button id="nmyes" class="primary">Créer la map</button></div>`, 440);
+      <div class="btns" style="justify-content:flex-end"><button id="nmno">Annuler</button><button id="nmyes" class="primary">Créer la map</button></div>`, 460);
     const q = s => ov.querySelector(s);
     q('#nmname').select(); q('#nmname').focus();
+    // choix de depart (2026-11-27) : cadre du choix coche en couleur
+    const paintChoice = () => ov.querySelectorAll('.nmchoice').forEach(l => { l.style.borderColor = l.querySelector('input').checked ? 'var(--accent)' : 'var(--line)'; });
+    ov.querySelectorAll('input[name=nmstart]').forEach(r => r.onchange = paintChoice); paintChoice();
     q('#nmno').onclick = () => { ov.remove(); resolve(null); };
-    q('#nmyes').onclick = () => { const out = { name: q('#nmname').value.trim() || 'Custom Track', group: q('#nmgroup').value }; ov.remove(); resolve(out); };
+    q('#nmyes').onclick = () => { const out = { name: q('#nmname').value.trim() || 'Custom Track', group: q('#nmgroup').value,
+                                                start: ov.querySelector('input[name=nmstart]:checked')?.value || 'scratch' }; ov.remove(); resolve(out); };
     q('#nmname').onkeydown = e => { if (e.key === 'Enter') q('#nmyes').click(); };
   });
   if (!res) return;
@@ -9104,6 +9450,12 @@ async function newMapDialog() {
     for (const c of [texMatCache, glowMatCache, geoCache]) for (const k in c) delete c[k];
     await loadTrack(r.track); loadAmbiancePreview();
     await loadDecor();
+    // « Importer une map » (2026-11-27) : fenetre d'import d'un dossier sur la map vide, puis « Créer le parcours »
+    if (res.start === 'import') {
+      status(`Map « ${res.name} » créée (${r.track}) : choisis le dossier de ta map à importer.`, 'ok');
+      await inMode('decor', clickId('dfolder'))();
+      return;
+    }
     // map vierge : on commence par la route (outil Route de la base, paveur pret)
     await openCreator();
     if (creator.active) { document.getElementById('crmroute')?.click(); syncRail(); }
@@ -9302,8 +9654,9 @@ creator = initCreator({ THREE, TransformControls, scene, camera, orbit, view, re
     let len = 0;
     for (let i = 0; i < ex.length; i++) { const a = ex[i], b = ex[(i + 1) % ex.length]; len += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]); }
     const nsec = ex.length > 2 ? Math.max(3, Math.min(30, Math.round(len / 39.37 / 500))) : chain.length;
+    const nsecF = Math.max(nsec, 1 + 2 * (r.branches || []).length);
     const msg = await createRoute(chain, { objects: r.road }, { exact: r.exact, start: { pos: r.start, yaw: r.yaw }, ai: true,
-      neutralize: true, sections: nsec, randomness: 0.5, maxJump: 40, reverse: false });
+      neutralize: true, sections: nsecF, randomness: 0.5, maxJump: 40, reverse: false, forks: r.branches || [] });
     placeStartBehindChecker(r.start, r.yaw);             // zone d'arrivee au damier, grille derriere
     // caisses et boosters poses sur le NOUVEAU sol (2026-11-18, « caisses enfoncees ») : la collision est differee a la
     // generation, le sol gris relu plus haut etait encore l'ancien -> relu a jour (recalcule si besoin) avant de les poser
@@ -9365,7 +9718,8 @@ async function runPipeline(p = {}) {
   for (let i = 0; i < ex.length; i++) { const a = ex[i], b = ex[(i + 1) % ex.length]; len += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]); }
   const nsec = ex.length > 2 ? Math.max(3, Math.min(30, Math.round(len / 39.37 / 500))) : chain.length;
   rep.push(await createRoute(chain, { objects: r.road }, { exact: r.exact, start: { pos: r.start, yaw: r.yaw }, ai: true,
-    neutralize: true, sections: nsec, randomness: 0.5, maxJump: 40, reverse: false }));
+    neutralize: true, sections: Math.max(nsec, 1 + 2 * (r.branches || []).length), randomness: 0.5, maxJump: 40, reverse: false,
+    forks: r.branches || [] }));
   placeStartBehindChecker(r.start, r.yaw);
   mark('parcours + voies IA');
   if (r.items) { await refreshCollision(true); rep.push(await placeGeneratedItems(r.items)); creator.dropItems('all'); mark('caisses et boosters'); }
@@ -9437,7 +9791,7 @@ async function chooseGenerateTarget() {
   let menu;
   try { menu = await api('/api/menu_layout'); } catch (e) { status('Erreur : ' + e.message, 'err'); return null; }
   const isGame = !menu.tracks.some(t => t.id === track), groups = menu.groups;
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
   return new Promise(resolve => {
     const ov = overlayCard(`<div style="font-weight:600;margin-bottom:12px">Où générer cette piste ?</div>
       <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="radio" name="gtwhere" value="new" ${isGame ? 'checked' : ''}><b>Nouvelle piste</b></label>
@@ -10181,7 +10535,7 @@ async function checkForUpdate(manual = false) {
   ov.innerHTML = `<div class="card" style="max-width:640px;width:100%;max-height:calc(100vh - 32px);overflow:auto;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:6px"><b>Mise à jour disponible</b> — version ${esc(r.latest)} <span style="color:var(--muted)">(installée : ${esc(r.current)})</span></div>
     <div style="font-size:12px;margin-bottom:6px"><b>${esc(r.name || '')}</b> · ${Math.round((r.size || 0) / 1048576)} Mo</div>
-    <pre style="font-size:12px;white-space:pre-wrap;max-height:40vh;overflow:auto;background:#1d2026;border-radius:6px;padding:8px;margin:0 0 8px">${esc(r.notes || '')}</pre>
+    <pre style="font-size:12px;white-space:pre-wrap;max-height:40vh;overflow:auto;background:var(--field);border-radius:6px;padding:8px;margin:0 0 8px">${esc(r.notes || '')}</pre>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">L'application va se fermer puis redémarrer. Tes maps, sauvegardes et réglages sont conservés.</div>
     <div id="upderr" style="font-size:12px;color:var(--err);margin-bottom:8px"></div>
     <div class="btns" style="justify-content:flex-end"><button id="updno">Plus tard</button><button id="updyes" class="primary">Mettre à jour</button></div></div>`;
@@ -10226,7 +10580,11 @@ async function loadTrack(name, keepCamera) {
   transitions = Object.fromEntries(d.transitions.map(t => [t.name, t]));
   starting = d.starting_splines;
   startGrid = d.start_grid || []; playerStart = d.player_start; replacedAi = {};
-  forkAi = new Set((d.forks || []).flatMap(f => (f.ai_paths || []).map(h => String(h).split('::').pop())));
+  forkAi = new Set((d.forks || []).filter(f => !String(f.name).startsWith(FORK_ED))
+                                  .flatMap(f => (f.ai_paths || []).map(h => String(h).split('::').pop())));
+  edForks = (d.forks || []).filter(f => String(f.name).startsWith(FORK_ED)).map(f => ({ name: f.name, position: f.position,
+    dimensions: f.trigger?.dimensions, position_path: String(f.position_path || '').split('::').pop(),
+    ai_paths: (f.ai_paths || []).map(h => String(h).split('::').pop()) }));
   const fin = d.transitions.find(t => t.increment_lap);
   // disposition de reference pour « Replacer la grille » : celle du jeu d'origine (la version enregistree peut avoir une
   // ligne deplacee sans sa grille), sinon celle chargee
@@ -10235,7 +10593,8 @@ async function loadTrack(name, keepCamera) {
   renderStartMarkers();
   crates = (d.crates || []).filter(c => c.kind !== 'boost').map(c => ({ name: c.name, kind: c.kind, pos: c.pos, yaw: c.yaw || 0 }));
   boosts = (d.crates || []).filter(c => c.kind === 'boost').map(c => ({ pos: c.pos, yaw: c.yaw || 0, dims: c.dims || [...BOOST_DEFAULT],
-                                                                       tilt: c.tilt || [0, 0], free: !!c.free, ...boostDefaults(c) }));
+                                                                       tilt: c.tilt || [0, 0], free: !!c.free, ...boostDefaults(c),
+                                                                       ...(c.obj ? { obj: c.obj } : {}) }));
   renderCrateMarkers(); renderBoostMarkers();
   // arrivee introuvable dans le _Design (fichier remis a l'origine) : proposee sur la zone, a replacer
   teleporters = Object.fromEntries(Object.entries(d.teleporters || {}).map(([n, tp]) =>
@@ -10294,6 +10653,7 @@ $('save').onclick = async () => {
     return;
   }
   // course d'abord : l'enregistrement du decor peut relire la piste (boosters, map deplacee)
+  if (boosts.some(b => b.obj) && syncObjectBoosts()) renderBoostMarkers();          // zones des objets booster a jour
   const doDecor = decorDirty() || collisionPending, doRace = raceDirty() || !doDecor;     // rien en attente : rapport de la course
   if (doRace) await saveRaceClick();
   if (doDecor) await saveDecor();
@@ -10321,10 +10681,11 @@ async function saveRace(extra = {}) {
         { increment_lap: t.increment_lap, previous_ai: t.previous_ai, next_ai: t.next_ai,
           previous_position: t.previous_position, next_position: t.next_position,
           position: t.position, yaw: t.yaw || 0, dimensions: t.dimensions }])),
-      start_grid: startGrid, player_start: playerStart, replaced: replacedAi,
+      start_grid: startGrid, player_start: playerStart, replaced: replacedAi, fork_checkers: edForks,
       design_poses: designPoses, race_entity_positions: raceEntityPositions,
       crates: [...crates.filter(c => c.kind in CRATE_KINDS),
-               ...boosts.map(b => ({ kind: 'boost', pos: b.pos, yaw: b.yaw || 0, tilt: b.tilt || [0, 0], dims: b.dims, color: b.color, speed: b.speed, duration: b.duration, free: !!b.free }))],
+               ...boosts.map(b => ({ kind: 'boost', pos: b.pos, yaw: b.yaw || 0, tilt: b.tilt || [0, 0], dims: b.dims, color: b.color, speed: b.speed, duration: b.duration, free: !!b.free,
+                                     ...(b.obj ? { obj: b.obj } : {}) }))],
       // teleporteurs : envoyes seulement s'ils ont change (le serveur reecrit alors le _Design et le RaceSystem)
       teleporters: JSON.stringify(teleporters) !== teleportersLoaded ? teleporters : undefined,
       portals: JSON.stringify(portals) !== portalsLoaded ? portals : undefined,
@@ -10379,7 +10740,7 @@ async function openCameraSettings() {
 // ---- Piste › Musique : morceau importe a la place de la musique de la piste et de celle du dernier tour (music.py).
 // Le fichier est envoye tel quel, le serveur le decode et l'encode ; enregistre aussitot, « ↶ Annuler » le defait ----
 async function openMusic() {
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   const ov = overlayCard(`<div style="margin-bottom:6px"><b>🎵 Musique de la piste</b></div>
     <div id="mustate" style="font-size:12px;margin-bottom:10px"></div>
     <div id="muffmpeg"></div>
@@ -10425,7 +10786,7 @@ async function openMusic() {
           <div style="margin-bottom:6px">Il faut ffmpeg pour importer une musique. Il n'est pas fourni avec l'éditeur : ${info.linux
             ? `installe-le avec le gestionnaire de paquets de ta distribution (Ubuntu / Debian / Mint : <code>sudo apt install ffmpeg</code> ; Fedora : <code>sudo dnf install ffmpeg-free</code> ; Arch : <code>sudo pacman -S ffmpeg</code>), puis rouvre cette fenêtre. Ou indique où se trouve un ffmpeg déjà téléchargé (il peut aussi être posé à côté du fichier .AppImage).`
             : `<a href="https://ffmpeg.org/download.html" target="_blank" rel="noopener" style="color:var(--accent)">télécharge-le ici</a>, puis indique où il se trouve.`}</div>
-          <div style="display:flex;gap:6px"><input id="mufpath" placeholder="Dossier de ffmpeg (ou son chemin complet)" style="flex:1;min-width:0;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
+          <div style="display:flex;gap:6px"><input id="mufpath" placeholder="Dossier de ffmpeg (ou son chemin complet)" style="flex:1;min-width:0;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
             <button id="mufbrowse">📁 Parcourir…</button><button id="mufuse" class="primary">Valider</button></div></div>`;
     const setPath = async path => {
       try {
@@ -10492,7 +10853,7 @@ async function openTimes() {
   if (!track) return;
   const TIERS = [['sapphire', '🔷 Saphir'], ['gold', '🟡 Or'], ['platinum', '⚪ Platine']];
   const DIFFS = ['Facile', 'Moyen', 'Difficile', 'Cauchemar'];
-  const inp = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 5px;font-variant-numeric:tabular-nums';
+  const inp = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 5px;font-variant-numeric:tabular-nums';
   const ov = overlayCard(`<div style="margin-bottom:6px"><b>⏱ Temps des reliques et des fantômes</b></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Format m:ss.cc (ex. 1:17.50) ou secondes. Un temps vide reprend celui du jeu.</div>
     <div id="tmrelic"></div><div id="tmghost" style="margin-top:12px"></div>
@@ -10658,7 +11019,7 @@ async function openPackExport() {
   try { r = await api('/api/pack_tracks'); } catch (e) { status('Erreur : ' + e.message, 'err'); return; }
   if (!r.tracks.length) { status('Aucune piste modifiée à exporter', 'err'); return; }
   await refreshTrackNames();
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
   const ov = overlayCard(`<div style="margin-bottom:6px"><b>📦 Exporter des maps (.zip)</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Le pack contient tes modèles (OBJ), tes images, le parcours, les objets, les réglages,
       le nom et les images de menu et le survol caméra — <b>aucun fichier du jeu</b>. Il se réimporte (et s'installe) sur n'importe quelle piste,
@@ -10706,8 +11067,8 @@ async function openOctrExport() {
   if (!list.length) { status('Aucune piste modifiée à exporter', 'err'); return; }
   status('Choisis les pistes à exporter');
   list.sort((a, b) => (b.track === track) - (a.track === track));         // la piste ouverte en premier, cochee
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
-  const cell = 'background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const cell = 'background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px';
   const cur = list.find(t => t.track === track) || list[0];
   const ov = overlayCard(`<div style="margin-bottom:6px"><b>🖥 Exporter pour le PC (OCTR)</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Mod pour le portage PC « CTR-NitroFueled-PC » : dans son lanceur, <b>Mods › Add files</b>,
@@ -10771,7 +11132,7 @@ async function openPackImport() {
   const ov = overlayCard(`<div style="margin-bottom:6px"><b>📦 Importer un pack de maps (.zip)</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Choisis le fichier .zip, puis pour chaque map : l'importer ou non, et à la place de quelle piste.
       La piste remplacée repart de son original avant l'import (ce que tu y avais fait reste récupérable avec « ↶ Annuler »).</div>
-    <label class="btnlike" style="display:inline-block;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 10px;background:#262a32">📁 Choisir le fichier .zip…
+    <label class="btnlike" style="display:inline-block;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 10px;background:var(--panel2)">📁 Choisir le fichier .zip…
       <input type="file" id="pifile" accept=".zip,application/zip" hidden></label>
     <div id="pimaps" style="margin-top:8px"></div>
     <label style="display:flex;gap:6px;margin:8px 0"><input type="checkbox" id="piinst"> Installer dans le jeu après l'import (ferme shadPS4 avant)</label>
@@ -10789,10 +11150,10 @@ async function openPackImport() {
     } catch (err) { q('#piinfo').textContent = 'Erreur : ' + err.message.replace(/^\w+\(['"]?|['"]?\)$/g, ''); return; }
     q('#pimaps').innerHTML = info.maps.map((m, i) => `<div style="display:grid;grid-template-columns:auto 72px 1fr;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line)">
         <input type="checkbox" class="pim" data-i="${i}" checked>
-        <div style="width:72px;height:42px;border-radius:4px;background:#1d2026 center/cover no-repeat ${m.preview ? `url(${m.preview})` : ''}"></div>
+        <div style="width:72px;height:42px;border-radius:4px;background:var(--field) center/cover no-repeat ${m.preview ? `url(${m.preview})` : ''}"></div>
         <div><b>${esc(m.title)}</b> <span style="color:var(--muted);font-size:11px">créée sur ${esc(trackLabel(m.source_track))} · ${m.models} modèle(s)${m.sections ? ` · ${m.sections} sections` : ''}</span>
           <div style="display:flex;gap:6px;align-items:center;margin-top:3px;font-size:12px">à la place de
-            <select class="pit" data-i="${i}" style="flex:1;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:2px 4px">
+            <select class="pit" data-i="${i}" style="flex:1;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:2px 4px">
               ${all.map(t => `<option value="${t}" ${t === m.source_track ? 'selected' : ''}>${esc(trackLabel(t))}</option>`).join('')}</select></div></div></div>`).join('');
     q('#piinfo').textContent = `${info.maps.length} map(s) dans le pack${info.created ? ' (créé le ' + info.created + ')' : ''}.`;
     q('#piyes').disabled = false;
@@ -10841,14 +11202,14 @@ async function openMenuAssets() {
   const changes = { names: {}, images: {} };
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
   const names = Object.entries(r.names).map(([lg, n]) => `<label style="display:grid;grid-template-columns:90px 1fr;gap:6px;align-items:center;margin:3px 0">
       <span>${esc(n.label)}</span><input class="mname" data-lg="${lg}" value="${esc(n.name)}" placeholder="${esc(n.original)}" style="${field}"></label>`).join('');
   const imgs = Object.entries(r.images).map(([k, im]) => `<div style="display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:center;margin:8px 0">
-      <div style="background:repeating-conic-gradient(#2a2f38 0% 25%, #1d2026 0% 50%) 50%/16px 16px;border-radius:4px;display:flex;align-items:center;justify-content:center;height:110px">
+      <div style="background:repeating-conic-gradient(#1f2748 0% 25%, #10152c 0% 50%) 50%/16px 16px;border-radius:4px;display:flex;align-items:center;justify-content:center;height:110px">
         <img id="mimg_${k}" src="${im.preview}" style="max-width:150px;max-height:110px"></div>
       <div><b style="font-size:12px">${esc(im.label)}</b> <span style="color:var(--muted);font-size:11px">${im.size[0]} × ${im.size[1]}${im.custom ? ' · modifiée' : ''}</span>
-        ${im.shared ? `<div style="color:var(--muted);font-size:11px;margin-top:4px">Image commune à toutes les pistes du jeu (un seul exemplaire, au nom de Crash Cove) : non modifiable pour une piste créée.${k === 'intro' ? ' L\'icône de ta piste en course suit sa vignette.' : ''}</div>` : `<div class="btns" style="margin-top:4px"><label class="btnlike" style="cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:#262a32">Choisir une image…
+        ${im.shared ? `<div style="color:var(--muted);font-size:11px;margin-top:4px">Image commune à toutes les pistes du jeu (un seul exemplaire, au nom de Crash Cove) : non modifiable pour une piste créée.${k === 'intro' ? ' L\'icône de ta piste en course suit sa vignette.' : ''}</div>` : `<div class="btns" style="margin-top:4px"><label class="btnlike" style="cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--panel2)">Choisir une image…
           <input type="file" accept="image/*" data-k="${k}" class="mfile" hidden></label>
           ${k === 'outline' ? '<button data-gen="1">Générer depuis le parcours</button>' : ''}
           <button data-pc="${k}" title="Une vue de la piste rendue par l'éditeur, au format de cette image">📷 Carte postale…</button>
@@ -10913,7 +11274,7 @@ const AMB_MIN_HEMI = 0.75, AMB_MIN_SUN = 0.8;
 let ambLast = [null, null];
 function previewAmbiance(v, orig) {
   ambLast = [v, orig];
-  if (!v || !orig) { sun.color.setRGB(1, 1, 1); sun.intensity = 1.2; if (hemi) hemi.intensity = 1.0; scene.background = new THREE.Color(0x14161a); return; }
+  if (!v || !orig) { sun.color.setRGB(1, 1, 1); sun.intensity = 1.2; if (hemi) hemi.intensity = 1.0; scene.background = new THREE.Color(0x0d1226); return; }
   const full = $('vambfull')?.checked;
   sun.color.setRGB(...v.sun_color);
   sun.intensity = 1.2 * Math.min(2, (v.sun_intensity ?? 4) / Math.max(0.1, orig.sun_intensity));
@@ -10941,7 +11302,7 @@ $('dambiance').onclick = async () => {
       L'aperçu dans l'éditeur est approximatif : le vrai rendu se voit en jeu. « Assombrir le ciel » fond le ciel dans le brouillard.
       Enregistré aussitôt (Annuler possible), réinstalle ensuite.</div>
     <label style="display:flex;gap:8px;align-items:center;margin:0 0 4px"><b>Ciel</b>
-      <select id="asky" style="flex:1;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
+      <select id="asky" style="flex:1;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
         <option value="">${r.original_sky ? 'Celui de la piste (d\'origine)' : 'Aucun (le fond était un décor de la piste)'}</option>
         ${r.skies.map(s => `<option value="${esc(s.key)}">Ciel de ${esc(s.label)}</option>`).join('')}</select></label>
     <div id="askywarn" style="font-size:12px;color:#ff8a5a;margin-bottom:8px" hidden>⚠ Cette piste n'a pas de ciel : son fond était un décor, retiré quand la map a été vidée.
@@ -10949,9 +11310,9 @@ $('dambiance').onclick = async () => {
     <div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Le ciel d'une autre piste reprend aussi son éclairage (soleil, brouillard, reflets) ;
       l'ambiance choisie ci-dessous s'applique par-dessus.</div>
     <div style="display:flex;gap:8px;align-items:center;margin:0 0 2px"><b>Météo</b>
-      <select id="awx" style="flex:1;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
+      <select id="awx" style="flex:1;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
         <option value="">Aucune</option>${(r.weathers || []).map(w => `<option value="${esc(w.key)}">${esc(w.label)}</option>`).join('')}</select>
-      <select id="awxd" title="Nombre d'effets posés le long du parcours" style="background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
+      <select id="awxd" title="Nombre d'effets posés le long du parcours" style="background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
         <option value="low">Légère</option><option value="normal">Normale</option><option value="high">Forte</option></select></div>
     <div style="font-size:11px;color:var(--muted);margin:0 0 8px">Effets des pistes du jeu (pluie de Tiger Temple, neige de Blizzard Bluff, feuilles de Coco Park, lucioles de Mystery Caves…), posés le long du parcours enregistré à l'installation. À voir en jeu.</div>
     <div class="btns" style="display:flex;gap:6px;margin-bottom:10px"><button data-p="day">☀ Jour (origine)</button><button data-p="evening">🌇 Soir</button><button data-p="night">🌙 Nuit</button></div>
@@ -11006,7 +11367,7 @@ async function openFalls() {
   if (dirty && !(await ask('Le parcours a des modifications non enregistrées : le calcul porte sur la dernière version enregistrée. Continuer ?'))) return;
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:10;display:flex;align-items:center;justify-content:center;padding:16px';
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px;margin:2px 0 8px';
   ov.innerHTML = `<div class="card" style="max-width:520px;width:100%;background:var(--panel);border:1px solid var(--line)">
     <div style="margin-bottom:6px"><b>Chutes et réapparitions</b></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">D'après le parcours enregistré. À refaire si tu recrées le parcours ou déplaces la map.
@@ -11041,9 +11402,9 @@ async function generateMinimap() {
     ov.innerHTML = `<div class="card" style="max-width:520px;width:100%;background:var(--panel);border:1px solid var(--line)">
       <div style="margin-bottom:6px"><b>Mini-carte générée</b> <span style="color:var(--muted);font-size:12px">(enregistrée — installe pour la voir en jeu)</span></div>
       <div style="display:flex;gap:6px">
-        <figure style="flex:1;margin:0"><img id="mmimg" src="${r.preview}" style="width:100%;background:#262a32;border-radius:4px;image-rendering:auto">
+        <figure style="flex:1;margin:0"><img id="mmimg" src="${r.preview}" style="width:100%;background:var(--panel2);border-radius:4px;image-rendering:auto">
           <figcaption id="mmcap1" style="font-size:11px;color:var(--muted);text-align:center"></figcaption></figure>
-        <figure id="mmstoredbox" style="flex:1;margin:0" hidden><img id="mmstored" style="width:100%;background:#262a32;border-radius:4px;image-rendering:auto">
+        <figure id="mmstoredbox" style="flex:1;margin:0" hidden><img id="mmstored" style="width:100%;background:var(--panel2);border-radius:4px;image-rendering:auto">
           <figcaption style="font-size:11px;color:var(--muted);text-align:center">Image enregistrée (retournée)</figcaption></figure>
       </div>
       <div id="mmrep" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
@@ -11270,7 +11631,7 @@ async function openRetiredTracks() {
   try { [list, menu] = await Promise.all([api('/api/retired_tracks', {}), api('/api/menu_layout')]); }
   catch (e) { status('Erreur : ' + e.message, 'err'); return; }
   if (!list.tracks.length) { status('Aucune piste retirée du jeu à remettre', 'ok'); return; }
-  const field = 'width:100%;background:#1d2026;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
+  const field = 'width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px';
   const ov = overlayCard(`<div style="font-weight:600;margin-bottom:12px">Remettre une piste dans le jeu</div>
     <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-bottom:10px">
       <span>Piste</span><select id="rtid" style="${field}">${list.tracks.map(t => `<option value="${esc(t.id)}">${esc(t.id)} — ${esc(t.display)}</option>`).join('')}</select>

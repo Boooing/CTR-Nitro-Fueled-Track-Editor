@@ -185,7 +185,9 @@ def main():
            '--add-data', f'{os.path.join(HERE, "creator.js")}{sep}.',
            '--add-data', f'{os.path.join(HERE, "clay.js")}{sep}.',          # sol en pate a modeler (2026-11-24)
            '--add-data', f'{os.path.join(HERE, "vendor")}{sep}vendor',
-           '--hidden-import', 'server', '--hidden-import', 'updater', '--hidden-import', 'PySide6.QtWebEngineWidgets',
+           '--hidden-import', 'server', '--hidden-import', 'updater',
+           '--hidden-import', 'dae_import', '--hidden-import', 'gltf_import',   # import COLLADA / glTF (2026-11-27)
+           '--hidden-import', 'PySide6.QtWebEngineWidgets',
            '--exclude-module', 'webview',
            os.path.join(HERE, 'app.py')]
     print(' '.join(f'"{c}"' if ' ' in c else c for c in cmd), flush=True)

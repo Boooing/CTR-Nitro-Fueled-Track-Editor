@@ -843,8 +843,38 @@ def _resample_closed(P, step):
     return np.array(out), total
 
 
+FORK_PRE, FORK_POST = 25 * 39.37, 25 * 39.37        # transitions a 25 m avant la separation / apres le retour
+FORK_CHECK_IN = 20 * 39.37                            # embranchement (ForkChecker) : apres la separation des deux routes
+
+
+def _section_bounds(total, n, forks):
+    """Debuts des n sections (abscisses sur la boucle, la 1re a 0 = ligne d'arrivee). Sans fourche : parts egales. Avec
+    des fourches [(sa, sb)] : une section commence FORK_PRE avant chaque separation et la suivante FORK_POST apres le
+    retour (toute la fourche dans une seule section, comme Dingo Canyon 301 Left / Right) ; les autres sections se
+    partagent le reste (la plus longue coupee en deux tant qu'il en manque)."""
+    if not forks:
+        return [k * total / n for k in range(n)]
+    cuts, inside = {0.0}, []
+    for sa, sb in forks:
+        a, b = sa - FORK_PRE, sb + FORK_POST
+        if a <= 0 or b >= total:
+            raise ValueError('une route secondaire part ou revient trop près de la ligne d\'arrivée (moins de 25 m) : '
+                             'déplace-la ou déplace le départ')
+        cuts |= {a, b}
+        inside.append((a, b))
+    cuts = sorted(cuts)
+    if len(cuts) > n:
+        raise ValueError(f'{len(cuts)} sections nécessaires pour {len(forks)} route(s) secondaire(s), {n} demandées')
+    while len(cuts) < n:
+        gaps = [(cuts[i + 1] if i + 1 < len(cuts) else total) - c for i, c in enumerate(cuts)]
+        free = [i for i in range(len(cuts)) if not any(abs(cuts[i] - a) < 1 for a, _ in inside)]
+        i = max(free, key=lambda i: gaps[i])
+        cuts.insert(i + 1, cuts[i] + gaps[i] / 2)
+    return cuts
+
+
 def layout(loop, n_sections, overlap=2000.0, spacing=2500.0, finish_lift=660.0, height=2600.0, margin=800.0,
-           avoid=None):
+           avoid=None, forks=None):
     """Decoupe une boucle (points tous les ~300 po, depart = ligne d'arrivee) en n sections egales. avoid(point) :
     obstacle touche (points de controle resserres la, voir ai_gen.fit_controls).
     -> {'sections': [points de controle de la spline de position (chevauchent de `overlap` les transitions)],
@@ -860,8 +890,10 @@ def layout(loop, n_sections, overlap=2000.0, spacing=2500.0, finish_lift=660.0, 
     hw = np.array(loop['half_widths'])
     idx_at = lambda s: int(round((s % total) / step)) % n
     sections, transitions, paths = [], [], []
+    # routes secondaires (2026-11-26) : forks = [{sa, sb, points (route secondaire, depart -> retour), half_width}]
+    bounds = _section_bounds(total, n_sections, [(f['sa'], f['sb']) for f in forks or []])
     for k in range(n_sections):
-        s0, s1 = k * total / n_sections, (k + 1) * total / n_sections
+        s0, s1 = bounds[k], bounds[k + 1] if k + 1 < n_sections else total
         ids = [idx_at(s) for s in np.arange(s0 - overlap, s1 + overlap + 1, step)]
         sections.append(fit_controls([list(P[i]) for i in ids], spacing, avoid=avoid))
         paths.append([list(P[i]) for i in (idx_at(s) for s in np.arange(s0, s1, step))])
@@ -871,7 +903,34 @@ def layout(loop, n_sections, overlap=2000.0, spacing=2500.0, finish_lift=660.0, 
         w = 2 * float(hw[max(0, i0 - 3):i0 + 4].max()) + margin
         transitions.append({'position': [float(P[i0, 0]), float(P[i0, 1]), float(P[i0, 2]) + finish_lift],
                             'yaw': yaw, 'dimensions': [1000.0 if k == 0 else 500.0, w, height]})
-    return {'sections': sections, 'transitions': transitions, 'section_paths': paths}
+    out_forks = []
+    for f in forks or []:
+        k = next(i for i, b in enumerate(bounds) if abs(b - (f['sa'] - FORK_PRE)) < 1)
+        s0, s1 = bounds[k], bounds[k + 1] if k + 1 < n_sections else total
+        B = np.asarray(f['points'], np.float64)
+        head = [list(P[idx_at(s)]) for s in np.arange(s0 - overlap, f['sa'], step)]
+        tail = [list(P[idx_at(s)]) for s in np.arange(f['sb'] + step, s1 + overlap + 1, step)]
+        dense = head + [list(q[:3]) for q in B] + tail
+        # embranchements : premier point de la route secondaire hors de la route principale (en plan, ou en hauteur
+        # pour une route suspendue) + point de la route principale en face ; boites en travers de chaque route
+        cut = 0
+        for i, q in enumerate(B):
+            dm = np.hypot(P[:, 0] - q[0], P[:, 1] - q[1])
+            j = int(np.argmin(dm))
+            if dm[j] > hw[j] + f['half_width'] or abs(P[j, 2] - q[2]) > 600:
+                cut = i
+                break
+        cut = min(len(B) - 1, cut + int(FORK_CHECK_IN / max(1.0, float(np.linalg.norm(B[min(cut + 1, len(B) - 1), :2] - B[cut, :2])) or 1)))
+        qb = B[cut]
+        jm = int(np.argmin(np.hypot(P[:, 0] - qb[0], P[:, 1] - qb[1]) + np.abs(P[:, 2] - qb[2])))
+
+        def box(pts, i, w):
+            a, b = pts[max(0, i - 1)], pts[min(len(pts) - 1, i + 1)]
+            return {'position': [float(pts[i][0]), float(pts[i][1]), float(pts[i][2]) + 200.0],
+                    'yaw': math.atan2(b[1] - a[1], b[0] - a[0]), 'dimensions': [500.0, 2 * w + margin, 1400.0]}
+        out_forks.append({'section': k, 'controls': fit_controls(dense, spacing, avoid=avoid), 'dense': dense,
+                          'checker_branch': box(B, cut, f['half_width']), 'checker_main': box(P, jm, float(hw[jm]))})
+    return {'sections': sections, 'transitions': transitions, 'section_paths': paths, 'forks': out_forks}
 
 
 def spread_on_path(path, count, lift=50.0):

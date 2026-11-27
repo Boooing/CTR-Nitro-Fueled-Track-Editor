@@ -223,7 +223,7 @@ def road_width(ground, p, side, z, road):
 
 
 def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, sample=300.0, point_spacing=2500.0,
-                   lift=80.0, keep_air=False, road_ground=None, spread=0.7):
+                   lift=80.0, keep_air=False, road_ground=None, spread=0.7, avoid_refs=None):
     """Voies IA le long de `reference`. Retourne {'lanes', 'widths', 'road_surfaces'}.
     keep_air : la hauteur de la reference est gardee quand elle passe au-dessus du sol (sauts) : z = max(sol + lift,
     hauteur de la reference).
@@ -272,6 +272,22 @@ def generate_lanes(ground, reference, n=5, randomness=0.5, margin=0.15, seed=1, 
             if covered[i]:
                 lefts[i] = min(lefts[i], road_width(ground, p, normals[i], zs[i], solid))
                 rights[i] = min(rights[i], road_width(ground, p, -normals[i], zs[i], solid))
+    # fourche (2026-11-26) : autres splines de position de la section (l'autre route). Pres des raccords les deux routes se
+    # touchent et la largeur mesuree d'un cote couvrait aussi l'autre route (une voie traversait l'ilot) : de chaque cote,
+    # pas plus loin que mi-chemin de l'autre trace, sans descendre sous la demi-largeur habituelle de la route
+    if avoid_refs:
+        others = [np.asarray(catmull_rom(r, sample), np.float64)[:, :2] for r in avoid_refs if len(r) >= 2]
+        typ = float(np.median([x for x in lefts + rights if x > 0] or [0.0]))
+        for i, p in enumerate(samples):
+            for O in others:
+                dv = O - np.array(p[:2])
+                dist = np.hypot(dv[:, 0], dv[:, 1])
+                j = int(np.argmin(dist))
+                cap = max(dist[j] / 2, typ)
+                if float(np.dot(dv[j], normals[i])) >= 0:
+                    lefts[i] = min(lefts[i], cap)
+                else:
+                    rights[i] = min(rights[i], cap)
     k = max(1, int(round(2000 / sample)))               # largeurs lissees sur ~50 m
     lefts, rights = _smooth(lefts, k), _smooth(rights, k)
     obs = Obstacles(ground)
